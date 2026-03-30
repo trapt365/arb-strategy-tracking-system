@@ -24,14 +24,25 @@ _This document builds collaboratively through step-by-step discovery. Sections a
 
 **Functional Requirements:**
 
-6 ключевых функций (F0–F5), организованных в 4 pipeline:
+5 pipeline-функций (F1–F5) + 1 контекст (F0):
 
+- **F0 (Контекст клиента):** стейкхолдерная карта + определение F5 метрик по департаментам — статичный input, заполняется при подключении клиента. **Не pipeline** — потребляется другими pipeline как knowledge
 - **F1 Pipeline (real-time):** транскрипт → chain of 4 prompts → автоотчёт с цитатами и commitments. SLA < 15 мин. Верифицирует заявления топов через F5 метрики
 - **F5 Pipeline (batch, Пн 8:00):** Telegram-бот → сбор 2 метрик (leading + lagging) по каждому департаменту от топов → запись в Sheets → тренды + алерты. Consumers: F4, F1, F3-lite
 - **F4 Pipeline (batch, Пн 9:00):** агрегация всех F1 за неделю + F5 метрики → повестка по каждому топу (3 пункта max) + расхождения метрик vs заявлений
 - **F3 Pipeline (batch, Пн):** агрегация → сводное уведомление CEO (5 строк + 🟢🟡🔴 подкреплённые F5 метриками). Gate: approve трекера
 - **F2 (Phase 2):** QC-скоринг — talk ratio (30-45%), 4 шляпы (коуч/эксперт/трекер/фасилитатор), покрытие OKR (≥ 2 реплики = обсуждено)
-- **F0:** стейкхолдерная карта + определение F5 метрик по департаментам — статичный input, заполняется при подключении клиента
+
+**Глоссарий функций (метод / конструктор / продукт):**
+
+| Код | Метод (что делает) | Конструктор (как реализован) | Продукт (результат) |
+|-----|-------------------|----------------------------|---------------------|
+| F0 | Определение контекста клиента | Ручное заполнение при онбординге | Стейкхолдерная карта + F5 метрики (knowledge, не pipeline) |
+| F1 | Формирование отчёта по встрече | `f1-report.ts` pipeline (chain of 4 prompts) | Структурированный отчёт с цитатами и commitments |
+| F2 | QC-скоринг сессии | `f2-qc.ts` pipeline (Phase 2) | Talk ratio + шляпы + покрытие OKR |
+| F3 | Формирование CEO-сводки | `f3-lite.ts` pipeline | Сводное уведомление (5 строк + 🟢🟡🔴) |
+| F4 | Подготовка повестки встречи | `f4-agenda.ts` pipeline | Повестка (agenda): 3 пункта × топ + расхождения метрик |
+| F5 | Сбор метрик от топов | `f5-metrics.ts` pipeline | Метрики (leading + lagging) + тренды + алерты |
 
 **Non-Functional Requirements:**
 
@@ -45,7 +56,7 @@ _This document builds collaboratively through step-by-step discovery. Sections a
 | Privacy | Контроль трекера | Все output'ы через approve |
 | Resilience | Graceful degradation | Partial results при сбое step 3-4 |
 | Observability | Logging + alerting | Sheet + Telegram ops-канал |
-| Quality | Weekly canary test | 5 golden transcripts, diff < 30% |
+| Quality | Weekly canary test | 5 golden transcripts, diff < 30% (см. Canary Test MethodDescription ниже) |
 
 **Scale & Complexity:**
 
@@ -161,11 +172,16 @@ data/                   # Append-only JSON backup (runtime, не в git)
 
 ### Architectural Principles (First Principles Analysis)
 
-1. **Вход = текст, откуда — неважно.** Transcript Interface Contract. Parser — отдельный модуль. Пересмотр audio-native через 6 мес
-2. **Output = одно действие.** Formatting prompt оптимизирован для действия, не для полноты. Scannable > readable
-3. **Доверие деградирует approval.** `approval_mode` как будущая конфигурация: full → review_after → exceptions_only. MVP = full only
-4. **Данные > pipeline.** Append-only JSON на диске с Day 1. Pipeline можно переписать, данные — нет
-5. **Changeability > Elegance.** Промпты в .md файлах. Pipeline = один файл. Минимум абстракций. Если функция в 1 месте — inline
+**Архитектурные принципы** (формируют все решения):
+
+1. **Данные > pipeline.** Append-only JSON на диске с Day 1. Pipeline можно переписать, данные — нет
+2. **Changeability > Elegance.** Промпты в .md файлах. Pipeline = один файл. Минимум абстракций. Если функция в 1 месте — inline
+
+**Проектные ограничения** (заданы извне):
+
+3. **Вход = текст, откуда — неважно.** Transcript Interface Contract. Parser — отдельный модуль. Пересмотр audio-native через 6 мес
+4. **Output = одно действие.** Formatting prompt оптимизирован для действия, не для полноты. Scannable > readable
+5. **Контроль трекера определяет approval.** Организационное правило: трекер утверждает все output'ы перед доставкой клиенту. Архитектурная реализация: `approval_mode` как конфигурация: `full` → `review_after` → `exceptions_only`. MVP = `full` only
 
 ### Deployment Milestones
 
@@ -206,6 +222,18 @@ data/                   # Append-only JSON backup (runtime, не в git)
 | 5 | Тимур = SPOF на ops | Runbook (1 стр.) + auto-recovery + Айдар доступ к VPS dashboard | Pre-MVP | Low |
 | 6 | Отчёт approved дважды | Status field: `generating│ready│approved│delivered`. If not ready → ignore. 5 строк | Day 1 | Low |
 | 7 | F5 топ исправил ответ | Последний ответ до дедлайна (9:00) побеждает | Week 2 | Low |
+
+### Canary Test — MethodDescription
+
+| Параметр | Описание |
+|----------|----------|
+| **Вход** | 5 транскриптов (golden set) — фиксированный набор, не меняется между запусками |
+| **Выход** | Diff report: % структурных изменений в output каждого pipeline (F1, F4, F3-lite) |
+| **Порог** | < 30% = OK · 30-50% = review промптов (ручной анализ изменений) · > 50% = rollback на предыдущую версию промптов/модели |
+| **Когда запускать** | (1) После обновления модели Claude (2) После изменения промптов (3) Еженедельно по расписанию (Milestone 2) |
+| **Кто запускает** | Тимур (вручную на MVP, автоматизация — Growth) |
+| **Semantic assertions** | Если транскрипт содержит обязательства → `commitments` не пустой. Если есть OKR-контекст → `okr_references` не пустой |
+| **Определение structural diff** | Сравнение JSON-структуры output: наличие/отсутствие секций, количество commitments, количество citations. Текстовые формулировки не входят в diff |
 
 ### Решения отложенные до Phase 2 / Growth
 

@@ -19,7 +19,13 @@ RUN apt update && apt install -y less \
   iproute2 \
   dnsutils \
   aggregate \
-  jq
+  jq \
+  locales \
+  && sed -i '/en_US.UTF-8/s/^# //g' /etc/locale.gen \
+  && locale-gen
+
+ENV LANG=en_US.UTF-8
+ENV LC_ALL=en_US.UTF-8
 
 # Ensure default node user has access to /usr/local/share
 RUN mkdir -p /usr/local/share/npm-global && \
@@ -53,6 +59,9 @@ USER node
 # Install global packages
 ENV NPM_CONFIG_PREFIX=/usr/local/share/npm-global
 ENV PATH=$PATH:/usr/local/share/npm-global/bin
+
+# Ensure PATH is available in bash login shells too
+RUN echo 'export PATH=$PATH:/usr/local/share/npm-global/bin' >> /home/node/.bashrc
 
 # Set the default shell to zsh rather than sh
 ENV SHELL=/bin/zsh
