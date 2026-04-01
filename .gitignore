@@ -1,5 +1,11 @@
 node_modules/
+dist/
 .env
 .env.*
 *.log
 .DS_Store
+
+# Test audio files (large binaries)
+data/test-audio/
+data/golden/
+data/soniox-results/

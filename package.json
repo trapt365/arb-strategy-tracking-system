@@ -1,5 +1,17 @@
 {
+  "name": "strategy-tracking-system",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "soniox:test": "tsx scripts/soniox-test.ts",
+    "soniox:webhook": "tsx scripts/soniox-webhook-test.ts"
+  },
   "dependencies": {
     "xlsx": "^0.18.5"
+  },
+  "devDependencies": {
+    "@types/node": "^25.5.0",
+    "tsx": "^4.21.0",
+    "typescript": "^6.0.2"
   }
 }
