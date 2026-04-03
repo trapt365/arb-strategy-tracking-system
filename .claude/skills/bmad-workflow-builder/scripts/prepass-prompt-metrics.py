@@ -186,14 +186,12 @@ def scan_prompt_metrics(skill_path: Path) -> dict:
         data['is_skill_md'] = True
         files_data.append(data)
 
-    # Prompts
-    prompts_dir = skill_path / 'prompts'
-    if prompts_dir.exists():
-        for f in sorted(prompts_dir.iterdir()):
-            if f.is_file() and f.suffix == '.md':
-                data = scan_file_patterns(f, f'prompts/{f.name}')
-                data['is_skill_md'] = False
-                files_data.append(data)
+    # Prompt files at skill root (non-SKILL.md .md files)
+    for f in sorted(skill_path.iterdir()):
+        if f.is_file() and f.suffix == '.md' and f.name != 'SKILL.md':
+            data = scan_file_patterns(f, f.name)
+            data['is_skill_md'] = False
+            files_data.append(data)
 
     # Resources (just sizes, for progressive disclosure assessment)
     resources_dir = skill_path / 'resources'

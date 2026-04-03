@@ -213,20 +213,19 @@ def find_template_artifacts(filepath: Path, rel_path: str) -> list[dict]:
 
 
 def cross_reference_stages(skill_path: Path, skill_content: str) -> tuple[dict, list[dict]]:
-    """Cross-reference stage files between SKILL.md and prompts/ directory."""
+    """Cross-reference stage files between SKILL.md and numbered prompt files at skill root."""
     findings = []
-    prompts_dir = skill_path / 'prompts'
 
-    # Get actual prompt files
+    # Get actual numbered prompt files at skill root (exclude SKILL.md)
     actual_files = set()
-    if prompts_dir.exists():
-        for f in prompts_dir.iterdir():
-            if f.is_file() and f.suffix == '.md':
-                actual_files.add(f.name)
+    for f in skill_path.iterdir():
+        if f.is_file() and f.suffix == '.md' and f.name != 'SKILL.md' and re.match(r'^\d+-', f.name):
+            actual_files.add(f.name)
 
-    # Find stage references in SKILL.md
+    # Find stage references in SKILL.md — look for both old prompts/ style and new root style
     referenced = set()
-    ref_pattern = re.compile(r'prompts/([^\s)]+\.md)')
+    # Match `prompts/XX-name.md` (legacy) or bare `XX-name.md` references
+    ref_pattern = re.compile(r'(?:prompts/)?(\d+-[^\s)`]+\.md)')
     for m in ref_pattern.finditer(skill_content):
         referenced.add(m.group(1))
 
@@ -236,16 +235,16 @@ def cross_reference_stages(skill_path: Path, skill_content: str) -> tuple[dict, 
         findings.append({
             'file': 'SKILL.md', 'line': 0,
             'severity': 'critical', 'category': 'missing-stage',
-            'issue': f'Referenced stage file does not exist: prompts/{f}',
+            'issue': f'Referenced stage file does not exist: {f}',
         })
 
     # Orphaned files (exist but not referenced)
     orphaned = actual_files - referenced
     for f in sorted(orphaned):
         findings.append({
-            'file': f'prompts/{f}', 'line': 0,
+            'file': f, 'line': 0,
             'severity': 'medium', 'category': 'naming',
-            'issue': f'Stage file exists but not referenced in SKILL.md: prompts/{f}',
+            'issue': f'Stage file exists but not referenced in SKILL.md: {f}',
         })
 
     # Stage numbering check
@@ -263,7 +262,7 @@ def cross_reference_stages(skill_path: Path, skill_content: str) -> tuple[dict, 
             gaps = set(expected) - set(nums)
             if gaps:
                 findings.append({
-                    'file': 'prompts/', 'line': 0,
+                    'file': skill_path.name, 'line': 0,
                     'severity': 'medium', 'category': 'naming',
                     'issue': f'Stage numbering has gaps: missing {sorted(gaps)}',
                 })
@@ -283,15 +282,18 @@ def check_prompt_basics(skill_path: Path) -> tuple[list[dict], list[dict]]:
     """Check each prompt file for config header and progression conditions."""
     findings = []
     prompt_details = []
-    prompts_dir = skill_path / 'prompts'
-    if not prompts_dir.exists():
+
+    # Look for numbered prompt files at skill root
+    prompt_files = sorted(
+        f for f in skill_path.iterdir()
+        if f.is_file() and f.suffix == '.md' and f.name != 'SKILL.md' and re.match(r'^\d+-', f.name)
+    )
+    if not prompt_files:
         return prompt_details, findings
 
-    for f in sorted(prompts_dir.iterdir()):
-        if not f.is_file() or f.suffix != '.md':
-            continue
+    for f in prompt_files:
         content = f.read_text(encoding='utf-8')
-        rel_path = f'prompts/{f.name}'
+        rel_path = f.name
         detail = {'file': f.name, 'has_config_header': False, 'has_progression': False}
 
         # Config header check
@@ -301,7 +303,7 @@ def check_prompt_basics(skill_path: Path) -> tuple[list[dict], list[dict]]:
             findings.append({
                 'file': rel_path, 'line': 1,
                 'severity': 'medium', 'category': 'config-header',
-                'issue': f'No config header with language variables found',
+                'issue': 'No config header with language variables found',
             })
 
         # Progression condition check (look for progression-related keywords near end)
@@ -337,7 +339,7 @@ def check_prompt_basics(skill_path: Path) -> tuple[list[dict], list[dict]]:
 
 def detect_workflow_type(skill_content: str, has_prompts: bool) -> str:
     """Detect workflow type from SKILL.md content."""
-    has_stage_refs = bool(re.search(r'prompts/\d+-', skill_content))
+    has_stage_refs = bool(re.search(r'(?:prompts/)?\d+-\S+\.md', skill_content))
     has_routing = bool(re.search(r'(?i)(rout|stage|branch|path)', skill_content))
 
     if has_stage_refs or (has_prompts and has_routing):
@@ -392,7 +394,10 @@ def scan_workflow_integrity(skill_path: Path) -> dict:
             })
 
     # Workflow type
-    has_prompts = (skill_path / 'prompts').exists()
+    has_prompts = any(
+        f.is_file() and f.suffix == '.md' and f.name != 'SKILL.md' and re.match(r'^\d+-', f.name)
+        for f in skill_path.iterdir()
+    )
     workflow_type = detect_workflow_type(skill_content, has_prompts)
 
     # Stage cross-reference
@@ -402,10 +407,6 @@ def scan_workflow_integrity(skill_path: Path) -> dict:
     # Prompt basics
     prompt_details, prompt_findings = check_prompt_basics(skill_path)
     all_findings.extend(prompt_findings)
-
-    # Manifest check
-    manifest_path = skill_path / 'bmad-manifest.json'
-    has_manifest = manifest_path.exists()
 
     # Build severity summary
     by_severity = {'critical': 0, 'high': 0, 'medium': 0, 'low': 0}
@@ -431,7 +432,6 @@ def scan_workflow_integrity(skill_path: Path) -> dict:
             'frontmatter': frontmatter,
             'sections': sections,
             'workflow_type': workflow_type,
-            'has_manifest': has_manifest,
         },
         'stage_summary': stage_summary,
         'prompt_details': prompt_details,

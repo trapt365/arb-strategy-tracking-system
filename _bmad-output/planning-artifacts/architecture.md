@@ -66,11 +66,11 @@ _This document builds collaboratively through step-by-step discovery. Sections a
 
 ### Technical Constraints & Dependencies
 
-1. **Transcript provider** — tldv (primary) или Soniox (fallback). Решение по результатам Day 1. Архитектурно: провайдер-агностичный Transcript Interface Contract (JSON schema)
+1. **Transcript provider** — Soniox (primary), async file transcription API. Поток: Азиза записывает сессию нативно в Google Meet/Zoom → аудиофайл в Google Drive/Zoom Cloud → бот скачивает файл → отправляет в Soniox API → webhook возвращает транскрипт → парсер конвертирует в Transcript Interface Contract. Soniox выбран как единственный провайдер с поддержкой русского + казахского + автоматический code-switching (WER 6.2% русский). Fallback: plain text `/upload`. Архитектурно: провайдер-агностичный Transcript Interface Contract (JSON schema)
 2. **Chain of Prompts** — 4 шага, не один промпт. ADR: дебагируемость по частям, верификация каждого этапа
 3. **Claude API** — основной LLM. Риск: обновление модели меняет поведение промптов
 4. **Google Sheets API** — OKR-трекер, стейкхолдерная карта, F5 метрики, ops logs. Data access adapter (~50 строк). Quirks: merged cells, rate limits 100 req/100sec, token expiry
-5. **Telegram Bot API** — command interface (5 команд трекера + F5 сбор метрик от топов). Лимит сообщения 4096 символов
+5. **Telegram Bot API** — inline-first interface: `/report` как единственная slash-команда, остальное через inline-кнопки и Bot Menu. Лимит сообщения 4096 символов
 6. **Контроль трекера** — архитектурное требование: полная автоматизация отправки запрещена на MVP
 7. **Язык** — русский output, казахские цитаты в оригинале с пометкой
 8. **VPS** — 24/7 (serverless cold start несовместим с SLA < 15 мин)
@@ -127,7 +127,7 @@ src/
 ├── f3-lite.ts          # F3-lite pipeline: CEO summary (~80 строк)
 ├── adapters/
 │   ├── sheets.ts       # Google Sheets read/write (~80 строк)
-│   ├── transcript.ts   # tldv/Soniox parser, provider-agnostic (~60 строк)
+│   ├── transcript.ts   # Soniox async API + audio download (Google Drive/Zoom) + plain text parser (~80 строк)
 │   └── claude.ts       # Claude API wrapper (~60 строк)
 ├── ops.ts              # logging + alerting + health check (~100 строк)
 ├── scheduler.ts        # node-cron + missed job detection (~50 строк)
@@ -337,7 +337,7 @@ src/
 ├── f3-lite.ts          # F3-lite: CEO summary (~80 строк)
 ├── adapters/
 │   ├── sheets.ts       # Google Sheets read/write (~80 строк)
-│   ├── transcript.ts   # tldv/Soniox parser (~60 строк)
+│   ├── transcript.ts   # Soniox async API + audio download (Google Drive/Zoom) + plain text parser (~80 строк)
 │   └── claude.ts       # Claude API + circuit breaker (~80 строк)
 ├── ops.ts              # logging + alerting + health check (~100 строк)
 ├── scheduler.ts        # node-cron + missed job detection (~50 строк)
@@ -534,7 +534,7 @@ arb-tracking-pipeline/
 │   │
 │   └── adapters/
 │       ├── sheets.ts           # Sheets: read(camelCase), write(snake_case) (~80)
-│       ├── transcript.ts       # tldv/Soniox → Transcript Interface Contract (~60)
+│       ├── transcript.ts       # Soniox async API + audio download (GDrive/Zoom) + plain text fallback (~80)
 │       └── claude.ts           # Claude: withRetry, parseClaudeJSON, circuit breaker (~80)
 │
 ├── prompts/                    # Versioned in git
@@ -575,7 +575,7 @@ arb-tracking-pipeline/
 
 | External | Adapter | Internal Output |
 |----------|---------|----------------|
-| tldv/Soniox API | `transcript.ts` | `TranscriptInput` (camelCase, typed) |
+| Soniox API / plain text fallback | `transcript.ts` | `TranscriptInput` (camelCase, typed) |
 | Google Sheets API | `sheets.ts` | `Record<string, string>[]` (camelCase) |
 | Claude API | `claude.ts` | Zod-validated typed output |
 | Telegram Bot API | `bot.ts` (grammY) | Commands, callbacks, messages |
@@ -662,7 +662,7 @@ All 17 PRD requirements mapped to architectural components. No gaps. F2 (QC-ск
 
 | # | Scenario | Fix | When |
 |---|----------|-----|------|
-| 1 | tldv закрылся | `/upload` command + plain text parser | Week 2 |
+| 1 | Soniox недоступен | `/upload` command + plain text parser | Week 2 |
 | 2 | Клиент приостановил | `docs/ops/restart-client.md` | Growth |
 | 3 | 10 клиентов | Triggers в Roadmap, архитектура ready до 3-5 | Growth |
 | 4 | Смена трекера | Approval log `approvals.jsonl` | Day 1 |
@@ -681,7 +681,7 @@ arb-tracking-pipeline/
 │   ├── index.ts                # Entry point (~30)
 │   ├── config.ts               # Zod env + TZ + client config (~80)
 │   ├── types.ts                # All Zod schemas (~150)
-│   ├── bot.ts                  # grammY: commands, buttons, F5, /upload (~300)
+│   ├── bot.ts                  # grammY: /report, buttons, Bot Menu, F5, /upload (~300)
 │   ├── scheduler.ts            # node-cron + missed job detection (~50)
 │   ├── ops.ts                  # pino + alerting + /health + Sheets latency log (~120)
 │   ├── f1-report.ts            # F1: batch read → 4 chain steps → {raw,parsed} → report (~350)
@@ -690,7 +690,7 @@ arb-tracking-pipeline/
 │   ├── f3-lite.ts              # F3-lite: aggregate → CEO summary (~80)
 │   └── adapters/
 │       ├── sheets.ts           # Sheets + camelCase↔snake_case conversion (~100)
-│       ├── transcript.ts       # tldv API + plain text/SRT parser (~80)
+│       ├── transcript.ts       # Soniox API + plain text/SRT parser (~80)
 │       └── claude.ts           # Claude + withRetry + parseClaudeJSON + circuit breaker + {raw,parsed} (~120)
 │
 ├── prompts/
