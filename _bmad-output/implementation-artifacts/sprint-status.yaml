@@ -1,5 +1,5 @@
 # generated: 2026-04-01
-# last_updated: 2026-04-01
+# last_updated: 2026-04-08
 # project: ARB AI-Tracking System
 # project_key: NOKEY
 # tracking_system: file-system
@@ -34,7 +34,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 
 generated: 2026-04-01
-last_updated: 2026-04-01
+last_updated: 2026-04-08
 project: ARB AI-Tracking System
 project_key: NOKEY
 tracking_system: file-system
@@ -43,8 +43,8 @@ story_location: "{project-root}/_bmad-output/implementation-artifacts"
 development_status:
   # Epic 0: Pre-MVP — Валидация и подготовка
   epic-0: in-progress
-  0-1-validaciya-provaydera-transkripcii-soniox: in-progress
-  0-2-onbording-klienta-geonline-f0: backlog
+  0-1-validaciya-provaydera-transkripcii-soniox: in-progress  # last_updated 2026-04-09 (code review applied)
+  0-2-onbording-klienta-geonline-f0: ready-for-dev
   0-3-testirovanie-promptov-i-golden-dataset: backlog
   0-4-soglasie-na-zapis-i-ai-obrabotku: backlog
   0-5-instrukciya-trekera: backlog

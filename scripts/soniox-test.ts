@@ -30,10 +30,11 @@ const SUPPORTED_EXTENSIONS = new Set([
 ]);
 const POLL_INTERVAL_MS = 5_000;
 const MAX_POLL_ATTEMPTS = 120; // 10 min max
+const FETCH_TIMEOUT_MS = 15 * 60 * 1000; // 15 min — покрывает upload 1 GB и долгие GET
 
-const API_KEY = process.env.SONIOX_API_KEY;
+const API_KEY = process.env.SONIOX_API_KEY?.trim();
 if (!API_KEY) {
-  console.error("ERROR: SONIOX_API_KEY не задан. Установите переменную окружения.");
+  console.error("ERROR: SONIOX_API_KEY не задан или пустой. Установите переменную окружения.");
   console.error("  SONIOX_API_KEY=xxx npx tsx scripts/soniox-test.ts <audio>");
   process.exit(1);
 }
@@ -106,7 +107,12 @@ async function apiRequest<T>(
     fetchBody = JSON.stringify(body);
   }
 
-  const response = await fetch(url, { method, headers, body: fetchBody });
+  const response = await fetch(url, {
+    method,
+    headers,
+    body: fetchBody,
+    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+  });
 
   if (!response.ok) {
     const text = await response.text();
@@ -136,7 +142,7 @@ async function uploadFile(filePath: string): Promise<string> {
 
 async function createTranscription(
   fileId: string,
-  webhookUrl?: string,
+  webhook?: { url: string; authHeaderName?: string; authHeaderValue?: string },
 ): Promise<string> {
   const body: Record<string, unknown> = {
     file_id: fileId,
@@ -146,8 +152,12 @@ async function createTranscription(
     language_hints: ["ru", "kk"],
   };
 
-  if (webhookUrl) {
-    body.webhook_url = webhookUrl;
+  if (webhook?.url) {
+    body.webhook_url = webhook.url;
+    if (webhook.authHeaderName && webhook.authHeaderValue) {
+      body.webhook_auth_header_name = webhook.authHeaderName;
+      body.webhook_auth_header_value = webhook.authHeaderValue;
+    }
   }
 
   console.log(`  🔄 Создаю транскрипцию (модель: ${MODEL})...`);
@@ -164,6 +174,8 @@ async function createTranscription(
 
 // --- Step 3: Poll status ---
 
+const KNOWN_PENDING_STATUSES = new Set(["queued", "processing"]);
+
 async function waitForCompletion(transcriptionId: string): Promise<void> {
   for (let attempt = 0; attempt < MAX_POLL_ATTEMPTS; attempt++) {
     const status = await apiRequest<TranscriptionStatus>(
@@ -179,6 +191,12 @@ async function waitForCompletion(transcriptionId: string): Promise<void> {
     if (status.status === "error") {
       throw new Error(
         `Транскрипция завершилась с ошибкой: ${status.error_message || "unknown"}`,
+      );
+    }
+
+    if (!KNOWN_PENDING_STATUSES.has(status.status)) {
+      throw new Error(
+        `Неизвестный статус транскрипции: "${status.status}" (id=${transcriptionId}). Прерываю polling.`,
       );
     }
 
@@ -215,6 +233,12 @@ function analyzeTranscript(transcript: SonioxTranscript): {
   const languageBreakdown: Record<string, number> = {};
   const speakerBreakdown: Record<string, number> = {};
   let maxEndMs = 0;
+
+  if (!Array.isArray(transcript.tokens)) {
+    throw new Error(
+      `Soniox response не содержит поля tokens (или оно не массив): ${JSON.stringify(transcript).slice(0, 200)}`,
+    );
+  }
 
   for (const token of transcript.tokens) {
     if (token.speaker) speakers.add(token.speaker);
@@ -267,16 +291,22 @@ async function processFile(filePath: string): Promise<TestResult> {
     const transcript = await getTranscript(transcriptionId);
     const totalTime = Date.now() - totalStart;
 
-    // Analyze
-    const analysis = analyzeTranscript(transcript);
-
-    // Save raw JSON
+    // Save raw JSON ДО анализа — чтобы локальная I/O ошибка не маскировала успешный вызов API
     const outputDir = join(process.cwd(), "data", "soniox-results");
     if (!existsSync(outputDir)) mkdirSync(outputDir, { recursive: true });
-    writeFileSync(
-      join(outputDir, `${filename}.json`),
-      JSON.stringify(transcript, null, 2),
-    );
+    try {
+      writeFileSync(
+        join(outputDir, `${filename}.json`),
+        JSON.stringify(transcript, null, 2),
+      );
+    } catch (writeErr) {
+      console.error(
+        `  ⚠️  Не удалось сохранить raw JSON для ${filename}: ${(writeErr as Error).message}. API-результат получен, продолжаю анализ.`,
+      );
+    }
+
+    // Analyze
+    const analysis = analyzeTranscript(transcript);
 
     console.log(`  📊 Результат:`);
     console.log(`     Текст: ${transcript.text.length} символов, ${transcript.tokens.length} tokens`);
@@ -284,9 +314,10 @@ async function processFile(filePath: string): Promise<TestResult> {
     console.log(`     Языки: ${analysis.languages.join(", ") || "не определены"}`);
     console.log(`     Длительность: ${formatDuration(analysis.durationMs)}`);
     console.log(`     Время обработки: загрузка ${(uploadTime / 1000).toFixed(1)}с, транскрипция ${(transcriptionTime / 1000).toFixed(1)}с, итого ${(totalTime / 1000).toFixed(1)}с`);
-    console.log(`     Языковой баланс:`, analysis.languageBreakdown);
-    console.log(`     Баланс спикеров:`, analysis.speakerBreakdown);
-    console.log(`     Первые 200 символов: "${transcript.text.slice(0, 200)}..."`);
+    console.log(`     Распределение токенов по языкам:`, analysis.languageBreakdown);
+    console.log(`     Распределение токенов по спикерам:`, analysis.speakerBreakdown);
+    const previewSuffix = transcript.text.length > 200 ? "..." : "";
+    console.log(`     Первые 200 символов: "${transcript.text.slice(0, 200)}${previewSuffix}"`);
 
     return {
       filename,
@@ -300,7 +331,7 @@ async function processFile(filePath: string): Promise<TestResult> {
       speakers: analysis.speakers,
       languages: analysis.languages,
       durationMs: analysis.durationMs,
-      sampleText: transcript.text.slice(0, 200),
+      sampleText: transcript.text.slice(0, 200) + (transcript.text.length > 200 ? "..." : ""),
       languageBreakdown: analysis.languageBreakdown,
       speakerBreakdown: analysis.speakerBreakdown,
     };
@@ -364,13 +395,13 @@ function generateReport(results: TestResult[]): string {
 `;
 
     if (r.status === "success") {
-      report += `- **Длительность аудио:** ${formatDuration(r.durationMs || 0)}
+      report += `- **Конец последнего токена (≈длительность речи):** ${formatDuration(r.durationMs || 0)}
 - **Tokens:** ${r.tokenCount}
 - **Текст:** ${r.textLength} символов
 - **Спикеры:** ${r.speakers?.join(", ")}
 - **Языки:** ${r.languages?.join(", ")}
-- **Языковой баланс:** ${JSON.stringify(r.languageBreakdown)}
-- **Баланс спикеров:** ${JSON.stringify(r.speakerBreakdown)}
+- **Распределение токенов по языкам:** ${JSON.stringify(r.languageBreakdown)}
+- **Распределение токенов по спикерам:** ${JSON.stringify(r.speakerBreakdown)}
 - **Время загрузки:** ${(r.uploadTime / 1000).toFixed(1)}с
 - **Время транскрипции:** ${(r.transcriptionTime / 1000).toFixed(1)}с
 - **Общее время:** ${(r.totalTime / 1000).toFixed(1)}с
@@ -529,12 +560,24 @@ async function main() {
 
   // Collect files
   let files: string[] = [];
-  const stat = statSync(input);
+  let stat;
+  try {
+    stat = statSync(input);
+  } catch (err) {
+    console.error(`Не удалось открыть путь "${input}": ${(err as Error).message}`);
+    process.exit(1);
+  }
 
   if (stat.isDirectory()) {
     files = readdirSync(input)
-      .filter((f) => SUPPORTED_EXTENSIONS.has(extname(f).toLowerCase()))
       .map((f) => join(input, f))
+      .filter((p) => {
+        try {
+          return statSync(p).isFile() && SUPPORTED_EXTENSIONS.has(extname(p).toLowerCase());
+        } catch {
+          return false;
+        }
+      })
       .sort();
 
     if (files.length === 0) {
@@ -561,9 +604,11 @@ async function main() {
     results.push(result);
   }
 
-  // Generate report
+  // Generate report — timestamped, чтобы не затирать ручные правки прошлых прогонов
   const report = generateReport(results);
-  const reportPath = join(process.cwd(), "docs", "soniox-validation-results.md");
+  const timestamp = new Date().toISOString().replace(/[:.]/g, "-").split("T")[0] +
+    "_" + new Date().toISOString().split("T")[1].slice(0, 8).replace(/:/g, "-");
+  const reportPath = join(process.cwd(), "docs", `soniox-validation-results-${timestamp}.md`);
   if (!existsSync(join(process.cwd(), "docs"))) {
     mkdirSync(join(process.cwd(), "docs"), { recursive: true });
   }

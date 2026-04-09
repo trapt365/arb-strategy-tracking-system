@@ -30,19 +30,19 @@ So that **я могу принять Go/No-Go решение по провайд
 
 ## Tasks / Subtasks
 
-- [ ] Task 1: Подготовка тестовой среды (AC: #1)
-  - [ ] 1.1 Создать аккаунт Soniox, получить API key через console.soniox.com
+- [x] Task 1: Подготовка тестовой среды (AC: #1)
+  - [x] 1.1 Создать аккаунт Soniox, получить API key через console.soniox.com
   - [x] 1.2 Установить Node.js SDK: TypeScript + tsx (REST API напрямую вместо устаревшего gRPC SDK)
   - [x] 1.3 Написать тестовый скрипт `scripts/soniox-test.ts` для отправки аудио и получения результата
-  - [ ] 1.4 Собрать 5+ тестовых записей: 1:1 чистая, групповая (3+ участника), code-switching рус↔каз, шумная запись, короткая < 15 мин
+  - [x] 1.4 Собрать 5+ тестовых записей (фактически 8 файлов в `audio/`)
 
 - [ ] Task 2: Тест API и качества транскрипции (AC: #1)
-  - [ ] 2.1 Прогнать каждую запись через Soniox async API (модель `stt-async-v4`)
-  - [ ] 2.2 Параметры: `enable_speaker_diarization: true`, `enable_language_identification: true`, `language_hints: ["ru", "kk"]`
+  - [x] 2.1 Прогнать каждую запись через Soniox async API (модель `stt-async-v4`) — 7/8 успешно, 1 mp4 отклонён как Invalid audio file
+  - [x] 2.2 Параметры: `enable_speaker_diarization: true`, `enable_language_identification: true`, `language_hints: ["ru", "kk"]`
   - [ ] 2.3 Измерить WER вручную на worst-case записи (шум + code-switching): целевой порог < 15%
-  - [ ] 2.4 Проверить корректность code-switching: tokens с `language: "ru"` и `language: "kk"` соответствуют реальности
-  - [ ] 2.5 Проверить diarization: speakers правильно разделены (1:1 = 2 speaker, групповая = 3+)
-  - [ ] 2.6 Задокументировать формат ответа и маппинг на Transcript Interface Contract
+  - [ ] 2.4 Проверить корректность code-switching: tokens с `language: "ru"` и `language: "kk"` соответствуют реальности (наблюдены, требуется ручная сверка)
+  - [ ] 2.5 Проверить diarization: speakers правильно разделены (отмечено over-segmentation в 1554/1663, требуется верификация на слух)
+  - [x] 2.6 Задокументировать формат ответа и маппинг на Transcript Interface Contract (в `docs/soniox-validation-results.md`)
 
 - [ ] Task 3: Тест потока Google Meet → Soniox (AC: #2)
   - [ ] 3.1 Азиза записывает тестовую сессию в Google Meet (нативная запись)
@@ -60,9 +60,9 @@ So that **я могу принять Go/No-Go решение по провайд
 
 - [ ] Task 5: Оценка стабильности API (AC: #1)
   - [ ] 5.1 Проверить доступность API в разное время суток (утро, вечер Алматы)
-  - [ ] 5.2 Проверить поведение при невалидном файле (пустой, битый, слишком длинный)
-  - [ ] 5.3 Зафиксировать rate limits (если есть) и лимит размера файла (документирован: 1 GB)
-  - [ ] 5.4 Проверить ценообразование в console.soniox.com, сравнить с бюджетом $0-30/мес
+  - [ ] 5.2 Проверить поведение при невалидном файле (пустой, битый, слишком длинный) — есть `--errors` mode, не прогнан
+  - [x] 5.3 Зафиксировать лимит размера файла: 1 GB (rate limits — TODO)
+  - [x] 5.4 Проверить ценообразование: фактически $0.47 за 8 файлов (~245 мин аудио, ~$0.11/час) — в бюджете $0-30/мес
 
 - [ ] Task 6: Валидация fallback `/upload` (AC: #3)
   - [ ] 6.1 Симулировать ручной copy-paste транскрипта в формат plain text
@@ -70,10 +70,41 @@ So that **я могу принять Go/No-Go решение по провайд
   - [ ] 6.3 Оценить Plan C (Whisper/AssemblyAI) по feasibility если Soniox не проходит
 
 - [ ] Task 7: Документация результатов и Go/No-Go решение (AC: #1, #2, #3)
-  - [ ] 7.1 Заполнить таблицу результатов: запись × WER × diarization × code-switching × время
-  - [ ] 7.2 Сформулировать Go/No-Go решение с обоснованием
-  - [ ] 7.3 Если Go → задокументировать маппинг Soniox response → Transcript Interface Contract
+  - [x] 7.1 Заполнить таблицу результатов: запись × diarization × code-switching × время (WER столбец TODO)
+  - [ ] 7.2 Сформулировать финальное Go/No-Go решение с обоснованием (предварительно Go, ждёт WER + webhook + fallback)
+  - [x] 7.3 Маппинг Soniox response → Transcript Interface Contract задокументирован
   - [ ] 7.4 Сохранить лучшие записи как основу для golden dataset (≥ 5 штук для Story 0.3)
+
+### Review Findings
+
+<!-- Code review of commit 2f5ddd8 — date: 2026-04-09 — layers: Blind Hunter, Edge Case Hunter, Acceptance Auditor -->
+
+**Decision-needed:**
+- [ ] [Review][Decision] Webhook полностью не реализован — `package.json` ссылается на несуществующий `scripts/soniox-webhook-test.ts`, параметр `webhookUrl` в `createTranscription` — мёртвый код, отсутствуют `webhook_auth_header_*`. Решить: добавить scaffolding webhook в этой story, или удалить мёртвый npm script и явно перенести Task 4 в follow-up.
+- [ ] [Review][Decision] OOM-риск на больших файлах — `readFileSync` грузит весь файл в RAM, далее `Blob([fileBuffer])` ещё удваивает (`scripts/soniox-test.ts:122`). Soniox допускает 1 GB; 218 MB прошёл, ~800 MB+ может упасть. Решить: добавить streaming upload (multipart через `ReadableStream`), или ограничить документально (например, ≤500 MB / file).
+- [ ] [Review][Decision] Отчёт `docs/soniox-validation-results.md` перезаписывается без архивации (`scripts/soniox-test.ts:631`). Это уже один раз стёрло бы наши ручные правки Go/No-Go. Решить: timestamped имя файла, или append-режим, или отдельный флаг `--overwrite`.
+
+**Patch:**
+- [ ] [Review][Patch] `typescript ^6.0.2` и `@types/node ^25.5.0` — несуществующие версии, `npm install` нестабилен [`package.json:53,55`]
+- [ ] [Review][Patch] Нет timeout / AbortController на `fetch` — зависший upload блокирует весь run [`scripts/soniox-test.ts:109`]
+- [ ] [Review][Patch] Дубликаты имён файлов из разных директорий молча перезаписывают raw JSON [`scripts/soniox-test.ts:338`]
+- [ ] [Review][Patch] Polling не различает неизвестные статусы (`canceled`, `expired`, новые enum) — крутится 10 мин впустую и не отменяет orphan job [`scripts/soniox-test.ts:229-250`]
+- [ ] [Review][Patch] Нет валидации формы Soniox response — `transcript.tokens` отсутствует/`null` → `TypeError: not iterable` [`scripts/soniox-test.ts:219`]
+- [ ] [Review][Patch] Невалидный путь как arg → `statSync` бросает голый ENOENT, а не дружелюбную ошибку [`scripts/soniox-test.ts:593`]
+- [ ] [Review][Patch] Пустой `SONIOX_API_KEY=""` проходит guard, шлёт пустой Bearer и получает невнятный 401 [`scripts/soniox-test.ts:34-39`]
+- [ ] [Review][Patch] Метки в отчёте врут: `durationMs = max(end_ms)` (не длительность аудио, а end последнего токена); `languageBreakdown` считает токены, но называется "Языковой баланс" [`scripts/soniox-test.ts:281-297,348`]
+- [ ] [Review][Patch] `readdirSync` нерекурсивный + не фильтрует поддиректории; директория с расширением `.mp3` падает с EISDIR на `readFileSync` [`scripts/soniox-test.ts:535-537`]
+- [ ] [Review][Patch] Mode 0755 на текстовых файлах — случайный `chmod -R +x` в коммите 2f5ddd8 [`.gitignore`, `package.json`, `tsconfig.json`, `scripts/soniox-test.ts`]
+- [ ] [Review][Patch] `sampleText` всегда добавляет `"..."`, даже если текст короче 200 символов — врёт о truncation [`scripts/soniox-test.ts:350,364`]
+- [ ] [Review][Patch] Локальный `writeFileSync` raw JSON в try-блоке: дисковая ошибка маскирует успешную транскрипцию как error [`scripts/soniox-test.ts:276`]
+- [ ] [Review][Patch] Story checkboxes не синхронизированы с реальностью — Task 1 и Task 1.1 unchecked, но 1.2/1.3 checked. После сегодняшнего live-прогона нужно сверить актуальное состояние всех 7 задач.
+
+**Deferred (pre-existing / низкий приоритет):**
+- [x] [Review][Defer] Загруженные на Soniox файлы никогда не удаляются (`DELETE /files`) — копится storage в аккаунте, но это одноразовый скрипт
+- [x] [Review][Defer] Файл без расширения → "Неподдерживаемый формат:" — corner case
+- [x] [Review][Defer] Нет SIGINT-handler / atomic writes — для one-shot скрипта приемлемо
+- [x] [Review][Defer] Hardcoded `language_hints: ["ru","kk"]` без конфига — фиксированный scope проекта
+- [x] [Review][Defer] `tsconfig` Node16 + `type: module` без явных `.js` в импортах — сейчас работает (нет relative imports), сломается при future split
 
 ## Dev Notes
 
