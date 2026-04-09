@@ -60,8 +60,9 @@ USER node
 ENV NPM_CONFIG_PREFIX=/usr/local/share/npm-global
 ENV PATH=$PATH:/usr/local/share/npm-global/bin
 
-# Ensure PATH is available in bash login shells too
-RUN echo 'export PATH=$PATH:/usr/local/share/npm-global/bin' >> /home/node/.bashrc
+# Ensure PATH is available in bash and zsh login shells
+RUN echo 'export PATH=$PATH:/usr/local/share/npm-global/bin' >> /home/node/.bashrc \
+  && echo 'export PATH=$PATH:/usr/local/share/npm-global/bin' >> /home/node/.zshrc
 
 # Set the default shell to zsh rather than sh
 ENV SHELL=/bin/zsh
