@@ -128,7 +128,8 @@ function generateOKR(ss) {
     const responsibility = sheet.getRange(TOP_SHEET_RESPONSIBILITY_ROW, 2).getValue();
 
     // Read KR table (starting at row 10: header, data from row 11)
-    const lastRow = findLastRowInColumn(sheet, 1, TOP_SHEET_KR_HEADER_ROW + 1, 50);
+    // Stop at first empty row — separates KR block from "АКТИВНЫЙ ТРЕКИНГ" below
+    const lastRow = findLastContiguousRow(sheet, 1, TOP_SHEET_KR_HEADER_ROW + 1, 30);
     if (lastRow <= TOP_SHEET_KR_HEADER_ROW) continue;
 
     // Columns: A=№ KR, B=Краткое название, C=Ключевой результат, D=Текущий статус, E=Целевая метрика, F=Прогресс, G=Срок
