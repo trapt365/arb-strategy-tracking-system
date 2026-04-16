@@ -1,5 +1,5 @@
 # generated: 2026-04-01
-# last_updated: 2026-04-08
+# last_updated: 2026-04-16
 # project: ARB AI-Tracking System
 # project_key: NOKEY
 # tracking_system: file-system
@@ -34,7 +34,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 
 generated: 2026-04-01
-last_updated: 2026-04-08
+last_updated: 2026-04-16
 project: ARB AI-Tracking System
 project_key: NOKEY
 tracking_system: file-system
@@ -43,8 +43,8 @@ story_location: "{project-root}/_bmad-output/implementation-artifacts"
 development_status:
   # Epic 0: Pre-MVP — Валидация и подготовка
   epic-0: in-progress
-  0-1-validaciya-provaydera-transkripcii-soniox: in-progress  # last_updated 2026-04-09 (code review applied)
-  0-2-onbording-klienta-geonline-f0: ready-for-dev
+  0-1-validaciya-provaydera-transkripcii-soniox: done  # GO decision 2026-04-14, WER OK, $0.0019/min
+  0-2-onbording-klienta-geonline-f0: done  # F0 data collected from existing artifacts, metrics confirmed by Aziza 2026-04-16
   0-3-testirovanie-promptov-i-golden-dataset: backlog
   0-4-soglasie-na-zapis-i-ai-obrabotku: backlog
   0-5-instrukciya-trekera: backlog
@@ -70,17 +70,20 @@ development_status:
   1-14-razvertyivanie-na-hostinger-vps: backlog
   epic-1-retrospective: optional
 
-  # Epic 2: Система собирает метрики от топ-менеджеров (F5)
-  epic-2: backlog
-  2-1-scheduler-shared-component-dlya-batch-pipeline: backlog
-  2-2-f5-onboarding-pervoe-soobshchenie-topu: backlog
-  2-3-f5-weekly-collection-sbor-metrik: backlog
-  2-4-f5-storage-i-trendy: backlog
-  2-5-f5-auto-deactivation-i-fallbacks: backlog
+  # Epic 2: Система собирает метрики от топ-менеджеров (F5) — DEFERRED TO GROWTH (2026-04-15)
+  # На MVP: F5 метрики вводятся Азизой вручную в Google Sheets
+  # Story 2.1 (Scheduler) перенесён в Epic 3 как Story 3.0
+  epic-2: deferred-growth
+  2-1-scheduler-shared-component-dlya-batch-pipeline: moved-to-3-0
+  2-2-f5-onboarding-pervoe-soobshchenie-topu: deferred-growth
+  2-3-f5-weekly-collection-sbor-metrik: deferred-growth
+  2-4-f5-storage-i-trendy: deferred-growth
+  2-5-f5-auto-deactivation-i-fallbacks: deferred-growth
   epic-2-retrospective: optional
 
   # Epic 3: Трекер получает повестку к встречам (F4)
   epic-3: backlog
+  3-0-scheduler-shared-component-dlya-batch-pipeline: backlog  # перенесён из Epic 2
   3-1-konveyer-f4-generaciya-povestki: backlog
   3-2-gradient-zrelosti-dannykh-v-f4: backlog
   3-3-rezhimy-povestki-opytnyy-i-nachinayushchiy: backlog

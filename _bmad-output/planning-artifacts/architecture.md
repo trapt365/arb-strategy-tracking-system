@@ -185,21 +185,29 @@ data/                   # Append-only JSON backup (runtime, не в git)
 
 ### Deployment Milestones
 
-**Milestone 1 — Core Pipeline (Day 1):**
+> **Переприоритизация (15.04.2026):** F5 бот и F3-lite вынесены из Phase 1. F5 метрики вводятся Азизой вручную в Sheets.
+
+**Milestone 1 — F1 Core Pipeline (~2 нед):**
 - F1 pipeline (chain of 4 steps)
 - Telegram bot (report, approve, reject + inline buttons)
-- Sheets adapter (read OKR, stakeholder map)
-- Transcript parser
+- Sheets adapter (read OKR, stakeholder map, F5 metrics from manual entry)
+- Transcript parser (Soniox + /upload fallback)
 - Ops logging (минимальный)
 - Docker + health check + watchdog
-
-**Milestone 2 — Full Pipeline (Week 2):**
-- F4 (повестка) — включается после 2+ встреч
-- F5 (метрики) — inline-кнопки с диапазонами
-- F3-lite (CEO summary) — генерация для ручной отправки
 - Edit command
 - Canary test + golden dataset
-- Scheduler + missed job detection
+
+**Milestone 2 — F4 Повестка (~2 нед):**
+- F4 (повестка) — включается после 2+ встреч
+- Scheduler: node-cron для F4 (Пн 9:00) + missed job detection
+- Bot Menu: [📋 Повестка] + кэширование
+
+**Milestone 3 — F3-lite (после стабилизации F1+F4):**
+- F3-lite (CEO summary) — генерация для ручной отправки
+- Scheduler: добавить F3-lite cron
+
+**Growth — F5 Bot (при масштабировании):**
+- F5 (метрики) — inline-кнопки с диапазонами, авто-сбор через Telegram
 
 ### Telegram UX Decisions
 
