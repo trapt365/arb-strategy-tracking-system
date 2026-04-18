@@ -4,10 +4,16 @@
   "type": "module",
   "scripts": {
     "soniox:test": "tsx scripts/soniox-test.ts",
-    "soniox:webhook": "tsx scripts/soniox-webhook-test.ts"
+    "soniox:webhook": "tsx scripts/soniox-webhook-test.ts",
+    "prompt:test": "tsx scripts/prompt-test.ts",
+    "prompt:test:f4": "tsx scripts/prompt-test.ts --f4",
+    "data:prepare": "tsx scripts/prepare-test-data.ts"
   },
   "dependencies": {
-    "xlsx": "^0.18.5"
+    "@anthropic-ai/sdk": "^0.90.0",
+    "dotenv": "^17.4.2",
+    "xlsx": "^0.18.5",
+    "zod": "^4.3.6"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

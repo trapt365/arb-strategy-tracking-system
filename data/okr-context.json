@@ -1,0 +1,5 @@
+{
+  "_note": "TODO: Экспортировать из _okr листа в Google Sheets. Запустите generateF0() в Apps Script, затем скопируйте данные сюда.",
+  "_format": "Массив KR с полями: kr_number, short_name, key_result, owner, owner_position, current_status, target, progress, deadline, okr_group, quarter",
+  "krs": []
+}

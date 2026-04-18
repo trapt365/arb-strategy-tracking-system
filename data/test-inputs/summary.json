@@ -1,0 +1,77 @@
+[
+  {
+    "filename": "audio1100318212.m4a.json",
+    "speakers": 2,
+    "segments": 203,
+    "durationMin": 41.2,
+    "languages": {
+      "kk": 6360,
+      "ru": 6646
+    },
+    "textLength": 29256
+  },
+  {
+    "filename": "audio1111482399.m4a.json",
+    "speakers": 2,
+    "segments": 153,
+    "durationMin": 50.2,
+    "languages": {
+      "kk": 4712,
+      "ru": 11925
+    },
+    "textLength": 38269
+  },
+  {
+    "filename": "audio1554018312.m4a.json",
+    "speakers": 3,
+    "segments": 165,
+    "durationMin": 38.9,
+    "languages": {
+      "kk": 9972,
+      "ru": 3154
+    },
+    "textLength": 30361
+  },
+  {
+    "filename": "audio1602529797.m4a.json",
+    "speakers": 2,
+    "segments": 155,
+    "durationMin": 34.9,
+    "languages": {
+      "kk": 13085
+    },
+    "textLength": 28057
+  },
+  {
+    "filename": "audio1663213769.m4a.json",
+    "speakers": 4,
+    "segments": 119,
+    "durationMin": 22.1,
+    "languages": {
+      "ru": 3987,
+      "kk": 1951
+    },
+    "textLength": 14131
+  },
+  {
+    "filename": "audio1721976611.m4a.json",
+    "speakers": 3,
+    "segments": 162,
+    "durationMin": 32.8,
+    "languages": {
+      "kk": 10874
+    },
+    "textLength": 24116
+  },
+  {
+    "filename": "audio1951904349.m4a.json",
+    "speakers": 3,
+    "segments": 133,
+    "durationMin": 24.5,
+    "languages": {
+      "kk": 8149,
+      "ru": 16
+    },
+    "textLength": 17393
+  }
+]
