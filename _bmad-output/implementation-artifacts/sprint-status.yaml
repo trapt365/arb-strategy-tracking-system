@@ -45,7 +45,7 @@ development_status:
   epic-0: in-progress
   0-1-validaciya-provaydera-transkripcii-soniox: done  # GO decision 2026-04-14, WER OK, $0.0019/min
   0-2-onbording-klienta-geonline-f0: done  # F0 data collected from existing artifacts, metrics confirmed by Aziza 2026-04-16
-  0-3-testirovanie-promptov-i-golden-dataset: in-progress
+  0-3-testirovanie-promptov-i-golden-dataset: done  # GO 2026-04-20, 0% правок, 7 транскриптов в golden, промпты v1.0.0
   0-4-soglasie-na-zapis-i-ai-obrabotku: backlog
   0-5-instrukciya-trekera: backlog
   0-6-runbook-dlya-aydara: backlog

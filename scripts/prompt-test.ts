@@ -24,7 +24,7 @@ config();
 
 // --- Config ---
 
-const CLAUDE_MODEL = "claude-sonnet-4-20250514";
+const CLAUDE_MODEL = "claude-sonnet-4-6";
 const MAX_RETRIES = 3;
 const RETRY_DELAYS = [1000, 3000, 9000];
 const MAX_TOKENS = 8192;
@@ -87,7 +87,7 @@ const AgendaOutputSchema = z.object({
     title: z.string(),
     details: z.string(),
     source: z.string(),
-    related_kr: z.string().optional().default(""),
+    related_kr: z.string().nullable().optional().transform(v => v ?? ""),
   })),
   meeting_focus: z.string(),
   preparation_notes: z.string(),

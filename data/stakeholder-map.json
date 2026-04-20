@@ -1,92 +1,92 @@
 [
   {
-    "full_name": "Самарханов",
+    "full_name": "Самарханов Дамир",
     "speaker_name": "Самарханов",
-    "department": "",
+    "department": "CEO",
     "role": "",
-    "bsc_category": "",
-    "responsibility_areas": "",
+    "bsc_category": "Команда",
+    "responsibility_areas": "OKR-1, OKR-4, OKR-11",
     "interests": "",
-    "notes": "TODO: заполнить из _stakeholder_map в Sheets"
+    "notes": ""
   },
   {
-    "full_name": "Тоқтағазинов",
-    "speaker_name": "Тоқтағазинов",
-    "department": "",
-    "role": "",
-    "bsc_category": "",
-    "responsibility_areas": "",
-    "interests": "",
-    "notes": "TODO: заполнить из _stakeholder_map в Sheets"
-  },
-  {
-    "full_name": "Жүсіпбек",
+    "full_name": "Жүсіпбек Мерей",
     "speaker_name": "Жүсіпбек",
-    "department": "",
+    "department": "CFO",
     "role": "",
-    "bsc_category": "",
-    "responsibility_areas": "",
+    "bsc_category": "Финансы",
+    "responsibility_areas": "OKR-7",
     "interests": "",
-    "notes": "TODO: заполнить из _stakeholder_map в Sheets"
+    "notes": ""
   },
   {
-    "full_name": "Койгельдина",
+    "full_name": "Тоқтағазинов Шыңғыс",
+    "speaker_name": "Тоқтағазинов",
+    "department": "CPO",
+    "role": "",
+    "bsc_category": "Процессы",
+    "responsibility_areas": "OKR-3, OKR-4",
+    "interests": "",
+    "notes": ""
+  },
+  {
+    "full_name": "Койгельдина Жанель",
     "speaker_name": "Койгельдина",
-    "department": "",
+    "department": "Продажи",
     "role": "",
-    "bsc_category": "",
-    "responsibility_areas": "",
+    "bsc_category": "Клиенты",
+    "responsibility_areas": "OKR-2",
     "interests": "",
-    "notes": "TODO: заполнить из _stakeholder_map в Sheets"
+    "notes": ""
   },
   {
-    "full_name": "Фархатов",
+    "full_name": "Фархатов Айбол",
     "speaker_name": "Фархатов",
-    "department": "",
+    "department": "Маркетинг",
     "role": "",
-    "bsc_category": "",
-    "responsibility_areas": "",
+    "bsc_category": "Процессы",
+    "responsibility_areas": "OKR-5",
     "interests": "",
-    "notes": "TODO: заполнить из _stakeholder_map в Sheets"
+    "notes": ""
   },
   {
-    "full_name": "Мурсалимова",
+    "full_name": "Мурсалимова Айдана",
     "speaker_name": "Мурсалимова",
-    "department": "",
+    "department": "Контент",
     "role": "",
-    "bsc_category": "",
-    "responsibility_areas": "",
+    "bsc_category": "Процессы",
+    "responsibility_areas": "OKR-6",
     "interests": "",
-    "notes": "TODO: заполнить из _stakeholder_map в Sheets"
+    "notes": ""
   },
   {
-    "full_name": "Тұрар",
+    "full_name": "Тұрар Серік",
     "speaker_name": "Тұрар",
-    "department": "",
+    "department": "Академия",
     "role": "",
-    "bsc_category": "",
-    "responsibility_areas": "",
+    "bsc_category": "Клиенты",
+    "responsibility_areas": "OKR-8",
     "interests": "",
-    "notes": "TODO: заполнить из _stakeholder_map в Sheets"
+    "notes": ""
   },
   {
-    "full_name": "Мухаметова",
+    "full_name": "Мухаметова Арай",
     "speaker_name": "Мухаметова",
-    "department": "",
+    "department": "HR",
     "role": "",
-    "bsc_category": "",
-    "responsibility_areas": "",
+    "bsc_category": "Команда",
+    "responsibility_areas": "OKR-HR-9",
     "interests": "",
-    "notes": "TODO: заполнить из _stakeholder_map в Sheets"
+    "notes": ""
   },
   {
-    "full_name": "Бектегенова",
+    "full_name": "Бектегенова Айым",
     "speaker_name": "Бектегенова",
-    "department": "",
+    "department": "PR",
     "role": "",
-    "bsc_category": "",
-    "responsibility_areas": "",
+    "bsc_category": "Клиенты",
+    "responsibility_areas": "OKR-PR-10",
     "interests": "",
-    "notes": "TODO: заполнить из _stakeholder_map в Sheets"
+    "notes": ""
   }
 ]
