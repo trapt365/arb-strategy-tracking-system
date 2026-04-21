@@ -1,5 +1,5 @@
 # generated: 2026-04-01
-# last_updated: 2026-04-18
+# last_updated: 2026-04-21
 # project: ARB AI-Tracking System
 # project_key: NOKEY
 # tracking_system: file-system
@@ -34,7 +34,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 
 generated: 2026-04-01
-last_updated: 2026-04-18
+last_updated: 2026-04-21
 project: ARB AI-Tracking System
 project_key: NOKEY
 tracking_system: file-system
@@ -46,14 +46,14 @@ development_status:
   0-1-validaciya-provaydera-transkripcii-soniox: done  # GO decision 2026-04-14, WER OK, $0.0019/min
   0-2-onbording-klienta-geonline-f0: done  # F0 data collected from existing artifacts, metrics confirmed by Aziza 2026-04-16
   0-3-testirovanie-promptov-i-golden-dataset: done  # GO 2026-04-20, 0% правок, 7 транскриптов в golden, промпты v1.0.0
-  0-4-soglasie-na-zapis-i-ai-obrabotku: backlog
-  0-5-instrukciya-trekera: backlog
+  0-4-soglasie-na-zapis-i-ai-obrabotku: ready-for-dev  # draft v0.1 готов, юрист РК → W18-W19
+  0-5-instrukciya-trekera: ready-for-dev  # runbook v1.0 + sensitivity checklist готовы
   0-6-runbook-dlya-aydara: backlog
   epic-0-retrospective: optional
 
   # Epic 1: Трекер получает и отправляет автоотчёт по встрече (F1 + Workflow)
-  epic-1: backlog
-  1-1-project-bootstrap-i-konfiguraciya: backlog
+  epic-1: in-progress
+  1-1-project-bootstrap-i-konfiguraciya: in-progress  # started 2026-04-21
   1-2-transcript-interface-contract-audio-download-i-soniox-parser: backlog
   1-3-sheets-adapter-chtenie-konteksta-klienta: backlog
   1-4a-f1-izvlechenie-i-analiz: backlog
