@@ -133,3 +133,39 @@ ANTHROPIC_API_KEY=sk-...
 - ✅ Fail-fast: запуск без required env → Zod вывел список пропусков, exit 1
 - ✅ Happy path: запуск с валидным env → `curl /health` → 200 OK `{"status":"ok","uptimeSeconds":N,"env":"development"}`
 - ⬜ `docker compose up` — не запущен в этой сессии (требует локального Docker)
+
+### Review Findings (2026-04-21, code review)
+
+**Блокеры приёмки (должны быть исправлены до `done`):**
+
+- [ ] [Review][Patch] Dockerfile CMD ссылается на `dist/index.js`, но `tsc` с `rootDir: "."` эмитит `dist/src/index.js` — контейнер упадёт MODULE_NOT_FOUND при старте [Dockerfile:23 + tsconfig.json:9 + package.json:6]. Самый чистый фикс: `rootDir: "./src"` + исключить `scripts/**` из `include` (scripts используют tsx напрямую и не требуют компиляции) → `outDir/index.js` унифицирован; обновить `package.json` start → `node dist/index.js`.
+- [ ] [Review][Patch] Rename `API_KEY_CLAUDE → ANTHROPIC_API_KEY` не доведён: [scripts/prompt-test.ts:12,32,34,533] всё ещё читает `process.env.API_KEY_CLAUDE`. `npm run prompt:test` с новым `.env` упадёт.
+- [ ] [Review][Patch] EADDRINUSE не роняет процесс — `server.on('error')` только логирует, `server.listen()` в index.ts не завершает процесс при фатальной ошибке биндинга [src/index.ts:11-12 + src/server.ts:25-27]. Docker будет бесконечно рестартить healthy-но-неработающий контейнер.
+- [ ] [Review][Patch] `TELEGRAM_CHAT_WORK_ID=`/`_OPS_ID=` (пустая строка в .env) коэрсится в `0` и проходит Zod [src/config.ts:12-13]. Fail-fast не срабатывает — Telegram API упадёт только в рантайме. Добавить `.refine(n => n !== 0)` или использовать `z.string().min(1).transform(Number)`.
+
+**Средней важности:**
+
+- [ ] [Review][Patch] SIGINT двойным Ctrl+C заново входит в `shutdown()` — `server.close()` на уже закрывающемся сервере вернёт `ERR_SERVER_NOT_RUNNING` → `process.exit(1)` вместо чистого `0` [src/index.ts:14-27]. Нужен guard-флаг.
+- [ ] [Review][Patch] `HEAD /health` возвращает 404 — многие L4/L7 балансировщики используют HEAD по умолчанию [src/server.ts:9]. Разрешить HEAD наравне с GET.
+- [ ] [Review][Patch] Docker-compose healthcheck и Dockerfile HEALTHCHECK хардкодят `localhost:3000`, но контейнер читает `config.PORT` из env — при `PORT=8080` healthcheck вечно failed [docker-compose.yml:15-16 + Dockerfile:20-21]. Либо зафиксировать порт внутри контейнера (app всегда 3000, маппинг через compose), либо параметризовать оба места.
+- [ ] [Review][Patch] `PORT` принимает значения >65535 [src/config.ts:5] — добавить `.max(65535)`.
+
+**Отложено (не блокирует `done`, но фиксируется в deferred-work):**
+
+- [x] [Review][Defer] `/health?x=1`, `/health/`, `/HEALTH` → 404 [src/server.ts:9] — Docker внутренний probe работает точным путём; внешние probe придут в Epic 1.14 (deploy) — отложено.
+- [x] [Review][Defer] `TZ=Foo/Bar` валидный для Zod, но Node молча падает на UTC [src/config.ts:6] — hardening, можно добавить `.refine` с `Intl.DateTimeFormat` позже.
+- [x] [Review][Defer] `GOOGLE_SERVICE_ACCOUNT_JSON` — относительный путь, Zod не проверяет существование файла [.env.example:18] — проверка появится в Story 1.3 (sheets adapter) при инициализации клиента.
+- [x] [Review][Defer] `config.ts` вызывает `loadConfig()` + `process.exit(1)` на top-level — блокирует unit-тестирование любого импортёра [src/config.ts:33]. Тестовая инфраструктура ещё не развёрнута — вернёмся при Story 1.11 (golden dataset).
+- [x] [Review][Defer] `startTime` в server.ts захвачен на import, а не на listen [src/server.ts:4] — для единственного singleton-сервера разница невидима.
+- [x] [Review][Defer] AC #5: нет теста подтверждающего паттерн `logger.child({pipeline, step, clientId})` — тесты придут со Story 1.11.
+
+**Не проверено (требует живого Docker):**
+
+- 🟡 AC #1: `docker compose up` → контейнер healthy + `/health` 200 — после фикса CMD path исполнить реальный прогон.
+- 🟡 AC #6: `TZ=Asia/Almaty` внутри контейнера даёт Алматинское время — проверяется тем же прогоном (`docker exec tracking-app date`).
+
+**Dismissed (false positives / out of scope):**
+
+- wget в node:22-alpine — подтверждено доступен через BusyBox.
+- pino-pretty отсутствует в prod-образе если оператор ставит `NODE_ENV=development` — это явное misuse, не баг.
+- scripts/ в tsconfig include но не copy в Docker → после фикса #1 (исключить scripts из include) вопрос исчезает.

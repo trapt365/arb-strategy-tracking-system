@@ -10,9 +10,25 @@ log.info(
 );
 
 const server = createServer();
+
+const onStartupError = (err: Error): void => {
+  log.fatal({ err }, 'Server failed to start');
+  process.exit(1);
+};
+server.once('error', onStartupError);
+server.once('listening', () => {
+  server.off('error', onStartupError);
+});
+
 server.listen(config.PORT);
 
+let isShuttingDown = false;
 function shutdown(signal: NodeJS.Signals): void {
+  if (isShuttingDown) {
+    log.warn({ signal }, 'Shutdown already in progress, ignoring signal');
+    return;
+  }
+  isShuttingDown = true;
   log.info({ signal }, 'Shutdown requested');
   server.close((err) => {
     if (err) {

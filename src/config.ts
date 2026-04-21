@@ -4,14 +4,20 @@ import 'dotenv/config';
 const ConfigSchema = z.object({
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
   LOG_LEVEL: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
-  PORT: z.coerce.number().int().positive().default(3000),
+  PORT: z.coerce.number().int().positive().max(65535).default(3000),
   TZ: z.string().default('Asia/Almaty'),
 
   ANTHROPIC_API_KEY: z.string().min(1, 'ANTHROPIC_API_KEY is required'),
 
   TELEGRAM_BOT_TOKEN: z.string().min(1, 'TELEGRAM_BOT_TOKEN is required'),
-  TELEGRAM_CHAT_WORK_ID: z.coerce.number().int(),
-  TELEGRAM_CHAT_OPS_ID: z.coerce.number().int(),
+  TELEGRAM_CHAT_WORK_ID: z.coerce
+    .number()
+    .int()
+    .refine((n) => n !== 0, 'TELEGRAM_CHAT_WORK_ID is required (non-zero)'),
+  TELEGRAM_CHAT_OPS_ID: z.coerce
+    .number()
+    .int()
+    .refine((n) => n !== 0, 'TELEGRAM_CHAT_OPS_ID is required (non-zero)'),
 
   SONIOX_API_KEY: z.string().min(1, 'SONIOX_API_KEY is required'),
 

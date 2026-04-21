@@ -6,14 +6,20 @@ const startTime = Date.now();
 
 export function createServer(): http.Server {
   const server = http.createServer((req, res) => {
-    if (req.method === 'GET' && req.url === '/health') {
+    const isHealth =
+      (req.method === 'GET' || req.method === 'HEAD') && req.url === '/health';
+    if (isHealth) {
       const body = JSON.stringify({
         status: 'ok',
         uptimeSeconds: Math.floor((Date.now() - startTime) / 1000),
         env: config.NODE_ENV,
       });
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(body);
+      if (req.method === 'HEAD') {
+        res.end();
+      } else {
+        res.end(body);
+      }
       return;
     }
 

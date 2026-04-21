@@ -9,7 +9,7 @@
  *   npx tsx scripts/prompt-test.ts data/soniox-results/  # все файлы в папке
  *
  * Переменные окружения (.env):
- *   API_KEY_CLAUDE — ключ Claude API
+ *   ANTHROPIC_API_KEY — ключ Claude API
  *
  * Результаты: data/prompt-results/<filename>/
  */
@@ -29,9 +29,9 @@ const MAX_RETRIES = 3;
 const RETRY_DELAYS = [1000, 3000, 9000];
 const MAX_TOKENS = 8192;
 
-const API_KEY = process.env.API_KEY_CLAUDE?.trim();
+const API_KEY = process.env.ANTHROPIC_API_KEY?.trim();
 if (!API_KEY) {
-  console.error("ERROR: API_KEY_CLAUDE не задан. Добавьте в .env файл.");
+  console.error("ERROR: ANTHROPIC_API_KEY не задан. Добавьте в .env файл.");
   process.exit(1);
 }
 
@@ -530,7 +530,7 @@ async function main() {
   npx tsx scripts/prompt-test.ts <file> --f4           # F1 + F4
 
 Переменные окружения (.env):
-  API_KEY_CLAUDE — ключ Claude API
+  ANTHROPIC_API_KEY — ключ Claude API
 
 Промпты: prompts/*.md
 Результаты: data/prompt-results/

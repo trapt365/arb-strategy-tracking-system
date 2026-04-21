@@ -5,6 +5,7 @@ dist/
 !.env.example
 *.log
 .DS_Store
+*.code-workspace
 
 # Test audio files (large binaries)
 data/test-audio/
