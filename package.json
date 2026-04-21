@@ -3,6 +3,10 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "build": "tsc",
+    "start": "node dist/src/index.js",
+    "dev": "tsx watch src/index.ts",
+    "typecheck": "tsc --noEmit",
     "soniox:test": "tsx scripts/soniox-test.ts",
     "soniox:webhook": "tsx scripts/soniox-webhook-test.ts",
     "prompt:test": "tsx scripts/prompt-test.ts",
@@ -12,11 +16,14 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.90.0",
     "dotenv": "^17.4.2",
+    "grammy": "^1.30.0",
+    "pino": "^9.5.0",
     "xlsx": "^0.18.5",
     "zod": "^4.3.6"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
+    "pino-pretty": "^11.3.0",
     "tsx": "^4.21.0",
     "typescript": "^5.7.0"
   }
