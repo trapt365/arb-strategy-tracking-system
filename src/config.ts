@@ -20,6 +20,7 @@ const ConfigSchema = z.object({
     .refine((n) => n !== 0, 'TELEGRAM_CHAT_OPS_ID is required (non-zero)'),
 
   SONIOX_API_KEY: z.string().min(1, 'SONIOX_API_KEY is required'),
+  SONIOX_API_URL: z.string().url().optional(),
 
   GOOGLE_SERVICE_ACCOUNT_JSON: z.string().min(1, 'Path to Google service account JSON'),
 });
