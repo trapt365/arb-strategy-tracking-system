@@ -1,5 +1,5 @@
 # generated: 2026-04-01
-# last_updated: 2026-04-30 (story 1.2 → done after IWE sanity-pass: 3 patches + 2 deferred cards)
+# last_updated: 2026-04-30 (story 1.3 → review: Sheets adapter, batch read + lazy auth helper, 25 new tests)
 # project: ARB AI-Tracking System
 # project_key: NOKEY
 # tracking_system: file-system
@@ -34,7 +34,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 
 generated: 2026-04-01
-last_updated: 2026-04-23
+last_updated: 2026-04-30
 project: ARB AI-Tracking System
 project_key: NOKEY
 tracking_system: file-system
@@ -55,7 +55,7 @@ development_status:
   epic-1: in-progress
   1-1-project-bootstrap-i-konfiguraciya: review  # 2026-04-21: code + Dockerfile ready, smoke-tested (zod fail-fast + /health 200); Docker build not yet executed
   1-2-transcript-interface-contract-audio-download-i-soniox-parser: done  # 2026-04-30: iteration 3 IWE sanity-pass — 3 minor patches (rate_limited code, ZOOM_RE без /rec/play/, statSync → async stat) + 2 deferred cards (streaming upload, pollUntilCompleted total timeout); vitest 58/58 pass, typecheck OK, build clean
-  1-3-sheets-adapter-chtenie-konteksta-klienta: backlog
+  1-3-sheets-adapter-chtenie-konteksta-klienta: done  # 2026-04-30: implementation + code-review fixes (pipeline override, TranscriptConfigError pass-through, ranges array in alertOps/logs); 87/87 tests green, typecheck/build clean
   1-4a-f1-izvlechenie-i-analiz: backlog
   1-4b-f1-formatirovanie-i-podgotovka-k-dostavke: backlog
   1-5-telegram-bot-komanda-report-i-progress: backlog

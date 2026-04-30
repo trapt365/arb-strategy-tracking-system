@@ -1,4 +1,4 @@
-import { createWriteStream, existsSync, readFileSync } from 'node:fs';
+import { createWriteStream } from 'node:fs';
 import { unlink, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -8,10 +8,9 @@ import { pipeline } from 'node:stream/promises';
 import { google } from 'googleapis';
 import mimeTypes from 'mime-types';
 import type { Logger } from '../logger.js';
-import { config } from '../config.js';
+import { loadServiceAccountCredentials } from '../utils/google-auth.js';
 import {
   TranscriptDownloadError,
-  TranscriptConfigError,
   type TranscriptDownloadCode,
 } from '../errors.js';
 
@@ -125,7 +124,7 @@ interface DriveDownloadOpts extends DownloadOptions {
 
 async function downloadFromGoogleDrive(opts: DriveDownloadOpts): Promise<DownloadResult> {
   const factory = opts.driveClientFactory ?? createDriveClient;
-  const drive = factory();
+  const drive = await factory();
 
   let mimeType: string;
   let sizeBytes: number;
@@ -403,30 +402,11 @@ function redactUrl(url: string): string {
 
 let cachedDrive: ReturnType<typeof google.drive> | null = null;
 
-export function createDriveClient(): ReturnType<typeof google.drive> {
+export async function createDriveClient(): Promise<ReturnType<typeof google.drive>> {
   if (cachedDrive) return cachedDrive;
-  const path = config.GOOGLE_SERVICE_ACCOUNT_JSON;
-  if (!existsSync(path)) {
-    throw new TranscriptConfigError('missing_service_account', { path });
-  }
-  let parsed: { client_email?: unknown };
-  try {
-    parsed = JSON.parse(readFileSync(path, 'utf8'));
-  } catch (err) {
-    throw new TranscriptConfigError(
-      'invalid_service_account_json',
-      { path, message: (err as Error).message },
-      { cause: err },
-    );
-  }
-  if (typeof parsed.client_email !== 'string' || parsed.client_email.length === 0) {
-    throw new TranscriptConfigError('invalid_service_account_shape', {
-      path,
-      missingField: 'client_email',
-    });
-  }
+  const credentials = await loadServiceAccountCredentials();
   const auth = new google.auth.GoogleAuth({
-    keyFile: path,
+    credentials,
     scopes: ['https://www.googleapis.com/auth/drive.readonly'],
   });
   cachedDrive = google.drive({ version: 'v3', auth });

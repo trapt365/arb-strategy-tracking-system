@@ -86,3 +86,27 @@ export class TranscriptConfigError extends Error {
     this.name = 'TranscriptConfigError';
   }
 }
+
+export type SheetsAdapterCode =
+  | 'auth'
+  | 'sheet_not_found'
+  | 'header_missing'
+  | 'rate_limited'
+  | 'network'
+  | 'invalid_value';
+
+export class SheetsAdapterError extends Error {
+  public readonly code: SheetsAdapterCode;
+  public readonly context: Record<string, unknown>;
+
+  constructor(
+    code: SheetsAdapterCode,
+    context: Record<string, unknown>,
+    options?: { cause?: unknown },
+  ) {
+    super(`sheets:${code}`, options as ErrorOptions);
+    this.code = code;
+    this.context = context;
+    this.name = 'SheetsAdapterError';
+  }
+}

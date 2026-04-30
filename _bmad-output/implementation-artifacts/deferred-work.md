@@ -11,18 +11,25 @@
 ## Deferred from: code review of story-1.2 (2026-04-23)
 
 - `transcriptionId` не удаляется на Soniox при failure после `createTranscription` — нет `DELETE /v1/transcriptions/{id}` API в Soniox (только `DELETE /files`); transcription истекает самостоятельно. Story 1.9 добавит ops-alert при аномальных накоплениях.
-- `GOOGLE_SERVICE_ACCOUNT_JSON` lazy validation в `createDriveClient` вместо config-time — intentional deviation, обеспечивает offline/CI-friendly smoke-тесты; Story 1.3 подтвердит поведение при реальном использовании.
+- ~~`GOOGLE_SERVICE_ACCOUNT_JSON` lazy validation в `createDriveClient` вместо config-time — intentional deviation, обеспечивает offline/CI-friendly smoke-тесты; Story 1.3 подтвердит поведение при реальном использовании.~~ **CLOSED 2026-04-30 (Story 1.3):** lazy validation вынесена в общий helper `loadServiceAccountCredentials()` (`src/utils/google-auth.ts`), используется в `drive.ts` и `sheets.ts`. Решение «keep lazy» подтверждено: offline-friendly tests + smoke без credentials, единая точка валидации, memoization избегает повторных I/O.
 - Нет общего 10-мин тайм-аута на весь цикл `pollUntilCompleted` — MVP approximation: 120 × 5s ≈ 10 min; добавить внешний AbortController если polling в продакшне превышает 12 мин (Story 1.9). **Уточнение 2026-04-30:** анализ кода показал worst-case 120 × (5 + 4×9) ≈ 80 мин при долгих 5xx-сериях (каждый poll-attempt в своём `withRetry` с {1,3,9}с backoff). Расхождение с Task 3.6 («10 мин») зафиксировано. Решение: внешний `AbortController` со `startTime`-check ИЛИ счётчик total elapsed → fail на превышении 10 мин. Триггер: Story 1.9.x.
 
 ## Deferred from: code review of story-1.2 (2026-04-30, IWE sanity-pass)
 
 - **Soniox streaming upload (OOM-риск на > 218 MB)** — `src/adapters/soniox.ts:148-150` использует `readFile() + new Blob([buffer])` ≈ 2× RAM. На 500 MB файле это ~1 GB в RAM. Story 0.1 review #1 уже фиксировал паттерн; в Story 1.2 принят hard-limit 500 MB + warn > 100 MB как MVP-подход. Триггер: Story 1.9.x ИЛИ материализация OOM в проде на видеофайле > 218 MB. Решение: streaming через `Readable.toWeb()` + Blob-like wrapper или undici fetch с stream-телом.
 
+## Deferred from: implementation of story-1.3 (2026-04-30)
+
+- **Sheets API rate limiter / queue** — Sheets API имеет лимит 100 req/100 s/user. На MVP с одним клиентом и ~5 встречами/неделю → ~5 batchGet в неделю, ничтожная нагрузка. Триггер: 3-й клиент или > 80 req/min в логах. Решение: in-memory token bucket или библиотека `bottleneck`. [architecture.md, Growth phase]
+- **Local cache для OKR/stakeholder data** — `readClientContext` бьёт Sheets API на каждый pipeline-запуск (~2-3 секунды латентности). На MVP допустимо. Триггер: устойчивая медиана `sheets.batchGet durationMs` > 2000ms (агрегированные warn-логи Story 1.9). Решение: in-memory TTL cache (5 мин) с inv. на manual refresh. [architecture.md, Growth phase]
+- **Multi-client `resolveSheetId`** — на MVP whitelisting `clientId === 'geonline'` с одним env var `GEONLINE_F0_SHEET_ID`. На 2-м клиенте: расширить `config.CLIENTS = { geonline: 'sheetId1', clientB: 'sheetId2' }` или вынести в data-table. Архитектурный stub `resolveSheetId(clientId)` уже есть — менять только тело. Триггер: Epic 6 / Story 6.2.
+- **Sheets write-side adapter (F5 metrics, ops logs)** — Story 1.3 покрывает только read. Append/write для ops logs (Story 1.9) и F5 manual entry (Story 1.10) добавят `appendRow` / `writeF5Metric` с обратной конверсией `camelToSnake`.
+
 ## Deferred from: code review of story-1.1 (2026-04-21)
 
 - `/health` строгое матчинг URL — `/health?x=1`, `/health/`, `/HEALTH` дают 404. Docker internal probe работает на точном `/health`; внешние probe придут в Story 1.14 (Hostinger VPS deploy).
 - `TZ` в Zod схеме — `z.string().default('Asia/Almaty')` без `.refine` через `Intl.DateTimeFormat` — Node молча падает на UTC при невалидной зоне. Hardening, не блокер.
-- `GOOGLE_SERVICE_ACCOUNT_JSON` — относительный путь; Zod проверяет только непустую строку, не существование файла. Sheets adapter в Story 1.3 сам упадёт при отсутствии файла — FS-проверка переедет туда.
+- ~~`GOOGLE_SERVICE_ACCOUNT_JSON` — относительный путь; Zod проверяет только непустую строку, не существование файла. Sheets adapter в Story 1.3 сам упадёт при отсутствии файла — FS-проверка переедет туда.~~ **CLOSED 2026-04-30 (Story 1.3):** валидация существования файла + JSON-shape перенесена в `loadServiceAccountCredentials()` (`src/utils/google-auth.ts`); используется в `drive.ts` и `sheets.ts`.
 - `src/config.ts` вызывает `loadConfig()` + `process.exit(1)` на module top-level → любой импортёр не может быть unit-тестирован без реальных env. Тестовая инфраструктура появится в Story 1.11 (canary + golden dataset).
 - `startTime = Date.now()` в `src/server.ts` захвачен на import, а не на `listen()`. Для singleton разница невидима.
 - AC #5 не имеет явного теста, подтверждающего паттерн `logger.child({pipeline, step, clientId})` — тесты придут со Story 1.11.

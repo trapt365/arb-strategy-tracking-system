@@ -23,6 +23,8 @@ const ConfigSchema = z.object({
   SONIOX_API_URL: z.string().url().optional(),
 
   GOOGLE_SERVICE_ACCOUNT_JSON: z.string().min(1, 'Path to Google service account JSON'),
+
+  GEONLINE_F0_SHEET_ID: z.string().min(1, 'GEONLINE_F0_SHEET_ID is required'),
 });
 
 export type Config = z.infer<typeof ConfigSchema>;

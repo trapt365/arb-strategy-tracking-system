@@ -14,6 +14,7 @@ export default defineConfig({
       TELEGRAM_CHAT_OPS_ID: '2',
       SONIOX_API_KEY: 'test-soniox-key',
       GOOGLE_SERVICE_ACCOUNT_JSON: './data/google-service-account.json',
+      GEONLINE_F0_SHEET_ID: 'test-sheet-id',
     },
   },
 });

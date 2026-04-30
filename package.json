@@ -14,7 +14,8 @@
     "data:prepare": "tsx scripts/prepare-test-data.ts",
     "test": "vitest run",
     "test:watch": "vitest",
-    "transcript:smoke": "tsx scripts/transcript-smoke.ts"
+    "transcript:smoke": "tsx scripts/transcript-smoke.ts",
+    "sheets:smoke": "tsx scripts/sheets-smoke.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.90.0",

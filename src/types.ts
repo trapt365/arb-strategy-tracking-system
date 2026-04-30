@@ -43,3 +43,53 @@ export interface TranscriptMeta {
   meetingDate: string;
   meetingType?: string;
 }
+
+export const StakeholderSchema = z.object({
+  fullName: z.string().min(1),
+  speakerName: z.string().min(1),
+  department: z.string().min(1),
+  role: z.string(),
+  bscCategory: z.string(),
+  responsibilityAreas: z.string(),
+  interests: z.string(),
+  notes: z.string(),
+});
+export type Stakeholder = z.infer<typeof StakeholderSchema>;
+
+export const OkrKrSchema = z.object({
+  krNumber: z.string().min(1),
+  shortName: z.string(),
+  keyResult: z.string().min(1),
+  owner: z.string().min(1),
+  ownerPosition: z.string(),
+  currentStatus: z.string(),
+  target: z.string(),
+  progress: z.string(),
+  deadline: z.string(),
+  okrGroup: z.string(),
+  quarter: z.string(),
+});
+export type OkrKr = z.infer<typeof OkrKrSchema>;
+
+export const F5MetricSchema = z.object({
+  department: z.string().min(1),
+  metricName: z.string(),
+  metricType: z.enum(['leading', 'lagging']),
+  unit: z.string(),
+  source: z.string(),
+  ownerSpeakerName: z.string(),
+  ranges: z.array(z.string()),
+  updateFrequency: z.string(),
+  riskNotes: z.string(),
+  notes: z.string(),
+});
+export type F5Metric = z.infer<typeof F5MetricSchema>;
+
+export const ClientContextSchema = z.object({
+  clientId: z.string().min(1),
+  stakeholders: z.array(StakeholderSchema).min(1),
+  okrs: z.array(OkrKrSchema).min(1),
+  f5Metrics: z.array(F5MetricSchema),
+  readAt: z.iso.datetime({ offset: true }),
+});
+export type ClientContext = z.infer<typeof ClientContextSchema>;
