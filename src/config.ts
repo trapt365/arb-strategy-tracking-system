@@ -8,6 +8,9 @@ const ConfigSchema = z.object({
   TZ: z.string().default('Asia/Almaty'),
 
   ANTHROPIC_API_KEY: z.string().min(1, 'ANTHROPIC_API_KEY is required'),
+  ANTHROPIC_MODEL: z.string().min(1).default('claude-sonnet-4-6'),
+  CLAUDE_MAX_TOKENS: z.coerce.number().int().positive().max(64000).default(8192),
+  CLAUDE_TIMEOUT_MS: z.coerce.number().int().positive().default(120000),
 
   TELEGRAM_BOT_TOKEN: z.string().min(1, 'TELEGRAM_BOT_TOKEN is required'),
   TELEGRAM_CHAT_WORK_ID: z.coerce

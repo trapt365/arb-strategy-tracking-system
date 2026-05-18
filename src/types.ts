@@ -93,3 +93,136 @@ export const ClientContextSchema = z.object({
   readAt: z.iso.datetime({ offset: true }),
 });
 export type ClientContext = z.infer<typeof ClientContextSchema>;
+
+// === F1 pipeline contracts (Story 1.4a) ===
+
+export const CommitmentSchema = z.object({
+  who: z.string().min(1),
+  what: z.string().min(1),
+  // free-form: "не указан" | "до пятницы" | ISO-дата; промпт может вернуть пустую строку
+  // для отсутствия — поэтому min(1) НЕ ставим (валидация содержания на промпте).
+  deadline: z.string(),
+  quote: z.string().min(1),
+  status: z.enum(['open', 'completed', 'overdue']).optional(),
+});
+export type Commitment = z.infer<typeof CommitmentSchema>;
+
+export const CitationSchema = z.object({
+  timestamp: z.number().nonnegative(),
+  speaker: z.string().min(1),
+  text: z.string().min(1),
+  approximate: z.boolean().optional().default(false),
+});
+export type Citation = z.infer<typeof CitationSchema>;
+
+export const ExtractionOutputSchema = z.object({
+  decisions: z.array(z.string()),
+  commitments: z.array(CommitmentSchema),
+  citations: z.array(CitationSchema),
+  facts: z.array(z.string()),
+  speaker_check: z.array(z.string()).optional().default([]),
+});
+export type ExtractionOutput = z.infer<typeof ExtractionOutputSchema>;
+
+export const OkrCoverageItemSchema = z.object({
+  kr: z.string().min(1),
+  status: z.enum(['discussed', 'mentioned', 'blind_zone']),
+  mentions_count: z.number().int().nonnegative().optional().default(0),
+  substance: z.boolean().optional().default(false),
+});
+export type OkrCoverageItem = z.infer<typeof OkrCoverageItemSchema>;
+
+export const HypothesisItemSchema = z.object({
+  hypothesis: z.string().min(1),
+  status: z.enum(['idea', 'in_test', 'result']),
+  evidence: z.array(z.string()).optional().default([]),
+});
+export type HypothesisItem = z.infer<typeof HypothesisItemSchema>;
+
+export const CommitmentStatusUpdateSchema = z.object({
+  who: z.string(),
+  what: z.string(),
+  previous_quote: z.string(),
+  new_status: z.enum(['open', 'completed', 'overdue']),
+  evidence_quote: z.string().optional(),
+});
+export type CommitmentStatusUpdate = z.infer<typeof CommitmentStatusUpdateSchema>;
+
+export const AnalysisOutputSchema = z.object({
+  okr_coverage: z.array(OkrCoverageItemSchema),
+  hypothesis_status: z.array(HypothesisItemSchema),
+  alerts: z.array(z.string()),
+  commitments_status_updates: z.array(CommitmentStatusUpdateSchema).optional().default([]),
+});
+export type AnalysisOutput = z.infer<typeof AnalysisOutputSchema>;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// F1 Step 3-4: Format + Delivery prep (Story 1.4b)
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const FormatSectionSchema = z.object({
+  title: z.string().min(1).max(120),
+  content: z.string().min(1).max(3500),
+});
+export type FormatSection = z.infer<typeof FormatSectionSchema>;
+
+export const FormatOutputSchema = z.object({
+  report_sections: z.array(FormatSectionSchema).min(1).max(3),
+  summary_line: z.string().min(1).max(200),
+  commitment_count: z.number().int().nonnegative(),
+  alert_count: z.number().int().nonnegative(),
+  top_message_draft: z.string().min(20).max(800).optional(),
+});
+export type FormatOutput = z.infer<typeof FormatOutputSchema>;
+
+export const PartialReasonSchema = z.enum([
+  'format_step_failed',
+  'format_validation_failed',
+  'format_retry_exhausted',
+]);
+export type PartialReason = z.infer<typeof PartialReasonSchema>;
+
+// Accept both bare date `YYYY-MM-DD` and full ISO datetime (with or without offset).
+// Pre-check `MEETING_DATE_PREFIX_RE` in f1-report.ts already gates the prefix; this schema
+// stays lenient because Sheets/Telegram surfaces meetingDate as a date-only string.
+const MeetingDateSchema = z
+  .string()
+  .regex(/^\d{4}-\d{2}-\d{2}(T.*)?$/, 'meetingDate must start with YYYY-MM-DD');
+
+const FullDeliveryReportSchema = z.object({
+  partial: z.literal(false),
+  reportId: z.string().min(1),
+  clientId: z.string().min(1),
+  topName: z.string().min(1),
+  meetingDate: MeetingDateSchema,
+  summaryLine: z.string().min(1).max(200),
+  sections: z.array(FormatSectionSchema).min(1).max(3),
+  commitments: z.array(CommitmentSchema),
+  alerts: z.array(z.string()),
+  topMessageDraft: z.string().min(20).max(800).optional(),
+});
+
+const PartialDeliveryReportSchema = z.object({
+  partial: z.literal(true),
+  partialReason: PartialReasonSchema,
+  reportId: z.string().min(1),
+  clientId: z.string().min(1),
+  topName: z.string().min(1),
+  meetingDate: MeetingDateSchema,
+  summaryLine: z.string().min(1).max(200),
+  sections: z.array(FormatSectionSchema).max(0),
+  commitments: z.array(CommitmentSchema),
+  alerts: z.array(z.string()),
+  extractionFallback: z.object({
+    commitments: z.array(CommitmentSchema),
+    citations: z.array(CitationSchema).max(10),
+    decisions: z.array(z.string()),
+    facts: z.array(z.string()),
+  }),
+});
+
+export const DeliveryReadyReportSchema = z.discriminatedUnion('partial', [
+  FullDeliveryReportSchema,
+  PartialDeliveryReportSchema,
+]);
+export type DeliveryReadyReport = z.infer<typeof DeliveryReadyReportSchema>;

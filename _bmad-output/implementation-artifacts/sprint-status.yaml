@@ -1,5 +1,6 @@
 # generated: 2026-04-01
-# last_updated: 2026-04-30 (story 1.3 → review: Sheets adapter, batch read + lazy auth helper, 25 new tests)
+# last_updated: 2026-05-18 (story 1.4b → done: code-review — 16 patches applied across types/errors/claude/f1-report/format-tracker/spec; 3 decisions resolved; sourceFiles wired through commitments-updates overlay; canonical f1.run.total with try/finally + status; safeParseClaudeJSON post-parse fallback for top_message_draft; raw-leak sanitization at error wrap; 147+ tests pass; typecheck clean; 16 deferred items recorded)
+# last_updated_prev: 2026-05-15 (story 1.4a → done: code-review iter 2 — 26 patches applied across claude.ts/retry.ts/prompt-loader/commitments-history/f1-report/smoke; 147/147 tests pass; typecheck + build clean; 6 deferred items added)
 # project: ARB AI-Tracking System
 # project_key: NOKEY
 # tracking_system: file-system
@@ -34,7 +35,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 
 generated: 2026-04-01
-last_updated: 2026-04-30
+last_updated: 2026-05-18  # story 1.4b → done (code-review, 16 patches, 3 decisions resolved, 16 deferred)
 project: ARB AI-Tracking System
 project_key: NOKEY
 tracking_system: file-system
@@ -56,8 +57,8 @@ development_status:
   1-1-project-bootstrap-i-konfiguraciya: review  # 2026-04-21: code + Dockerfile ready, smoke-tested (zod fail-fast + /health 200); Docker build not yet executed
   1-2-transcript-interface-contract-audio-download-i-soniox-parser: done  # 2026-04-30: iteration 3 IWE sanity-pass — 3 minor patches (rate_limited code, ZOOM_RE без /rec/play/, statSync → async stat) + 2 deferred cards (streaming upload, pollUntilCompleted total timeout); vitest 58/58 pass, typecheck OK, build clean
   1-3-sheets-adapter-chtenie-konteksta-klienta: done  # 2026-04-30: implementation + code-review fixes (pipeline override, TranscriptConfigError pass-through, ranges array in alertOps/logs); 87/87 tests green, typecheck/build clean
-  1-4a-f1-izvlechenie-i-analiz: backlog
-  1-4b-f1-formatirovanie-i-podgotovka-k-dostavke: backlog
+  1-4a-f1-izvlechenie-i-analiz: done  # 2026-05-15: code-review iter 2 — 26 patches (P1-P26); 6 decisions resolved (4 accept-as-is + D4/D5 deferred MVP-limits + D6 → status='aborted' patch); 8 deferred items total; 147/147 tests pass, typecheck + build clean, grep enforcement OK
+  1-4b-f1-formatirovanie-i-podgotovka-k-dostavke: done  # 2026-05-18: code-review — 16 patches (P1-P16, 3 D-resolved); slugifyClientId в step-3 persist, safeTopNameSlug guard, persistMeta после step-3 в orchestrator finally, sourceFiles прокинуты через persistCommitmentsUpdates, f1.run.total canonical в runF1 (try/finally + always-info), step12 emit переименован в f1.steps12.total, sanitizeClaudeErrorContext на wrap sites, safeParseClaudeJSON post-parse fallback для top_message_draft, MeetingDateSchema ослаблена, format_step_failed legitimized (AC #13); test для format_step_failed branch добавлен; 147+ тестов pass, typecheck clean
   1-5-telegram-bot-komanda-report-i-progress: backlog
   1-6-approval-workflow-approve-edit-reject: backlog
   1-7-delivery-dostavka-otchyota-klientu: backlog

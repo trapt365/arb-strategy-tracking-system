@@ -20,8 +20,8 @@ describe('withRetry', () => {
     const result = await withRetry(fn, { sleep, backoffMs: [1, 3, 9] });
     expect(result).toBe('ok');
     expect(fn).toHaveBeenCalledTimes(3);
-    expect(sleep).toHaveBeenNthCalledWith(1, 1);
-    expect(sleep).toHaveBeenNthCalledWith(2, 3);
+    expect(sleep).toHaveBeenNthCalledWith(1, 1, undefined);
+    expect(sleep).toHaveBeenNthCalledWith(2, 3, undefined);
   });
 
   it('does not retry on auth errors (401/403)', async () => {
@@ -40,6 +40,57 @@ describe('withRetry', () => {
     expect(fn).toHaveBeenCalledTimes(4);
   });
 
+  it('aborts the retry loop if signal is aborted during backoff sleep', async () => {
+    // Custom sleep awaits a microtask then rejects with AbortError when signal fires
+    // — emulates the real defaultSleep race against signal abort.
+    const sleep = vi.fn(
+      (_ms: number, sig?: AbortSignal) =>
+        new Promise<void>((resolve, reject) => {
+          if (sig?.aborted) {
+            const e = new Error('aborted');
+            e.name = 'AbortError';
+            reject(e);
+            return;
+          }
+          sig?.addEventListener(
+            'abort',
+            () => {
+              const e = new Error('aborted');
+              e.name = 'AbortError';
+              reject(e);
+            },
+            { once: true },
+          );
+        }),
+    );
+    const fn = vi
+      .fn()
+      .mockRejectedValueOnce(Object.assign(new Error('boom'), { httpStatus: 500 }))
+      .mockResolvedValue('never-reached');
+    const ctrl = new AbortController();
+    const promise = withRetry(fn, {
+      sleep,
+      backoffMs: [10000],
+      maxRetries: 3,
+      signal: ctrl.signal,
+      shouldRetry: () => true,
+    });
+    queueMicrotask(() => ctrl.abort());
+    await expect(promise).rejects.toMatchObject({ name: 'AbortError' });
+    expect(fn).toHaveBeenCalledTimes(1); // attempt 2 must NOT run after abort
+    expect(sleep).toHaveBeenCalledTimes(1);
+  });
+
+  it('throws AbortError immediately if signal already aborted before first attempt', async () => {
+    const fn = vi.fn().mockResolvedValue('ok');
+    const ctrl = new AbortController();
+    ctrl.abort();
+    await expect(
+      withRetry(fn, { signal: ctrl.signal, sleep: vi.fn() }),
+    ).rejects.toMatchObject({ name: 'AbortError' });
+    expect(fn).not.toHaveBeenCalled();
+  });
+
   it('uses exponential backoff sequence {1000, 3000, 9000} by default', async () => {
     const sleep = vi.fn().mockResolvedValue(undefined);
     const fn = vi
@@ -49,9 +100,9 @@ describe('withRetry', () => {
       .mockRejectedValueOnce(Object.assign(new Error('e'), { httpStatus: 500 }))
       .mockResolvedValueOnce('ok');
     await withRetry(fn, { sleep });
-    expect(sleep).toHaveBeenNthCalledWith(1, 1000);
-    expect(sleep).toHaveBeenNthCalledWith(2, 3000);
-    expect(sleep).toHaveBeenNthCalledWith(3, 9000);
+    expect(sleep).toHaveBeenNthCalledWith(1, 1000, undefined);
+    expect(sleep).toHaveBeenNthCalledWith(2, 3000, undefined);
+    expect(sleep).toHaveBeenNthCalledWith(3, 9000, undefined);
   });
 });
 

@@ -15,7 +15,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "transcript:smoke": "tsx scripts/transcript-smoke.ts",
-    "sheets:smoke": "tsx scripts/sheets-smoke.ts"
+    "sheets:smoke": "tsx scripts/sheets-smoke.ts",
+    "f1:smoke": "tsx scripts/f1-smoke.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.90.0",

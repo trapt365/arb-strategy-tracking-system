@@ -5,7 +5,14 @@ export interface WithRetryOptions {
   backoffMs?: number[];
   shouldRetry?: (error: unknown) => boolean;
   logger?: Pick<Logger, 'warn'>;
-  sleep?: (ms: number) => Promise<void>;
+  sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
+  signal?: AbortSignal;
+}
+
+function makeAbortError(): Error {
+  const err = new Error('aborted');
+  err.name = 'AbortError';
+  return err;
 }
 
 const DEFAULT_BACKOFF_MS = [1000, 3000, 9000];
@@ -78,9 +85,21 @@ export function shouldRetryPreBodyOnly(error: unknown): boolean {
   return false;
 }
 
-const defaultSleep = (ms: number): Promise<void> =>
-  new Promise((resolve) => {
-    setTimeout(resolve, ms);
+const defaultSleep = (ms: number, signal?: AbortSignal): Promise<void> =>
+  new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(makeAbortError());
+      return;
+    }
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    const onAbort = (): void => {
+      clearTimeout(timer);
+      reject(makeAbortError());
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
   });
 
 export async function withRetry<T>(
@@ -91,13 +110,21 @@ export async function withRetry<T>(
   const maxRetries = opts.maxRetries ?? backoffMs.length;
   const shouldRetry = opts.shouldRetry ?? defaultShouldRetry;
   const sleep = opts.sleep ?? defaultSleep;
+  const signal = opts.signal;
 
   let lastError: unknown;
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    if (signal?.aborted) throw makeAbortError();
     try {
       return await fn();
     } catch (err) {
       lastError = err;
+      // Caller-initiated abort short-circuits the retry loop regardless of the
+      // caller's shouldRetry predicate (AC #13: graceful cancel on signal).
+      // Normalize to AbortError so callers can rely on `err.name === 'AbortError'`
+      // even when the in-flight request rejected with an unrelated error (e.g. a
+      // 500 that landed just as abort fired).
+      if (signal?.aborted) throw makeAbortError();
       const isLast = attempt >= maxRetries;
       if (isLast || !shouldRetry(err)) {
         throw err;
@@ -107,7 +134,7 @@ export async function withRetry<T>(
         { attempt: attempt + 1, maxRetries, delayMs, err },
         'retry attempt failed, backing off',
       );
-      if (delayMs > 0) await sleep(delayMs);
+      if (delayMs > 0) await sleep(delayMs, signal);
     }
   }
   throw lastError;

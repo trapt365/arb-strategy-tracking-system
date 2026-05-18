@@ -12,3 +12,9 @@ data/test-audio/
 data/golden/
 data/soniox-results/
 data/prompt-results/
+
+# Weekly meeting audio (sensitive — never commit raw recordings)
+data/week-*/
+
+# Harness state
+.claude/scheduled_tasks.lock

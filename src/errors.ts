@@ -110,3 +110,30 @@ export class SheetsAdapterError extends Error {
     this.name = 'SheetsAdapterError';
   }
 }
+
+export type F1PipelineCode =
+  | 'prompt_load'
+  | 'claude_api'
+  | 'claude_response_invalid'
+  | 'extraction_validation'
+  | 'analysis_validation'
+  | 'persist'
+  // 1.4b additions:
+  | 'format_validation_failed'
+  | 'delivery_prep';
+
+export class F1PipelineError extends Error {
+  public readonly code: F1PipelineCode;
+  public readonly context: Record<string, unknown>;
+
+  constructor(
+    code: F1PipelineCode,
+    context: Record<string, unknown>,
+    options?: { cause?: unknown },
+  ) {
+    super(`f1:${code}`, options as ErrorOptions);
+    this.code = code;
+    this.context = context;
+    this.name = 'F1PipelineError';
+  }
+}
