@@ -1,6 +1,7 @@
 import { config } from './config.js';
 import { logger } from './logger.js';
 import { createServer } from './server.js';
+import { createBot } from './bot.js';
 
 const log = logger.child({ step: 'bootstrap' });
 
@@ -22,6 +23,13 @@ server.once('listening', () => {
 
 server.listen(config.PORT);
 
+const { start: startBot, stop: stopBot } = createBot();
+
+startBot().catch((err: unknown) => {
+  log.fatal({ err }, 'Telegram bot failed to start');
+  process.exit(1);
+});
+
 let isShuttingDown = false;
 function shutdown(signal: NodeJS.Signals): void {
   if (isShuttingDown) {
@@ -30,14 +38,20 @@ function shutdown(signal: NodeJS.Signals): void {
   }
   isShuttingDown = true;
   log.info({ signal }, 'Shutdown requested');
-  server.close((err) => {
-    if (err) {
-      log.error({ err }, 'Error during server close');
-      process.exit(1);
-    }
-    log.info('Server closed cleanly');
+
+  Promise.allSettled([
+    stopBot().catch((err) => log.error({ err }, 'Error during bot stop')),
+    new Promise<void>((resolve) => {
+      server.close((err) => {
+        if (err) log.error({ err }, 'Error during server close');
+        resolve();
+      });
+    }),
+  ]).then(() => {
+    log.info('Shutdown complete');
     process.exit(0);
   });
+
   setTimeout(() => {
     log.warn('Force exit after 10s');
     process.exit(1);

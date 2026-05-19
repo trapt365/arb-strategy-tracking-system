@@ -195,6 +195,10 @@ const FullDeliveryReportSchema = z.object({
   clientId: z.string().min(1),
   topName: z.string().min(1),
   meetingDate: MeetingDateSchema,
+  // Story 1.5: optional поля для трёхуровневого header'а в Telegram. Story 1.4b runF1
+  // прокидывает department из stakeholderMap; weekNumber вычисляется через getISOWeekNumber.
+  department: z.string().min(1).max(100).optional(),
+  weekNumber: z.string().min(1).max(20).optional(),
   summaryLine: z.string().min(1).max(200),
   sections: z.array(FormatSectionSchema).min(1).max(3),
   commitments: z.array(CommitmentSchema),
@@ -209,6 +213,8 @@ const PartialDeliveryReportSchema = z.object({
   clientId: z.string().min(1),
   topName: z.string().min(1),
   meetingDate: MeetingDateSchema,
+  department: z.string().min(1).max(100).optional(),
+  weekNumber: z.string().min(1).max(20).optional(),
   summaryLine: z.string().min(1).max(200),
   sections: z.array(FormatSectionSchema).max(0),
   commitments: z.array(CommitmentSchema),
@@ -226,3 +232,43 @@ export const DeliveryReadyReportSchema = z.discriminatedUnion('partial', [
   PartialDeliveryReportSchema,
 ]);
 export type DeliveryReadyReport = z.infer<typeof DeliveryReadyReportSchema>;
+
+// === Story 1.5: Telegram bot — ReportJob ===
+
+export const ReportJobStatusSchema = z.enum(['queued', 'running', 'completed', 'failed']);
+export type ReportJobStatus = z.infer<typeof ReportJobStatusSchema>;
+
+export const ReportJobSchema = z.object({
+  id: z.string().length(8),
+  chatId: z.number().int(),
+  url: z.string().min(1),
+  clientId: z.string().min(1),
+  topName: z.string().min(1),
+  meetingDate: z.string().min(1),
+  meetingType: z.string().optional(),
+  progressMessageId: z.number().int().optional(),
+  status: ReportJobStatusSchema.default('queued'),
+  queuedAt: z.string().min(1),
+  startedAt: z.string().optional(),
+  completedAt: z.string().optional(),
+  retryCount: z.number().int().nonnegative().default(0),
+  partial: z.boolean().optional(),
+  partialReason: PartialReasonSchema.optional(),
+  // Story 1.6: approval state machine (in-memory only; Story 1.10 adds disk persistence)
+  approvalStatus: z.enum(['approved', 'editing', 'rejected']).optional(),
+  lastReportText: z.string().optional(),
+  pendingEditInstructionMessageId: z.number().int().optional(),
+});
+export type ReportJob = z.infer<typeof ReportJobSchema>;
+
+// === Story 1.6: Approval record ===
+
+export const ApprovalRecordSchema = z.object({
+  reportId: z.string().min(1).max(32),
+  clientId: z.string().min(1),
+  topName: z.string().min(1),
+  chatId: z.number().int(),
+  approvedAt: z.string().min(1),
+  status: z.literal('approved'),
+});
+export type ApprovalRecord = z.infer<typeof ApprovalRecordSchema>;

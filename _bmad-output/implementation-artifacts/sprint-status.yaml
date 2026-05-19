@@ -1,6 +1,7 @@
 # generated: 2026-04-01
-# last_updated: 2026-05-18 (story 1.4b → done: code-review — 16 patches applied across types/errors/claude/f1-report/format-tracker/spec; 3 decisions resolved; sourceFiles wired through commitments-updates overlay; canonical f1.run.total with try/finally + status; safeParseClaudeJSON post-parse fallback for top_message_draft; raw-leak sanitization at error wrap; 147+ tests pass; typecheck clean; 16 deferred items recorded)
-# last_updated_prev: 2026-05-15 (story 1.4a → done: code-review iter 2 — 26 patches applied across claude.ts/retry.ts/prompt-loader/commitments-history/f1-report/smoke; 147/147 tests pass; typecheck + build clean; 6 deferred items added)
+# last_updated: 2026-05-19 (story 1.5 → ready-for-dev: bmad-create-story workflow — 16 AC, 11 tasks, scope locked to /report command + progress + queue + render; approve buttons explicitly deferred to 1.6; 1.4b RunF1 contract preserved; new files src/bot.ts + src/utils/{url-parser,report-queue,telegram-formatter,transcript-duration-guard}.ts; FullDeliveryReportSchema extension department/weekNumber optional)
+# last_updated_prev: 2026-05-18 (story 1.4b → done: code-review — 16 patches applied across types/errors/claude/f1-report/format-tracker/spec; 3 decisions resolved; sourceFiles wired through commitments-updates overlay; canonical f1.run.total with try/finally + status; safeParseClaudeJSON post-parse fallback for top_message_draft; raw-leak sanitization at error wrap; 147+ tests pass; typecheck clean; 16 deferred items recorded)
+# last_updated_prev2: 2026-05-15 (story 1.4a → done: code-review iter 2 — 26 patches applied across claude.ts/retry.ts/prompt-loader/commitments-history/f1-report/smoke; 147/147 tests pass; typecheck + build clean; 6 deferred items added)
 # project: ARB AI-Tracking System
 # project_key: NOKEY
 # tracking_system: file-system
@@ -35,7 +36,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 
 generated: 2026-04-01
-last_updated: 2026-05-18  # story 1.4b → done (code-review, 16 patches, 3 decisions resolved, 16 deferred)
+last_updated: 2026-05-19  # story 1.6 → done: code-review — 12 patches applied (LRU eviction, toast split, reject/edit missing-job guards, multi-report edit state corruption fix, MarkdownV2 fallback on edit re-render, non-reply silence, empty correction guard, post-approve stub action log, log.error→warn); 2 new tests (multi-report corruption, non-reply silence); AC#5 test fixed; 236/236 pass, typecheck clean; 7 deferred items recorded
 project: ARB AI-Tracking System
 project_key: NOKEY
 tracking_system: file-system
@@ -59,8 +60,8 @@ development_status:
   1-3-sheets-adapter-chtenie-konteksta-klienta: done  # 2026-04-30: implementation + code-review fixes (pipeline override, TranscriptConfigError pass-through, ranges array in alertOps/logs); 87/87 tests green, typecheck/build clean
   1-4a-f1-izvlechenie-i-analiz: done  # 2026-05-15: code-review iter 2 — 26 patches (P1-P26); 6 decisions resolved (4 accept-as-is + D4/D5 deferred MVP-limits + D6 → status='aborted' patch); 8 deferred items total; 147/147 tests pass, typecheck + build clean, grep enforcement OK
   1-4b-f1-formatirovanie-i-podgotovka-k-dostavke: done  # 2026-05-18: code-review — 16 patches (P1-P16, 3 D-resolved); slugifyClientId в step-3 persist, safeTopNameSlug guard, persistMeta после step-3 в orchestrator finally, sourceFiles прокинуты через persistCommitmentsUpdates, f1.run.total canonical в runF1 (try/finally + always-info), step12 emit переименован в f1.steps12.total, sanitizeClaudeErrorContext на wrap sites, safeParseClaudeJSON post-parse fallback для top_message_draft, MeetingDateSchema ослаблена, format_step_failed legitimized (AC #13); test для format_step_failed branch добавлен; 147+ тестов pass, typecheck clean
-  1-5-telegram-bot-komanda-report-i-progress: backlog
-  1-6-approval-workflow-approve-edit-reject: backlog
+  1-5-telegram-bot-komanda-report-i-progress: done  # 2026-05-19: code-review done — 11 patches (P1-P11, 2 от внешнего LLM); FALLBACK_BOT_INFO exported, overflow counting fixed, MarkdownV2 escape guard, safeEditMessage fallback, timedOut pre-check, D3 severity split; vitest env fixed (TELEGRAM_TRACKER_CHAT_IDS); 214/214 pass, typecheck clean
+  1-6-approval-workflow-approve-edit-reject: done  # 2026-05-19: code-review done — 12 patches applied; 236/236 pass; 7 deferred items in deferred-work.md
   1-7-delivery-dostavka-otchyota-klientu: backlog
   1-8-first-run-experience-onbording-azizy: backlog
   1-9-ops-logging-i-alerty: backlog

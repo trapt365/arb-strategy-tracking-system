@@ -42,6 +42,10 @@ export function _setClaudeClientForTest(client: Anthropic): void {
   cachedClient = client;
 }
 
+export function getAnthropicClient(): Anthropic {
+  return getClient();
+}
+
 export function isClaudeCircuitOpen(): boolean {
   // TODO(Story 1.9): реализовать circuit breaker (3 fail in 5 min → open).
   return false;

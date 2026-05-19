@@ -28,7 +28,37 @@ const ConfigSchema = z.object({
   GOOGLE_SERVICE_ACCOUNT_JSON: z.string().min(1, 'Path to Google service account JSON'),
 
   GEONLINE_F0_SHEET_ID: z.string().min(1, 'GEONLINE_F0_SHEET_ID is required'),
+
+  // Telegram bot — Story 1.5: whitelist + tuning
+  TELEGRAM_TRACKER_CHAT_IDS: z
+    .string()
+    .min(1, 'TELEGRAM_TRACKER_CHAT_IDS is required (comma-separated chat ids)'),
+  F1_PROGRESS_UPDATES_ENABLED: z
+    .union([z.literal('true'), z.literal('false'), z.literal('1'), z.literal('0'), z.boolean()])
+    .transform((v) => v === 'true' || v === '1' || v === true)
+    .default(true),
+  F1_QUEUE_MAX_SIZE: z.coerce.number().int().positive().max(1000).default(20),
 });
+
+// Lazy parser — invoked from createBot, not at module load (keeps config.ts pure zod parse).
+export function parseTrackerChatIds(raw: string): Set<number> {
+  const ids = new Set<number>();
+  for (const part of raw.split(',')) {
+    const trimmed = part.trim();
+    if (trimmed.length === 0) continue;
+    const n = Number.parseInt(trimmed, 10);
+    if (!Number.isFinite(n) || n === 0) {
+      throw new Error(
+        `TELEGRAM_TRACKER_CHAT_IDS contains an invalid entry: "${trimmed}" (must be a non-zero integer)`,
+      );
+    }
+    ids.add(n);
+  }
+  if (ids.size === 0) {
+    throw new Error('TELEGRAM_TRACKER_CHAT_IDS must contain at least one non-zero numeric chat id');
+  }
+  return ids;
+}
 
 export type Config = z.infer<typeof ConfigSchema>;
 

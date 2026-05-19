@@ -62,6 +62,16 @@
 - **Smart transcript trimming для context_length_exceeded на шаге 3** — формат-промпт получает `extractionOutput` + `analysisOutput` + `commitmentsBefore` + `alerts` → на длинных встречах payload может разрастись. На 1.4b — fail с partial result. Триггер: первый `context_length_exceeded` на шаге 3 в проде.
 - **F3-lite formatting (`format-ceo.md` промпт)** — Epic 4. Не пересекается с 1.4b.
 
+## Deferred from: code review of 1-6-approval-workflow-approve-edit-reject (2026-05-19)
+
+- **`applyEditToReport` нет AbortSignal / timeout** — при зависшем Claude пользователь застревает на «⏳ Применяю правку…» бесконечно; `pendingEdits` уже очищен, нет способа отменить. Триггер: Story 1.9 timeout infrastructure. [src/f1-report.ts:1389]
+- **`applyEditToReport` нет `stop_reason` проверки** — `max_tokens:2000`; если ответ Claude обрезан, весь отчёт молча усекается и отправляется как исправленный. Триггер: длинные отчёты > 2000 output tokens. Story 1.9. [src/f1-report.ts]
+- **`appendApproval` failure: in-memory `approvalStatus='approved'`, нет disk record** — после рестарта отчёт снова одобряем; UI уже показал «✅ Подтверждено». Story 1.10 persistence. [src/bot.ts:662,683]
+- **`isAlreadyApproved` определён но не вызывается** — disk-level idempotency guard не активен в approve callback; полагаемся только на in-memory `approvalStatus`. Story 1.10. [src/utils/approvals.ts:26]
+- **Старая approve-клавиатура остаётся после edit** — после применения правки новое сообщение получает кнопки, но старое сообщение с кнопками тоже остаётся. Оба указывают на тот же jobId. Story 1.7 UX. [src/bot.ts]
+- **`pendingEdits` ключ только по chatId — коллизия в группах** — несколько авторизованных пользователей в одном чате перезаписывают друг другу pending edit. MVP: один пользователь (Азиза). Story 1.10 / Epic 6. [src/bot.ts:130]
+- **`completedJobs` нет TTL** — неограниченное время одобрения: week-old отчёты остаются доступными для approve callbacks. Story 1.10 persistence / eviction. [src/bot.ts:127]
+
 ## Deferred from: code review of story-1.1 (2026-04-21)
 
 - `/health` строгое матчинг URL — `/health?x=1`, `/health/`, `/HEALTH` дают 404. Docker internal probe работает на точном `/health`; внешние probe придут в Story 1.14 (Hostinger VPS deploy).
@@ -81,3 +91,12 @@
 - **Smoke-script CWD-relative paths и `??=` для metadata** (`scripts/f1-smoke.ts`). Manual-tool design; ломается только при запуске не из project-root. Acceptable.
 - **`topNameSlug` collision для разных топов с одинаковым именем** (`src/utils/commitments-history.ts:20-26`). При 2-х топах со слагом `жанель` дедуп `who+what+deadline` смешает истории. MVP-limit (1 клиент с уникальными именами). Триггер: 2-й клиент ИЛИ дубликат slug в `stakeholders[]` одного клиента. Решение: добавить `clientId` в dedup-key или валидировать уникальность slug на readClientContext.
 - **`reportId = randomUUID().slice(0, 8)` — 32-bit collision risk** (`src/f1-report.ts:227`). Same-day rerun overwrite вероятность ~1/4B; статистически невозможна на 5 встречах/нед в MVP. Триггер: переход на batch-pipeline (Story 3.0/Scheduler) или auditable filename-collision logs.
+## Deferred from: code review of 1-5-telegram-bot-komanda-report-i-progress (2026-05-19)
+
+- **randomUUID().slice(0,8) коллизия** — теоретическая, пренебрежимо при maxSize=20
+- **Worker jobs.shift() vs dequeue()** — дублирование логики, maintenance trap, не баг
+- **timedOutJobs утечка для queued-но-не-running jobs** — ограничена maxSize=20
+- **getISOWeekNumber прямой вызов в format-prompt f1-report.ts** — pre-existing, заменить на safeWeekNumber
+- **parseTrackerChatIds deferred validation** — намеренный дизайн, падает при старте
+- **startBot().catch без graceful stop worker** — несущественно при process.exit(1)
+- **formatProgressStep('queued') мёртвый код** — нужен в Story 1.12

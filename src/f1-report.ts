@@ -5,7 +5,14 @@ import { config } from './config.js';
 import { logger as rootLogger, type Logger } from './logger.js';
 import { alertOps } from './ops.js';
 import { loadPrompt } from './utils/prompt-loader.js';
-import { callClaude, callClaudeSafe, sanitizeClaudeErrorContext } from './adapters/claude.js';
+import {
+  callClaude,
+  callClaudeSafe,
+  sanitizeClaudeErrorContext,
+  getAnthropicClient,
+  shouldRetryClaude,
+} from './adapters/claude.js';
+import { withRetry } from './utils/retry.js';
 import {
   loadOpenCommitments,
   topNameSlug,
@@ -675,6 +682,14 @@ export function getISOWeekNumber(isoDate: string): string {
   return String(weekNum);
 }
 
+function safeWeekNumber(meetingDate: string): string | undefined {
+  try {
+    return getISOWeekNumber(meetingDate);
+  } catch {
+    return undefined;
+  }
+}
+
 export function assembleFullDeliveryReport(args: {
   reportId: string;
   meta: RunF1Steps34Input['meta'];
@@ -688,6 +703,8 @@ export function assembleFullDeliveryReport(args: {
     clientId: args.meta.clientId,
     topName: args.meta.topName,
     meetingDate: args.meta.meetingDate,
+    department: args.meta.department,
+    weekNumber: safeWeekNumber(args.meta.meetingDate),
     summaryLine: args.formatOutput.summary_line,
     sections: args.formatOutput.report_sections,
     commitments: args.extraction.commitments,
@@ -716,6 +733,8 @@ export function assemblePartialDeliveryReport(args: {
     clientId: args.meta.clientId,
     topName: args.meta.topName,
     meetingDate: args.meta.meetingDate,
+    department: args.meta.department,
+    weekNumber: safeWeekNumber(args.meta.meetingDate),
     summaryLine: PARTIAL_SUMMARY_BY_REASON[args.partialReason],
     sections: [],
     commitments: args.extraction.commitments,
@@ -1350,4 +1369,64 @@ export async function runF1(input: RunF1Steps12Input): Promise<RunF1Result> {
       }
     }
   }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Story 1.6: Apply a point correction to an already-rendered report via Claude.
+// ─────────────────────────────────────────────────────────────────────────────
+
+type MessagesCreateFn = (params: {
+  model: string;
+  max_tokens: number;
+  messages: Array<{ role: 'user'; content: string }>;
+}) => Promise<{ content: Array<{ type: string; text?: string }> }>;
+
+/**
+ * Apply a point correction to an already-rendered report text via Claude.
+ * Uses prompts/edit-apply.md. Returns the corrected plain text (not JSON-parsed).
+ * Called by bot.ts edit handler; does NOT touch runF1 pipeline state.
+ */
+export async function applyEditToReport(
+  currentReportText: string,
+  correction: string,
+  deps: {
+    signal?: AbortSignal;
+    loadPrompt?: typeof loadPrompt;
+    messagesCreate?: MessagesCreateFn;
+  } = {},
+): Promise<string> {
+  const promptFn = deps.loadPrompt ?? loadPrompt;
+  const promptText = await promptFn('edit-apply', {
+    currentReport: currentReportText,
+    correction,
+  });
+
+  const createFn: MessagesCreateFn =
+    deps.messagesCreate ??
+    ((params) =>
+      getAnthropicClient().messages.create({
+        model: params.model,
+        max_tokens: params.max_tokens,
+        messages: params.messages,
+      }) as Promise<{ content: Array<{ type: string; text?: string }> }>);
+
+  const response = await withRetry(
+    () =>
+      createFn({
+        model: config.ANTHROPIC_MODEL,
+        max_tokens: 2000,
+        messages: [{ role: 'user', content: promptText }],
+      }),
+    { maxRetries: 2, backoffMs: [1000, 2000], shouldRetry: shouldRetryClaude },
+  );
+
+  const content = response.content
+    .filter((b): b is { type: 'text'; text: string } => b.type === 'text' && typeof b.text === 'string')
+    .map((b) => b.text)
+    .join('');
+
+  if (!content.trim()) {
+    throw new Error('applyEditToReport: empty response from Claude');
+  }
+  return content.trim();
 }

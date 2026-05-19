@@ -1099,3 +1099,58 @@ describe('helpers (1.4b)', () => {
     expect(() => getISOWeekNumber('not-a-date')).toThrow(F1PipelineError);
   });
 });
+
+// ─── Story 1.6: applyEditToReport ────────────────────────────────────────────
+
+import { applyEditToReport } from './f1-report.js';
+
+describe('applyEditToReport (Story 1.6)', () => {
+  it('calls messagesCreate with currentReport and correction in prompt content', async () => {
+    const createMock = vi.fn().mockResolvedValue({
+      content: [{ type: 'text', text: 'Конверсия 30%, не 28%.' }],
+    });
+    const loadPromptMock = vi.fn().mockResolvedValue(
+      'Report: CURRENT_REPORT\nFix: CORRECTION',
+    );
+
+    const result = await applyEditToReport('original report text', 'Конверсия 30%, не 28%', {
+      messagesCreate: createMock,
+      loadPrompt: loadPromptMock,
+    });
+
+    expect(loadPromptMock).toHaveBeenCalledWith('edit-apply', {
+      currentReport: 'original report text',
+      correction: 'Конверсия 30%, не 28%',
+    });
+    expect(createMock).toHaveBeenCalledTimes(1);
+    expect(createMock.mock.calls[0][0].messages[0].content).toContain('Report: CURRENT_REPORT');
+    expect(result).toBe('Конверсия 30%, не 28%.');
+  });
+
+  it('returns text from the first text-block of Claude response', async () => {
+    const createMock = vi.fn().mockResolvedValue({
+      content: [
+        { type: 'thinking', thinking: 'internal' },
+        { type: 'text', text: '  corrected report  ' },
+      ],
+    });
+    const loadPromptMock = vi.fn().mockResolvedValue('prompt');
+
+    const result = await applyEditToReport('report', 'fix', {
+      messagesCreate: createMock,
+      loadPrompt: loadPromptMock,
+    });
+    expect(result).toBe('corrected report');
+  });
+
+  it('throws if Claude returns empty text', async () => {
+    const createMock = vi.fn().mockResolvedValue({
+      content: [{ type: 'text', text: '   ' }],
+    });
+    const loadPromptMock = vi.fn().mockResolvedValue('prompt');
+
+    await expect(
+      applyEditToReport('report', 'fix', { messagesCreate: createMock, loadPrompt: loadPromptMock }),
+    ).rejects.toThrow('empty response from Claude');
+  });
+});
