@@ -8,6 +8,10 @@ import {
   formatDeliveryReport,
   formatFullDeliveryReport,
   formatPartialReportFallback,
+  formatDeliveryPlainText,
+  formatTopMessagePlainText,
+  formatWelcomeMessage,
+  formatHelpHint,
   splitForTelegram,
   TELEGRAM_SAFE_MARGIN,
 } from './telegram-formatter.js';
@@ -219,5 +223,159 @@ describe('formatDeliveryReport (discriminated)', () => {
   it('partial:true → fallback', () => {
     const out = formatDeliveryReport(PARTIAL_FIXTURE);
     expect(out).toContain('Автоформатирование не удалось');
+  });
+});
+
+describe('commitment lifecycle emojis (Story 1.7)', () => {
+  it('status: completed → 🟢 Выполнено в delivery report', () => {
+    const fixture = {
+      ...FULL_FIXTURE,
+      commitments: [
+        { who: 'Жанель', what: 'видео', deadline: 'до 17.03', quote: 'переводим', status: 'completed' as const },
+      ],
+    };
+    const out = formatFullDeliveryReport(fixture);
+    expect(out).toContain('🟢 Выполнено');
+  });
+
+  it('status: overdue → 🔴 Просрочено в delivery report', () => {
+    const fixture = {
+      ...FULL_FIXTURE,
+      commitments: [
+        { who: 'Жанель', what: 'видео', deadline: 'до 17.03', quote: 'переводим', status: 'overdue' as const },
+      ],
+    };
+    const out = formatFullDeliveryReport(fixture);
+    expect(out).toContain('🔴 Просрочено');
+  });
+
+  it('status: undefined → 🔵 Новое (backward compat)', () => {
+    const fixture = {
+      ...FULL_FIXTURE,
+      commitments: [
+        { who: 'Жанель', what: 'видео', deadline: 'до 17.03', quote: 'переводим' },
+      ],
+    };
+    const out = formatFullDeliveryReport(fixture);
+    expect(out).toContain('🔵 Новое');
+  });
+
+  it('status: open → 🔵 Новое', () => {
+    const fixture = {
+      ...FULL_FIXTURE,
+      commitments: [
+        { who: 'Жанель', what: 'видео', deadline: 'до 17.03', quote: 'переводим', status: 'open' as const },
+      ],
+    };
+    const out = formatFullDeliveryReport(fixture);
+    expect(out).toContain('🔵 Новое');
+  });
+
+  it('commitments header больше не содержит hardcoded 🔵', () => {
+    const out = formatFullDeliveryReport(FULL_FIXTURE);
+    // Header should be *Commitments:* without 🔵 prefix
+    expect(out).toContain('*Commitments:*');
+    expect(out).not.toMatch(/🔵 \*Commitments:\*/);
+  });
+});
+
+describe('formatDeliveryPlainText (Story 1.7)', () => {
+  it('plain text без MarkdownV2 escape chars', () => {
+    const out = formatDeliveryPlainText(FULL_FIXTURE);
+    expect(out).not.toContain('\\');
+    expect(out).toContain('📋 Жанель │ Продажи │ Нед. 18');
+    expect(out).toContain('Конверсия 28%');
+    expect(out).toContain('Решения');
+  });
+
+  it('включает commitments с lifecycle emoji', () => {
+    const fixture = {
+      ...FULL_FIXTURE,
+      commitments: [
+        { who: 'Жанель', what: 'видео', deadline: 'до 17.03', quote: 'переводим', status: 'completed' as const },
+      ],
+    };
+    const out = formatDeliveryPlainText(fixture);
+    expect(out).toContain('🟢 Выполнено');
+    expect(out).toContain('Commitments:');
+  });
+
+  it('без commitments → нет секции Commitments', () => {
+    const fixture = { ...FULL_FIXTURE, commitments: [] };
+    const out = formatDeliveryPlainText(fixture);
+    expect(out).not.toContain('Commitments:');
+  });
+});
+
+describe('formatWelcomeMessage (Story 1.8)', () => {
+  it('с непустым firstName → "Привет, {Name}!"', () => {
+    const out = formatWelcomeMessage('Азиза');
+    expect(out).toContain('Привет, Азиза!');
+    expect(out).toContain('AI-трекинг бот');
+  });
+
+  it('без имени → "Привет!" без запятой', () => {
+    const out = formatWelcomeMessage(undefined);
+    expect(out).toContain('Привет!');
+    expect(out).not.toContain('Привет, ');
+  });
+
+  it('пустая строка → "Привет!" без запятой (graceful)', () => {
+    const out = formatWelcomeMessage('');
+    expect(out).toContain('Привет!');
+    expect(out).not.toContain('Привет, !');
+    expect(out).not.toContain('Привет, ,');
+  });
+
+  it('содержит /report и /help', () => {
+    const out = formatWelcomeMessage('Азиза');
+    expect(out).toContain('/report');
+    expect(out).toContain('/help');
+  });
+
+  it('перечисляет будущие Bot Menu items «скоро»', () => {
+    const out = formatWelcomeMessage('Азиза');
+    expect(out).toContain('🔍 Найти');
+    expect(out).toContain('📋 Повестка');
+    expect(out).toContain('📊 Статус');
+    expect(out).toContain('Скоро');
+  });
+
+  it('plain text — НЕ содержит MarkdownV2-escape backslashes', () => {
+    // Welcome is plain text — we do not pre-escape; reserved chars appear literally.
+    const out = formatWelcomeMessage('Азиза');
+    expect(out).not.toContain('\\');
+  });
+});
+
+describe('formatHelpHint (Story 1.8)', () => {
+  it('содержит /report и /help', () => {
+    const out = formatHelpHint();
+    expect(out).toContain('/report');
+    expect(out).toContain('/help');
+  });
+
+  it('начинается с ℹ и говорит "Не понял"', () => {
+    const out = formatHelpHint();
+    expect(out.startsWith('ℹ️')).toBe(true);
+    expect(out).toMatch(/Не понял/);
+  });
+
+  it('plain text — без backslash-escape MarkdownV2 символов', () => {
+    const out = formatHelpHint();
+    expect(out).not.toContain('\\');
+  });
+});
+
+describe('formatTopMessagePlainText (Story 1.7)', () => {
+  it('формат "📱 Для {Name}:\\n{text}"', () => {
+    const out = formatTopMessagePlainText('Жанель', 'По итогам встречи переходим на видео.');
+    expect(out).toBe('📱 Для Жанель:\nПо итогам встречи переходим на видео.');
+  });
+
+  it('ограничивает полный WhatsApp block до 500 символов', () => {
+    const out = formatTopMessagePlainText('Жанель', 'А'.repeat(800));
+    expect(out.length).toBeLessThanOrEqual(500);
+    expect(out).toMatch(/^📱 Для Жанель:\nА+$/);
   });
 });

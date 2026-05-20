@@ -36,7 +36,9 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 
 generated: 2026-04-01
-last_updated: 2026-05-19  # story 1.6 → done: code-review — 12 patches applied (LRU eviction, toast split, reject/edit missing-job guards, multi-report edit state corruption fix, MarkdownV2 fallback on edit re-render, non-reply silence, empty correction guard, post-approve stub action log, log.error→warn); 2 new tests (multi-report corruption, non-reply silence); AC#5 test fixed; 236/236 pass, typecheck clean; 7 deferred items recorded
+last_updated: 2026-05-20  # story 1.8 → review: bmad-dev-story workflow — /start + /help handlers через единый formatWelcomeMessage (plain text, без MarkdownV2); fallback hint в bot.on('message:text') когда pendingEdits и pendingNotes пусты (UX-DR3 «Тишина — враг»); setMyCommands расширен до [start, help, report]; +6 formatter tests + +10 bot tests; 279/279 regression pass; typecheck clean
+last_updated_prev: 2026-05-20  # story 1.8 → ready-for-dev: bmad-create-story workflow — 10 AC, 7 tasks; /start + /help onboarding handlers; fallback hint в message:text; setMyCommands расширен до [start, help, report]; формат welcome plain-text
+last_updated_prev2: 2026-05-20  # story 1.7 → done: code-review fixes — retry_delivery requires approved state; delivered reports cannot re-enter edit flow; WhatsApp plain-text block capped at 500 chars
 project: ARB AI-Tracking System
 project_key: NOKEY
 tracking_system: file-system
@@ -62,8 +64,8 @@ development_status:
   1-4b-f1-formatirovanie-i-podgotovka-k-dostavke: done  # 2026-05-18: code-review — 16 patches (P1-P16, 3 D-resolved); slugifyClientId в step-3 persist, safeTopNameSlug guard, persistMeta после step-3 в orchestrator finally, sourceFiles прокинуты через persistCommitmentsUpdates, f1.run.total canonical в runF1 (try/finally + always-info), step12 emit переименован в f1.steps12.total, sanitizeClaudeErrorContext на wrap sites, safeParseClaudeJSON post-parse fallback для top_message_draft, MeetingDateSchema ослаблена, format_step_failed legitimized (AC #13); test для format_step_failed branch добавлен; 147+ тестов pass, typecheck clean
   1-5-telegram-bot-komanda-report-i-progress: done  # 2026-05-19: code-review done — 11 patches (P1-P11, 2 от внешнего LLM); FALLBACK_BOT_INFO exported, overflow counting fixed, MarkdownV2 escape guard, safeEditMessage fallback, timedOut pre-check, D3 severity split; vitest env fixed (TELEGRAM_TRACKER_CHAT_IDS); 214/214 pass, typecheck clean
   1-6-approval-workflow-approve-edit-reject: done  # 2026-05-19: code-review done — 12 patches applied; 236/236 pass; 7 deferred items in deferred-work.md
-  1-7-delivery-dostavka-otchyota-klientu: backlog
-  1-8-first-run-experience-onbording-azizy: backlog
+  1-7-delivery-dostavka-otchyota-klientu: done
+  1-8-first-run-experience-onbording-azizy: review  # 2026-05-20: implementation done — /start + /help через единый formatWelcomeMessage (plain text); fallback hint в message:text покрывает свободный текст и неизвестные команды; setMyCommands → [start, help, report]; +16 tests (10 bot + 6 formatter), 279/279 pass, typecheck clean
   1-9-ops-logging-i-alerty: backlog
   1-10-data-persistence-i-client-isolation: backlog
   1-11-canary-test-i-golden-dataset: backlog

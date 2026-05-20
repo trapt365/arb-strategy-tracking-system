@@ -20,9 +20,12 @@ import { createReportQueue, QueueOverflowError, type ReportQueue } from './utils
 import {
   escapeMarkdownV2,
   formatDeliveryReport,
+  formatTopMessagePlainText,
   formatErrorMessage,
+  formatHelpHint,
   formatProgressStep,
   formatQueueAck,
+  formatWelcomeMessage,
   splitForTelegram,
   TELEGRAM_SAFE_MARGIN,
   type ProgressStep,
@@ -129,10 +132,41 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
   // pendingEdits: chatId → { jobId, instructionMessageId } for edit reply flow.
   interface PendingEdit { jobId: string; instructionMessageId: number }
   const pendingEdits = new Map<number, PendingEdit>();
+  // Story 1.7: pendingNotes for post-delivery correction flow.
+  interface PendingNote { jobId: string; instructionMessageId: number }
+  const pendingNotes = new Map<number, PendingNote>();
 
   /** Look up a job by id in both live queue and completed-jobs store. */
   function peekJob(jobId: string): ReportJob | undefined {
     return queue.peek(jobId) ?? completedJobs.get(jobId);
+  }
+
+  /**
+   * Send delivery-ready messages after approval.
+   * Returns true if delivery succeeded, false otherwise.
+   */
+  async function deliverReport(job: ReportJob): Promise<boolean> {
+    const messageIds: number[] = [];
+    const continuation = `📋 ${escapeMarkdownV2(job.topName)} \\(продолжение\\)`;
+    const parts = splitForTelegram(job.lastReportText ?? '', TELEGRAM_SAFE_MARGIN, continuation);
+
+    for (let i = 0; i < parts.length; i++) {
+      const sent = await bot.api.sendMessage(job.chatId, parts[i]!, {
+        parse_mode: 'MarkdownV2',
+      });
+      messageIds.push(sent.message_id);
+    }
+
+    // Plain-text WhatsApp block (if topMessageDraft exists).
+    if (job.topMessageDraft && job.topMessageDraft.trim().length > 0) {
+      const plainText = formatTopMessagePlainText(job.topName, job.topMessageDraft);
+      const sent = await bot.api.sendMessage(job.chatId, plainText);
+      messageIds.push(sent.message_id);
+    }
+
+    job.deliveryMessageIds = messageIds;
+    job.approvalStatus = 'delivered';
+    return true;
   }
 
   function buildApproveKeyboard(topName: string, jobId: string): InlineKeyboard {
@@ -471,6 +505,11 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
       const lastMessageId = await renderFinalReport(job, text);
       job.lastReportText = text;
 
+      // Preserve topMessageDraft for delivery step (Story 1.7).
+      if (!result.formattedReport.partial && result.formattedReport.topMessageDraft) {
+        job.topMessageDraft = result.formattedReport.topMessageDraft;
+      }
+
       // Attach approve keyboard to the last message (non-partial reports only).
       if (!result.formattedReport.partial && lastMessageId !== undefined) {
         try {
@@ -556,6 +595,32 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
       return;
     }
     await next();
+  });
+
+  // ───────── /start and /help (Story 1.8) ─────────
+  bot.command('start', async (ctx) => {
+    const firstName = ctx.from?.first_name?.trim() || undefined;
+    const welcomeText = formatWelcomeMessage(firstName);
+    try {
+      await ctx.reply(welcomeText);
+    } catch (err) {
+      log.warn({ err, chatId: ctx.chat.id }, 'bot.start.reply_failed');
+    }
+    log.info(
+      { step: 'bot.start.welcomed', chatId: ctx.chat.id, firstName },
+      'welcome sent',
+    );
+  });
+
+  bot.command('help', async (ctx) => {
+    const firstName = ctx.from?.first_name?.trim() || undefined;
+    const welcomeText = formatWelcomeMessage(firstName);
+    try {
+      await ctx.reply(welcomeText);
+    } catch (err) {
+      log.warn({ err, chatId: ctx.chat.id }, 'bot.help.reply_failed');
+    }
+    log.info({ step: 'bot.help.requested', chatId: ctx.chat.id }, 'help sent');
   });
 
   // ───────── /report command ─────────
@@ -658,7 +723,7 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
       log.warn({ jobId }, 'bot.approve.job_not_found');
       return;
     }
-    if (job.approvalStatus === 'approved') {
+    if (job.approvalStatus === 'approved' || job.approvalStatus === 'delivered') {
       await ctx.answerCallbackQuery({ text: 'ℹ️ Уже отправлено.' });
       return;
     }
@@ -704,6 +769,17 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
     }
 
     log.info({ step: 'bot.approve.completed', jobId, topName: job.topName }, 'report approved');
+
+    // Story 1.7: Deliver report to Aziza for forwarding.
+    try {
+      await deliverReport(job);
+      log.info({ step: 'bot.delivery.completed', jobId, topName: job.topName }, 'delivery sent');
+    } catch (err) {
+      log.warn({ err, jobId }, 'bot.delivery.failed');
+      await ctx.reply('⚠️ Не доставлено. Попробуй ещё раз.', {
+        reply_markup: new InlineKeyboard().text('🔄 Повторить', `retry_delivery:${jobId}`),
+      });
+    }
   });
 
   bot.callbackQuery(/^edit:(.+)$/, async (ctx) => {
@@ -715,7 +791,7 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
       log.warn({ jobId }, 'bot.edit.job_not_found');
       return;
     }
-    if (job.approvalStatus === 'approved') {
+    if (job.approvalStatus === 'approved' || job.approvalStatus === 'delivered') {
       await ctx.answerCallbackQuery({ text: 'ℹ️ Уже подтверждено.' });
       return;
     }
@@ -783,7 +859,70 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
     log.info({ step: 'bot.reject.completed', jobId }, 'report rejected');
   });
 
-  bot.callbackQuery(/^post_(note|detail):/, async (ctx) => {
+  // Story 1.7: retry delivery handler
+  bot.callbackQuery(/^retry_delivery:(.+)$/, async (ctx) => {
+    const jobId = ctx.match[1]!;
+    const job = peekJob(jobId);
+
+    if (job === undefined) {
+      await ctx.answerCallbackQuery({ text: 'ℹ️ Отчёт уже недоступен.' });
+      return;
+    }
+    if (job.approvalStatus === 'delivered') {
+      await ctx.answerCallbackQuery({ text: 'ℹ️ Уже доставлено.' });
+      return;
+    }
+    if (job.approvalStatus !== 'approved') {
+      await ctx.answerCallbackQuery({ text: 'ℹ️ Сначала подтверди отчёт.' });
+      return;
+    }
+
+    await ctx.answerCallbackQuery();
+
+    try {
+      await deliverReport(job);
+      log.info({ step: 'bot.delivery.retry.completed', jobId }, 'delivery retry succeeded');
+    } catch (err) {
+      log.warn({ err, jobId }, 'bot.delivery.retry.failed');
+      await ctx.reply('⚠️ Не доставлено. Попробуй ещё раз.', {
+        reply_markup: new InlineKeyboard().text('🔄 Повторить', `retry_delivery:${jobId}`),
+      });
+      alertOps({
+        pipeline: 'F1',
+        step: 'bot.delivery.retry.failed',
+        clientId: job.clientId,
+        error: err,
+        context: { jobId },
+      });
+    }
+  });
+
+  // Story 1.7: post_note handler — follow-up correction after delivery
+  bot.callbackQuery(/^post_note:(.+)$/, async (ctx) => {
+    const jobId = ctx.match[1]!;
+    const job = peekJob(jobId);
+
+    if (job === undefined) {
+      await ctx.answerCallbackQuery({ text: 'ℹ️ Отчёт уже недоступен.' });
+      return;
+    }
+    // Уточнение доступно только после delivery.
+    if (job.approvalStatus !== 'delivered') {
+      await ctx.answerCallbackQuery({ text: 'ℹ️ Сначала дождись доставки отчёта.' });
+      return;
+    }
+
+    await ctx.answerCallbackQuery();
+
+    const sent = await ctx.reply(
+      `📝 Напиши уточнение для ${job.topName}. Ответь на это сообщение.`,
+    );
+    pendingNotes.set(job.chatId, { jobId, instructionMessageId: sent.message_id });
+    log.info({ step: 'bot.post_note.started', jobId }, 'note flow started');
+  });
+
+  // Story 1.7: post_detail stub (separate from post_note)
+  bot.callbackQuery(/^post_detail:(.+)$/, async (ctx) => {
     await ctx.answerCallbackQuery({ text: 'Скоро доступно 🔜' });
     log.info({ step: 'bot.post_approve.stub', action: ctx.callbackQuery.data }, 'stub handler');
   });
@@ -792,8 +931,49 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
 
   bot.on('message:text', async (ctx) => {
     const chatId = ctx.chat.id;
+
+    // Story 1.7: Check pendingNotes first (post-delivery corrections).
+    const note = pendingNotes.get(chatId);
+    if (note !== undefined) {
+      const noteReplyToId = ctx.message.reply_to_message?.message_id;
+      if (noteReplyToId === note.instructionMessageId) {
+        const job = peekJob(note.jobId);
+        if (job === undefined) {
+          pendingNotes.delete(chatId);
+          await ctx.reply('ℹ️ Отчёт уже недоступен.');
+          return;
+        }
+        const correction = ctx.message.text.trim();
+        if (!correction) return;
+
+        pendingNotes.delete(chatId);
+        const noteText = `📝 Уточнение к отчёту ${job.topName}:\n${correction}`;
+        await ctx.reply(noteText); // plain text, для WhatsApp forwarding.
+        log.info(
+          { step: 'bot.post_note.sent', jobId: note.jobId, len: correction.length },
+          'note sent',
+        );
+        return;
+      }
+      // Reply not on note instruction — fallthrough to pendingEdits.
+    }
+
     const pending = pendingEdits.get(chatId);
-    if (pending === undefined) return;
+    if (pending === undefined) {
+      // Story 1.8: fallback hint вместо молчания (UX-DR3 «Тишина — враг»).
+      // Сюда падают: свободный текст без reply и неизвестные команды
+      // (Telegram доставляет их как обычный message:text без bot_command match).
+      try {
+        await ctx.reply(formatHelpHint());
+      } catch (err) {
+        log.warn({ err, chatId }, 'bot.fallback.reply_failed');
+      }
+      log.info(
+        { step: 'bot.fallback.hint', chatId, textLen: ctx.message.text.length },
+        'fallback hint sent',
+      );
+      return;
+    }
 
     const replyToId = ctx.message.reply_to_message?.message_id;
     if (replyToId === undefined) return;
@@ -904,6 +1084,8 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
 
     try {
       await bot.api.setMyCommands([
+        { command: 'start',  description: 'Начать работу с ботом' },
+        { command: 'help',   description: 'Инструкция и список команд' },
         { command: 'report', description: 'Создать отчёт по встрече' },
       ]);
     } catch (err) {

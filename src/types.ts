@@ -255,9 +255,12 @@ export const ReportJobSchema = z.object({
   partial: z.boolean().optional(),
   partialReason: PartialReasonSchema.optional(),
   // Story 1.6: approval state machine (in-memory only; Story 1.10 adds disk persistence)
-  approvalStatus: z.enum(['approved', 'editing', 'rejected']).optional(),
+  approvalStatus: z.enum(['approved', 'editing', 'rejected', 'delivered']).optional(),
   lastReportText: z.string().optional(),
   pendingEditInstructionMessageId: z.number().int().optional(),
+  // Story 1.7: delivery tracking
+  deliveryMessageIds: z.array(z.number().int()).optional(),
+  topMessageDraft: z.string().optional(),
 });
 export type ReportJob = z.infer<typeof ReportJobSchema>;
 

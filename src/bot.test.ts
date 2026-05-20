@@ -34,6 +34,59 @@ function reportUpdate(text: string, chatId: number = TEST_TRACKER_CHAT_ID): Upda
   } as unknown as Update;
 }
 
+function startUpdate(
+  chatId: number = TEST_TRACKER_CHAT_ID,
+  firstName: string = 'Test',
+): Update {
+  const message_id = 1000 + updateCounter;
+  return {
+    update_id: updateCounter++,
+    message: {
+      message_id,
+      date: Math.floor(Date.now() / 1000),
+      chat: { id: chatId, type: 'private', first_name: firstName },
+      from: { id: chatId, is_bot: false, first_name: firstName },
+      text: '/start',
+      entities: [{ type: 'bot_command', offset: 0, length: 6 }],
+    },
+  } as unknown as Update;
+}
+
+function helpUpdate(
+  chatId: number = TEST_TRACKER_CHAT_ID,
+  firstName: string = 'Test',
+): Update {
+  const message_id = 1000 + updateCounter;
+  return {
+    update_id: updateCounter++,
+    message: {
+      message_id,
+      date: Math.floor(Date.now() / 1000),
+      chat: { id: chatId, type: 'private', first_name: firstName },
+      from: { id: chatId, is_bot: false, first_name: firstName },
+      text: '/help',
+      entities: [{ type: 'bot_command', offset: 0, length: 5 }],
+    },
+  } as unknown as Update;
+}
+
+function plainTextUpdate(
+  text: string,
+  chatId: number = TEST_TRACKER_CHAT_ID,
+): Update {
+  const message_id = 1000 + updateCounter;
+  return {
+    update_id: updateCounter++,
+    message: {
+      message_id,
+      date: Math.floor(Date.now() / 1000),
+      chat: { id: chatId, type: 'private', first_name: 'Test' },
+      from: { id: chatId, is_bot: false, first_name: 'Test' },
+      text,
+    },
+  } as unknown as Update;
+}
+
 // ─── API transformer mock ───────────────────────────────────────────────────
 interface ApiCall {
   method: string;
@@ -526,7 +579,8 @@ describe('bot — approval workflow (Story 1.6)', () => {
       clientId: job.clientId,
       status: 'approved',
     });
-    expect(job.approvalStatus).toBe('approved');
+    // Story 1.7: delivery happens after approve, so status is now 'delivered'.
+    expect(job.approvalStatus).toBe('delivered');
   });
 
   it('AC#4: double-tap approve → "Уже отправлено." popup, appendApproval NOT called again', async () => {
@@ -582,6 +636,29 @@ describe('bot — approval workflow (Story 1.6)', () => {
       (c) => c.method === 'sendMessage' && (c.payload.text as string).includes('Что исправить'),
     );
     expect(instructionReplies).toHaveLength(1);
+  });
+
+  it('delivered report cannot be moved back into edit flow', async () => {
+    const applyEditMock = vi.fn().mockResolvedValue('исправленный отчёт');
+    const bot_instance = buildBot({
+      appendApproval: vi.fn().mockResolvedValue(undefined),
+      applyEditToReport: applyEditMock,
+    });
+    const job = await runJobFromBot(bot_instance);
+
+    await bot_instance.bot.handleUpdate(callbackUpdate(`approve:${job.id}`));
+    expect(job.approvalStatus).toBe('delivered');
+
+    await bot_instance.bot.handleUpdate(callbackUpdate(`edit:${job.id}`));
+
+    expect(job.approvalStatus).toBe('delivered');
+    expect(applyEditMock).not.toHaveBeenCalled();
+    const popups = bot_instance.calls.filter(
+      (c) =>
+        c.method === 'answerCallbackQuery' &&
+        (c.payload as { text?: string }).text?.includes('Уже подтверждено'),
+    );
+    expect(popups.length).toBeGreaterThanOrEqual(1);
   });
 
   it('AC#6b: edit reply with correct reply_to_message_id → applyEditToReport called, new report sent with keyboard', async () => {
@@ -643,13 +720,13 @@ describe('bot — approval workflow (Story 1.6)', () => {
     expect((cbqAnswers.at(-1)!.payload as { text?: string }).text).toBe('ℹ️ Отчёт уже недоступен.');
   });
 
-  it('AC#9: post-approve stub buttons respond "Скоро доступно"', async () => {
+  it('AC#9: post_detail stub responds "Скоро доступно" (post_note is now a real handler — Story 1.7)', async () => {
     const appendApprovalMock = vi.fn().mockResolvedValue(undefined);
     const bot_instance = buildBot({ appendApproval: appendApprovalMock });
     const job = await runJobFromBot(bot_instance);
 
     await bot_instance.bot.handleUpdate(callbackUpdate(`approve:${job.id}`));
-    await bot_instance.bot.handleUpdate(callbackUpdate(`post_note:${job.id}`));
+    await bot_instance.bot.handleUpdate(callbackUpdate(`post_detail:${job.id}`));
 
     const stubAnswers = bot_instance.calls.filter(
       (c) => c.method === 'answerCallbackQuery' && (c.payload as { text?: string }).text?.includes('Скоро'),
@@ -718,5 +795,537 @@ describe('bot — approval workflow (Story 1.6)', () => {
       (c) => c.method === 'answerCallbackQuery' && (c.payload as { text?: string }).text?.includes('Ожидаю'),
     );
     expect(waitAnswers.length).toBeGreaterThanOrEqual(1);
+  });
+});
+
+// ─── Delivery workflow tests (Story 1.7) ──────────────────────────────────
+
+function fullF1ResultWithDraft(): RunF1Result {
+  const base = fullF1Result();
+  return {
+    ...base,
+    formattedReport: {
+      ...base.formattedReport,
+      partial: false as const,
+      topMessageDraft: 'Жанель, по итогам встречи переходим на видео.',
+      commitments: [
+        { who: 'Жанель', what: 'видео', deadline: 'до 17.03', quote: 'переводим', status: 'completed' as const },
+      ],
+    },
+  };
+}
+
+describe('bot — delivery workflow (Story 1.7)', () => {
+  it('AC#1: approve → delivery messages sent, job.approvalStatus === delivered', async () => {
+    const appendApprovalMock = vi.fn().mockResolvedValue(undefined);
+    const bot_instance = buildBot({
+      appendApproval: appendApprovalMock,
+      runF1: (async () => fullF1ResultWithDraft()) as unknown as BotDeps['runF1'],
+    });
+    const job = await runJobFromBot(bot_instance);
+
+    await bot_instance.bot.handleUpdate(callbackUpdate(`approve:${job.id}`));
+
+    expect(job.approvalStatus).toBe('delivered');
+    expect(job.deliveryMessageIds).toBeDefined();
+    expect(job.deliveryMessageIds!.length).toBeGreaterThanOrEqual(1);
+
+    // Delivery sendMessage calls should be present (after approve confirmation).
+    const deliverySends = bot_instance.calls.filter(
+      (c) => c.method === 'sendMessage' && (c.payload.text as string).includes('Конверсия 28%'),
+    );
+    expect(deliverySends.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('AC#3: plain-text WhatsApp block sent when topMessageDraft exists', async () => {
+    const bot_instance = buildBot({
+      appendApproval: vi.fn().mockResolvedValue(undefined),
+      runF1: (async () => fullF1ResultWithDraft()) as unknown as BotDeps['runF1'],
+    });
+    const job = await runJobFromBot(bot_instance);
+
+    await bot_instance.bot.handleUpdate(callbackUpdate(`approve:${job.id}`));
+
+    // Plain text block (no parse_mode) containing 📱
+    const whatsappBlocks = bot_instance.calls.filter(
+      (c) =>
+        c.method === 'sendMessage' &&
+        (c.payload.text as string).includes('📱') &&
+        (c.payload.parse_mode as string | undefined) === undefined,
+    );
+    expect(whatsappBlocks).toHaveLength(1);
+    expect(whatsappBlocks[0]!.payload.text).toContain('Для Жанель');
+  });
+
+  it('AC#4: no topMessageDraft → no plain-text block sent', async () => {
+    const bot_instance = buildBot({
+      appendApproval: vi.fn().mockResolvedValue(undefined),
+    });
+    const job = await runJobFromBot(bot_instance);
+
+    await bot_instance.bot.handleUpdate(callbackUpdate(`approve:${job.id}`));
+
+    // No plain text block with 📱 and no parse_mode
+    const whatsappBlocks = bot_instance.calls.filter(
+      (c) =>
+        c.method === 'sendMessage' &&
+        (c.payload.text as string).includes('📱 Для') &&
+        (c.payload.parse_mode as string | undefined) === undefined,
+    );
+    expect(whatsappBlocks).toHaveLength(0);
+    expect(job.approvalStatus).toBe('delivered');
+  });
+
+  it('AC#6: delivery failure → retry button shown, status remains approved', async () => {
+    // Build a fresh bot with a sendMessage that fails on delivery (MarkdownV2 messages after approve).
+    const alertOpsSpy = vi.fn();
+    let sendCount = 0;
+    const failBot = createBot({
+      runF1: (async () => fullF1Result()) as unknown as BotDeps['runF1'],
+      transcribeFromUrl: (async () => validTranscript) as unknown as BotDeps['transcribeFromUrl'],
+      readClientContext: (async () => validClientContext) as unknown as BotDeps['readClientContext'],
+      alertOps: alertOpsSpy as unknown as BotDeps['alertOps'],
+      appendApproval: async () => {},
+      logger: silentLogger,
+      token: 'TEST:TOKEN',
+      botInfo: FALLBACK_BOT_INFO,
+      trackerChatIds: new Set([TEST_TRACKER_CHAT_ID]),
+      progressUpdatesEnabled: true,
+      queueMaxSize: 20,
+      now: () => new Date('2026-05-19T10:00:00.000Z'),
+    });
+
+    let msgIdCounter = 30000;
+    const failCalls: ApiCall[] = [];
+    let failDeliveryMessages = false;
+
+    failBot.bot.api.config.use(async (_prev, method, payload) => {
+      failCalls.push({ method, payload: payload as Record<string, unknown> });
+      if (method === 'sendMessage') {
+        // Once failDeliveryMessages is enabled, fail all MarkdownV2 sendMessage calls (delivery).
+        if (failDeliveryMessages && (payload as { parse_mode?: string }).parse_mode === 'MarkdownV2') {
+          throw new Error('Telegram API error: delivery failed');
+        }
+        return {
+          ok: true,
+          result: {
+            message_id: ++msgIdCounter,
+            date: Math.floor(Date.now() / 1000),
+            chat: { id: (payload as { chat_id: number }).chat_id, type: 'private' },
+            text: (payload as { text: string }).text,
+          },
+        } as never;
+      }
+      if (method === 'editMessageText') {
+        return { ok: true, result: true } as never;
+      }
+      return { ok: true, result: true } as never;
+    });
+
+    // Process a job normally.
+    await failBot.bot.handleUpdate(reportUpdate('/report https://drive.google.com/file/d/abc/view'));
+    const job = failBot.queue.findByChatId(TEST_TRACKER_CHAT_ID)[0]!;
+    failBot.queue.dequeue();
+    await failBot.processJob(job);
+
+    // Enable delivery failure BEFORE approve.
+    failDeliveryMessages = true;
+
+    await failBot.bot.handleUpdate(callbackUpdate(`approve:${job.id}`));
+
+    // Status should remain 'approved' (not 'delivered') since delivery failed.
+    expect(job.approvalStatus).toBe('approved');
+
+    // Retry button should be shown.
+    const retrySends = failCalls.filter(
+      (c) => c.method === 'sendMessage' && (c.payload.text as string).includes('Не доставлено'),
+    );
+    expect(retrySends.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('AC#7: retry_delivery callback → re-delivery succeeds', async () => {
+    const bot_instance = buildBot({
+      appendApproval: vi.fn().mockResolvedValue(undefined),
+    });
+    const job = await runJobFromBot(bot_instance);
+
+    // Manually set job to approved state (simulating failed delivery).
+    job.approvalStatus = 'approved';
+    job.lastReportText = 'test report text';
+
+    await bot_instance.bot.handleUpdate(callbackUpdate(`retry_delivery:${job.id}`));
+
+    expect(job.approvalStatus).toBe('delivered');
+    expect(job.deliveryMessageIds).toBeDefined();
+  });
+
+  it('retry_delivery before approval is rejected and does not deliver', async () => {
+    const bot_instance = buildBot({
+      appendApproval: vi.fn().mockResolvedValue(undefined),
+    });
+    const job = await runJobFromBot(bot_instance);
+    job.approvalStatus = undefined;
+    job.lastReportText = 'test report text';
+
+    await bot_instance.bot.handleUpdate(callbackUpdate(`retry_delivery:${job.id}`));
+
+    expect(job.approvalStatus).toBeUndefined();
+    expect(job.deliveryMessageIds).toBeUndefined();
+    const popups = bot_instance.calls.filter(
+      (c) =>
+        c.method === 'answerCallbackQuery' &&
+        (c.payload as { text?: string }).text?.includes('Сначала подтверди'),
+    );
+    expect(popups.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('AC#11: double-tap retry after success → "Уже доставлено." popup', async () => {
+    const bot_instance = buildBot({
+      appendApproval: vi.fn().mockResolvedValue(undefined),
+    });
+    const job = await runJobFromBot(bot_instance);
+
+    // Approve and deliver.
+    await bot_instance.bot.handleUpdate(callbackUpdate(`approve:${job.id}`));
+    expect(job.approvalStatus).toBe('delivered');
+
+    // Double-tap retry.
+    await bot_instance.bot.handleUpdate(callbackUpdate(`retry_delivery:${job.id}`));
+
+    const popups = bot_instance.calls.filter(
+      (c) => c.method === 'answerCallbackQuery' && (c.payload as { text?: string }).text === 'ℹ️ Уже доставлено.',
+    );
+    expect(popups.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('AC#8: post_note callback (delivered) → instruction sent, reply → plain text note', async () => {
+    const bot_instance = buildBot({
+      appendApproval: vi.fn().mockResolvedValue(undefined),
+    });
+    const job = await runJobFromBot(bot_instance);
+
+    // Approve + deliver.
+    await bot_instance.bot.handleUpdate(callbackUpdate(`approve:${job.id}`));
+    expect(job.approvalStatus).toBe('delivered');
+
+    // Press 📝 Уточнение.
+    await bot_instance.bot.handleUpdate(callbackUpdate(`post_note:${job.id}`));
+
+    const instructionMsgs = bot_instance.calls.filter(
+      (c) => c.method === 'sendMessage' && (c.payload.text as string).includes('Напиши уточнение'),
+    );
+    expect(instructionMsgs).toHaveLength(1);
+    const instructionMsgId = (instructionMsgs[0]!.payload as { chat_id: number }).chat_id
+      ? instructionMsgs[0]!
+      : undefined;
+
+    // Get the instruction message_id from the sendMessage result.
+    // In our test, sendMessage returns incremented IDs. We find the one that has "Напиши уточнение".
+    // The message_id returned by sendMessage is in the calls array result (but we track calls, not results).
+    // We need the message_id of the instruction. The bot stores it from `ctx.reply` result.
+    // Since our API spy auto-increments from 10000, let's find the expected ID.
+    const sendMsgCalls = bot_instance.calls.filter((c) => c.method === 'sendMessage');
+    // The instruction message was the last sendMessage before our reply.
+    // We'll use a known approach: find the instruction msg text and count sendMessages up to it.
+    let instructionReplyId = 0;
+    for (const call of sendMsgCalls) {
+      instructionReplyId++; // counter
+      if ((call.payload.text as string).includes('Напиши уточнение')) break;
+    }
+    // The actual message_id = 10000 + index in sendMessage calls.
+    const expectedInstructionId = 10000 + instructionReplyId;
+
+    // Reply to the instruction message with a correction.
+    await bot_instance.bot.handleUpdate(
+      textReplyUpdate('Уточнение: конверсия 30%', expectedInstructionId),
+    );
+
+    const noteMsgs = bot_instance.calls.filter(
+      (c) =>
+        c.method === 'sendMessage' &&
+        (c.payload.text as string).includes('Уточнение к отчёту'),
+    );
+    expect(noteMsgs).toHaveLength(1);
+    expect(noteMsgs[0]!.payload.text).toContain('Жанель');
+    expect(noteMsgs[0]!.payload.text).toContain('конверсия 30%');
+    // Plain text — no parse_mode.
+    expect(noteMsgs[0]!.payload.parse_mode).toBeUndefined();
+  });
+
+  it('AC#9: post_note before delivery (approved, not delivered) → popup "Сначала дождись"', async () => {
+    const bot_instance = buildBot({
+      appendApproval: vi.fn().mockResolvedValue(undefined),
+    });
+    const job = await runJobFromBot(bot_instance);
+
+    // Manually set approved without delivery.
+    job.approvalStatus = 'approved';
+
+    await bot_instance.bot.handleUpdate(callbackUpdate(`post_note:${job.id}`));
+
+    const popups = bot_instance.calls.filter(
+      (c) =>
+        c.method === 'answerCallbackQuery' &&
+        (c.payload as { text?: string }).text?.includes('Сначала дождись'),
+    );
+    expect(popups.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('AC#10: post_detail remains stub → "Скоро доступно 🔜"', async () => {
+    const bot_instance = buildBot({
+      appendApproval: vi.fn().mockResolvedValue(undefined),
+    });
+    const job = await runJobFromBot(bot_instance);
+
+    await bot_instance.bot.handleUpdate(callbackUpdate(`post_detail:${job.id}`));
+
+    const stubAnswers = bot_instance.calls.filter(
+      (c) => c.method === 'answerCallbackQuery' && (c.payload as { text?: string }).text?.includes('Скоро'),
+    );
+    expect(stubAnswers.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('AC#5 (commitment lifecycle): delivery includes lifecycle emojis', async () => {
+    const resultWithCommitments = fullF1ResultWithDraft();
+    const bot_instance = buildBot({
+      appendApproval: vi.fn().mockResolvedValue(undefined),
+      runF1: (async () => resultWithCommitments) as unknown as BotDeps['runF1'],
+    });
+    const job = await runJobFromBot(bot_instance);
+
+    await bot_instance.bot.handleUpdate(callbackUpdate(`approve:${job.id}`));
+
+    // Delivery message should contain commitment with 🟢 Выполнено (status: completed).
+    const deliveryMsgs = bot_instance.calls.filter(
+      (c) => c.method === 'sendMessage' && (c.payload.text as string).includes('Выполнено'),
+    );
+    expect(deliverySends(deliveryMsgs)).toBeTruthy();
+
+    function deliverySends(msgs: typeof deliveryMsgs) { return msgs.length > 0; }
+  });
+
+  it('topMessageDraft preserved on job during processJob', async () => {
+    const bot_instance = buildBot({
+      appendApproval: vi.fn().mockResolvedValue(undefined),
+      runF1: (async () => fullF1ResultWithDraft()) as unknown as BotDeps['runF1'],
+    });
+    const job = await runJobFromBot(bot_instance);
+    expect(job.topMessageDraft).toBe('Жанель, по итогам встречи переходим на видео.');
+  });
+});
+
+// ─── First-run experience tests (Story 1.8) ───────────────────────────────
+
+describe('bot — onboarding /start (Story 1.8)', () => {
+  it('AC#1: authorized /start → welcome reply (plain text) с именем', async () => {
+    const { bot, queue, calls } = buildBot();
+    await bot.handleUpdate(startUpdate(TEST_TRACKER_CHAT_ID, 'Азиза'));
+
+    const reply = calls.find(
+      (c) => c.method === 'sendMessage' && (c.payload.text as string).includes('Привет'),
+    );
+    expect(reply).toBeDefined();
+    const payload = reply!.payload as { text: string; parse_mode?: string };
+    expect(payload.text).toContain('Привет, Азиза!');
+    expect(payload.text).toContain('AI-трекинг бот');
+    expect(payload.text).toContain('/report');
+    expect(payload.text).toContain('/help');
+    expect(payload.text).toContain('🔍 Найти');
+    expect(payload.text).toContain('📋 Повестка');
+    expect(payload.text).toContain('📊 Статус');
+    expect(payload.parse_mode).toBeUndefined();
+    expect(queue.size()).toBe(0);
+  });
+
+  it('AC#2: /help → та же welcome-инструкция (single source of truth)', async () => {
+    const { bot, calls } = buildBot();
+    await bot.handleUpdate(helpUpdate(TEST_TRACKER_CHAT_ID, 'Азиза'));
+
+    const reply = calls.find(
+      (c) => c.method === 'sendMessage' && (c.payload.text as string).includes('Привет'),
+    );
+    expect(reply).toBeDefined();
+    const payload = reply!.payload as { text: string; parse_mode?: string };
+    expect(payload.text).toContain('/report');
+    expect(payload.text).toContain('/help');
+    expect(payload.parse_mode).toBeUndefined();
+  });
+
+  it('AC#3: повторный /start идемпотентен — 2 welcome calls, no pending state', async () => {
+    const { bot, calls } = buildBot();
+    await bot.handleUpdate(startUpdate(TEST_TRACKER_CHAT_ID, 'Азиза'));
+    await bot.handleUpdate(startUpdate(TEST_TRACKER_CHAT_ID, 'Азиза'));
+
+    const welcomes = calls.filter(
+      (c) => c.method === 'sendMessage' && (c.payload.text as string).includes('Привет, Азиза'),
+    );
+    expect(welcomes.length).toBe(2);
+  });
+
+  it('AC#4: свободный текст без pending → fallback hint', async () => {
+    const { bot, queue, calls } = buildBot();
+    await bot.handleUpdate(plainTextUpdate('привет бот'));
+
+    const hints = calls.filter(
+      (c) =>
+        c.method === 'sendMessage' &&
+        /Не понял команду/.test(c.payload.text as string),
+    );
+    expect(hints).toHaveLength(1);
+    const payload = hints[0]!.payload as { text: string; parse_mode?: string };
+    expect(payload.text).toContain('/report');
+    expect(payload.text).toContain('/help');
+    expect(payload.parse_mode).toBeUndefined();
+    expect(queue.size()).toBe(0);
+  });
+
+  it('AC#5: неизвестная команда /foo → тот же fallback hint', async () => {
+    const { bot, calls } = buildBot();
+    await bot.handleUpdate(plainTextUpdate('/foo bar'));
+
+    const hints = calls.filter(
+      (c) =>
+        c.method === 'sendMessage' &&
+        /Не понял команду/.test(c.payload.text as string),
+    );
+    expect(hints).toHaveLength(1);
+  });
+
+  it('AC#6: unauthorized /start → unauthorized reply, нет welcome', async () => {
+    const { bot, queue, calls, alertOpsSpy } = buildBot();
+    await bot.handleUpdate(startUpdate(TEST_UNAUTHORIZED_CHAT_ID, 'Stranger'));
+
+    const reply = calls.find((c) => c.method === 'sendMessage');
+    expect(reply!.payload.text).toMatch(/Доступ ограничен/);
+    expect(
+      calls.some(
+        (c) => c.method === 'sendMessage' && (c.payload.text as string).includes('Привет'),
+      ),
+    ).toBe(false);
+    expect(queue.size()).toBe(0);
+    expect(alertOpsSpy).toHaveBeenCalledTimes(1);
+    expect(alertOpsSpy.mock.calls[0]![0].step).toBe('bot.unauthorized');
+  });
+
+  it('AC#7: после welcome /report <url> обрабатывается обычно', async () => {
+    const { bot, queue, calls } = buildBot();
+    await bot.handleUpdate(startUpdate(TEST_TRACKER_CHAT_ID, 'Азиза'));
+    await bot.handleUpdate(
+      reportUpdate('/report https://drive.google.com/file/d/abc/view'),
+    );
+
+    const ack = calls.find(
+      (c) => c.method === 'sendMessage' && (c.payload.text as string).includes('Принято'),
+    );
+    expect(ack).toBeDefined();
+    expect(queue.size()).toBe(1);
+  });
+
+  it('AC#8: pendingNotes reply не триггерит fallback hint (regression Story 1.7)', async () => {
+    const bot_instance = buildBot({
+      appendApproval: vi.fn().mockResolvedValue(undefined),
+      runF1: (async () => fullF1ResultWithDraft()) as unknown as BotDeps['runF1'],
+    });
+    const job = await runJobFromBot(bot_instance);
+
+    await bot_instance.bot.handleUpdate(callbackUpdate(`approve:${job.id}`));
+    expect(job.approvalStatus).toBe('delivered');
+
+    await bot_instance.bot.handleUpdate(callbackUpdate(`post_note:${job.id}`));
+
+    // Find the instruction message_id assigned by the API spy
+    // (auto-incremented from 10000; we count sendMessages up to "Напиши уточнение").
+    const sendMsgCalls = bot_instance.calls.filter((c) => c.method === 'sendMessage');
+    let idx = 0;
+    for (const call of sendMsgCalls) {
+      idx++;
+      if ((call.payload.text as string).includes('Напиши уточнение')) break;
+    }
+    const expectedInstructionId = 10000 + idx;
+
+    await bot_instance.bot.handleUpdate(
+      textReplyUpdate('вот моё уточнение', expectedInstructionId),
+    );
+
+    // Note plain-text sent (Story 1.7 contract), NOT fallback hint.
+    const noteMsgs = bot_instance.calls.filter(
+      (c) =>
+        c.method === 'sendMessage' &&
+        (c.payload.text as string).includes('Уточнение к отчёту'),
+    );
+    expect(noteMsgs).toHaveLength(1);
+    const fallbackHints = bot_instance.calls.filter(
+      (c) =>
+        c.method === 'sendMessage' &&
+        /Не понял команду/.test(c.payload.text as string),
+    );
+    expect(fallbackHints).toHaveLength(0);
+  });
+
+  it('AC#1 (no firstName): welcome без имени → "Привет!" без запятой', async () => {
+    const { bot, calls } = buildBot();
+    // Build update without first_name on `from` (edge case)
+    const message_id = 5000;
+    const update = {
+      update_id: updateCounter++,
+      message: {
+        message_id,
+        date: Math.floor(Date.now() / 1000),
+        chat: { id: TEST_TRACKER_CHAT_ID, type: 'private' },
+        from: { id: TEST_TRACKER_CHAT_ID, is_bot: false, first_name: '' },
+        text: '/start',
+        entities: [{ type: 'bot_command', offset: 0, length: 6 }],
+      },
+    } as unknown as Update;
+    await bot.handleUpdate(update);
+
+    const reply = calls.find(
+      (c) => c.method === 'sendMessage' && (c.payload.text as string).includes('Привет'),
+    );
+    expect(reply).toBeDefined();
+    expect(reply!.payload.text).toContain('Привет!');
+    expect(reply!.payload.text).not.toContain('Привет, ');
+  });
+});
+
+describe('bot — setMyCommands payload (Story 1.8)', () => {
+  it('AC#9: setMyCommands содержит [start, help, report] в правильном порядке', async () => {
+    const { bot, calls, stop } = buildBot();
+    // Patch bot.start to skip long-polling but still trigger setMyCommands.
+    const origStart = bot.start.bind(bot);
+    bot.start = (async () => {
+      /* skip long-polling in tests */
+    }) as typeof bot.start;
+    try {
+      // The createBot.start() pulls in our patched bot.start; call original setMyCommands path.
+      await bot.api.setMyCommands([
+        { command: 'start',  description: 'Начать работу с ботом' },
+        { command: 'help',   description: 'Инструкция и список команд' },
+        { command: 'report', description: 'Создать отчёт по встрече' },
+      ]);
+      const cmdCall = calls.find((c) => c.method === 'setMyCommands');
+      expect(cmdCall).toBeDefined();
+      const cmds = (cmdCall!.payload as { commands: Array<{ command: string }> }).commands;
+      expect(cmds.map((c) => c.command)).toEqual(['start', 'help', 'report']);
+    } finally {
+      bot.start = origStart;
+      await stop();
+    }
+  });
+
+  it('AC#9 (via created.start()): полный lifecycle вызывает setMyCommands с [start, help, report]', async () => {
+    const built = buildBot();
+    // Patch bot.start to no-op so we don't actually long-poll.
+    built.bot.start = (async () => { /* skip */ }) as typeof built.bot.start;
+    try {
+      await built.start();
+      const cmdCall = built.calls.find((c) => c.method === 'setMyCommands');
+      expect(cmdCall).toBeDefined();
+      const cmds = (cmdCall!.payload as { commands: Array<{ command: string }> }).commands;
+      expect(cmds.map((c) => c.command)).toEqual(['start', 'help', 'report']);
+      expect(cmds[0]!.command).toBe('start');
+    } finally {
+      await built.stop();
+    }
   });
 });

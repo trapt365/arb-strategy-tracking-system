@@ -89,12 +89,26 @@ function fmtTimestamp(seconds: number): string {
   return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
 }
 
+function commitmentEmoji(status: Commitment['status']): string {
+  switch (status) {
+    case 'completed': return '🟢 Выполнено';
+    case 'overdue':   return '🔴 Просрочено';
+    case 'open':
+    default:          return '🔵 Новое';
+  }
+}
+
+function commitmentEmojiPlain(status: Commitment['status']): string {
+  return commitmentEmoji(status);
+}
+
 function renderCommitment(c: Commitment): string {
+  const emoji = commitmentEmoji(c.status);
   const who = escapeMarkdownV2(c.who);
   const what = escapeMarkdownV2(c.what);
   const deadline = c.deadline.trim().length > 0 ? `, до ${escapeMarkdownV2(c.deadline)}` : '';
   const quote = c.quote.trim().length > 0 ? ` \\— _${escapeMarkdownV2(c.quote)}_` : '';
-  return `🔵 ${who} → ${what}${deadline}${quote}`;
+  return `${emoji}: ${who} → ${what}${deadline}${quote}`;
 }
 
 function renderCitation(c: Citation): string {
@@ -111,9 +125,9 @@ function renderDecisions(decisions: string[]): string {
 }
 
 function renderCommitments(commitments: Commitment[]): string {
-  if (commitments.length === 0) return '🔵 *Commitments:* —';
+  if (commitments.length === 0) return '*Commitments:* —';
   const lines = commitments.map((c) => renderCommitment(c));
-  return ['🔵 *Commitments:*', ...lines].join('\n');
+  return ['*Commitments:*', ...lines].join('\n');
 }
 
 function renderCitations(citations: Citation[]): string {
@@ -181,6 +195,74 @@ export function formatDeliveryReport(report: DeliveryReadyReport): string {
     return formatPartialReportFallback(report);
   }
   return formatFullDeliveryReport(report);
+}
+
+/**
+ * Plain-text delivery format for Telegram forwarding.
+ * No MarkdownV2 escaping — Aziza forwards this message to the top manager.
+ */
+export function formatDeliveryPlainText(
+  report: Extract<DeliveryReadyReport, { partial: false }>,
+): string {
+  const parts: string[] = [];
+  const topic = report.department ?? 'Отчёт';
+  const period = report.weekNumber ? `Нед. ${report.weekNumber}` : '—';
+  parts.push(`📋 ${report.topName} │ ${topic} │ ${period}`);
+  parts.push(report.summaryLine);
+
+  for (const section of report.sections) {
+    parts.push(`\n${section.title}\n${section.content}`);
+  }
+
+  if (report.commitments.length > 0) {
+    const commitLines = report.commitments.map((c) => {
+      const emoji = commitmentEmojiPlain(c.status);
+      const deadline = c.deadline.trim() ? `, до ${c.deadline}` : '';
+      return `${emoji}: ${c.who} → ${c.what}${deadline}`;
+    });
+    parts.push(`\nCommitments:\n${commitLines.join('\n')}`);
+  }
+
+  return parts.join('\n');
+}
+
+/**
+ * Story 1.8: onboarding welcome message (plain text — no parse_mode).
+ * Single source of truth for /start and /help.
+ */
+export function formatWelcomeMessage(firstName?: string): string {
+  const trimmed = firstName?.trim();
+  const greeting = trimmed && trimmed.length > 0 ? `Привет, ${trimmed}!` : 'Привет!';
+  return [
+    `👋 ${greeting} Я — AI-трекинг бот.`,
+    '',
+    'Я слушаю записи встреч с топами и готовлю отчёты, которые ты пересылаешь клиенту.',
+    '',
+    'Основное:',
+    '/report <ссылка> — создать отчёт по записи (Google Drive / Zoom)',
+    '',
+    'Скоро:',
+    '🔍 Найти — поиск прошлых отчётов',
+    '📋 Повестка — подготовка к встрече',
+    '📊 Статус — текущее состояние',
+    '',
+    'Отправь ссылку на запись — и я сделаю первый отчёт.',
+    'Команда /help — повторить эту инструкцию.',
+  ].join('\n');
+}
+
+/**
+ * Story 1.8: short fallback hint for unknown commands / free-form text (UX-DR3).
+ * Plain text — no parse_mode.
+ */
+export function formatHelpHint(): string {
+  return 'ℹ️ Не понял команду. Используй /report <ссылка> для отчёта или /help для инструкции.';
+}
+
+export function formatTopMessagePlainText(topName: string, draft: string): string {
+  const prefix = `📱 Для ${topName}:\n`;
+  const maxDraftLength = Math.max(0, 500 - prefix.length);
+  return `${prefix}${draft.trim().slice(0, maxDraftLength).trimEnd()}`;
 }
 
 export function splitForTelegram(
