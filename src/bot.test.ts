@@ -1262,6 +1262,33 @@ describe('bot — onboarding /start (Story 1.8)', () => {
     expect(fallbackHints).toHaveLength(0);
   });
 
+  it('AC#4/AC#8: pendingNotes set + non-reply text → silent, нет fallback hint (regression review P2)', async () => {
+    const bot_instance = buildBot({
+      appendApproval: vi.fn().mockResolvedValue(undefined),
+      runF1: (async () => fullF1ResultWithDraft()) as unknown as BotDeps['runF1'],
+    });
+    const job = await runJobFromBot(bot_instance);
+
+    await bot_instance.bot.handleUpdate(callbackUpdate(`approve:${job.id}`));
+    expect(job.approvalStatus).toBe('delivered');
+
+    await bot_instance.bot.handleUpdate(callbackUpdate(`post_note:${job.id}`));
+
+    const callsBefore = bot_instance.calls.length;
+    // Plain text without reply_to — pendingNotes is active, but this is not a reply.
+    await bot_instance.bot.handleUpdate(plainTextUpdate('просто текст без reply'));
+
+    // AC#4 contract: fallback hint fires only when BOTH pending* are empty.
+    const fallbackHints = bot_instance.calls
+      .slice(callsBefore)
+      .filter(
+        (c) =>
+          c.method === 'sendMessage' &&
+          /Не понял команду/.test(c.payload.text as string),
+      );
+    expect(fallbackHints).toHaveLength(0);
+  });
+
   it('AC#1 (no firstName): welcome без имени → "Привет!" без запятой', async () => {
     const { bot, calls } = buildBot();
     // Build update without first_name on `from` (edge case)

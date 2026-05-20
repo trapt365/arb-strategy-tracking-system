@@ -36,9 +36,9 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 
 generated: 2026-04-01
-last_updated: 2026-05-20  # story 1.8 → review: bmad-dev-story workflow — /start + /help handlers через единый formatWelcomeMessage (plain text, без MarkdownV2); fallback hint в bot.on('message:text') когда pendingEdits и pendingNotes пусты (UX-DR3 «Тишина — враг»); setMyCommands расширен до [start, help, report]; +6 formatter tests + +10 bot tests; 279/279 regression pass; typecheck clean
-last_updated_prev: 2026-05-20  # story 1.8 → ready-for-dev: bmad-create-story workflow — 10 AC, 7 tasks; /start + /help onboarding handlers; fallback hint в message:text; setMyCommands расширен до [start, help, report]; формат welcome plain-text
-last_updated_prev2: 2026-05-20  # story 1.7 → done: code-review fixes — retry_delivery requires approved state; delivered reports cannot re-enter edit flow; WhatsApp plain-text block capped at 500 chars
+last_updated: 2026-05-20  # story 1.8 → done: code-review — 3 patches applied (P2 pendingNotes non-reply silent return — закрывает Codex P2 и AC#4 нарушение; P2 log.info после успешного reply через return в catch для /start и /help — закрывает Codex P3 и Dev Notes guardrail; P3 regression test AC#4/AC#8 для pendingNotes non-reply path); 280/280 regression pass; typecheck clean; 1 deferred (redundant first AC#9 test variant)
+last_updated_prev: 2026-05-20  # story 1.8 → review: bmad-dev-story workflow — /start + /help handlers через единый formatWelcomeMessage (plain text, без MarkdownV2); fallback hint в bot.on('message:text') когда pendingEdits и pendingNotes пусты (UX-DR3 «Тишина — враг»); setMyCommands расширен до [start, help, report]; +6 formatter tests + +10 bot tests; 279/279 regression pass; typecheck clean
+last_updated_prev2: 2026-05-20  # story 1.8 → ready-for-dev: bmad-create-story workflow — 10 AC, 7 tasks; /start + /help onboarding handlers; fallback hint в message:text; setMyCommands расширен до [start, help, report]; формат welcome plain-text
 project: ARB AI-Tracking System
 project_key: NOKEY
 tracking_system: file-system
@@ -65,7 +65,7 @@ development_status:
   1-5-telegram-bot-komanda-report-i-progress: done  # 2026-05-19: code-review done — 11 patches (P1-P11, 2 от внешнего LLM); FALLBACK_BOT_INFO exported, overflow counting fixed, MarkdownV2 escape guard, safeEditMessage fallback, timedOut pre-check, D3 severity split; vitest env fixed (TELEGRAM_TRACKER_CHAT_IDS); 214/214 pass, typecheck clean
   1-6-approval-workflow-approve-edit-reject: done  # 2026-05-19: code-review done — 12 patches applied; 236/236 pass; 7 deferred items in deferred-work.md
   1-7-delivery-dostavka-otchyota-klientu: done
-  1-8-first-run-experience-onbording-azizy: review  # 2026-05-20: implementation done — /start + /help через единый formatWelcomeMessage (plain text); fallback hint в message:text покрывает свободный текст и неизвестные команды; setMyCommands → [start, help, report]; +16 tests (10 bot + 6 formatter), 279/279 pass, typecheck clean
+  1-8-first-run-experience-onbording-azizy: done  # 2026-05-20: code-review done — 3 patches (P2 pendingNotes non-reply silent return; P2 log.info после успешного reply в /start /help; P3 regression test pendingNotes non-reply path); 280/280 pass; typecheck clean; 1 deferred
   1-9-ops-logging-i-alerty: backlog
   1-10-data-persistence-i-client-isolation: backlog
   1-11-canary-test-i-golden-dataset: backlog

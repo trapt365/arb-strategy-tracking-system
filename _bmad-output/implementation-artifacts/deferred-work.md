@@ -100,3 +100,7 @@
 - **parseTrackerChatIds deferred validation** — намеренный дизайн, падает при старте
 - **startBot().catch без graceful stop worker** — несущественно при process.exit(1)
 - **formatProgressStep('queued') мёртвый код** — нужен в Story 1.12
+
+## Deferred from: code review of story 1-8-first-run-experience-onbording-azizy (2026-05-20)
+
+- **Redundant первый вариант AC#9 теста** [src/bot.test.ts:1291-1314] — тестирует grammY API (`bot.api.setMyCommands`) напрямую, а не нашу обёртку. Второй вариант через `built.start()` (line 1316) полностью покрывает AC. Удалить при следующей правке тестов.

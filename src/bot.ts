@@ -605,6 +605,7 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
       await ctx.reply(welcomeText);
     } catch (err) {
       log.warn({ err, chatId: ctx.chat.id }, 'bot.start.reply_failed');
+      return;
     }
     log.info(
       { step: 'bot.start.welcomed', chatId: ctx.chat.id, firstName },
@@ -619,6 +620,7 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
       await ctx.reply(welcomeText);
     } catch (err) {
       log.warn({ err, chatId: ctx.chat.id }, 'bot.help.reply_failed');
+      return;
     }
     log.info({ step: 'bot.help.requested', chatId: ctx.chat.id }, 'help sent');
   });
@@ -955,7 +957,10 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
         );
         return;
       }
-      // Reply not on note instruction — fallthrough to pendingEdits.
+      // Story 1.8 fix: while a note is pending, non-reply text is silently
+      // ignored (parallel to pendingEdits non-reply semantics). AC#4 fires the
+      // fallback hint only when BOTH pending* are absent.
+      return;
     }
 
     const pending = pendingEdits.get(chatId);

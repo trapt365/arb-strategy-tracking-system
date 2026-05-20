@@ -1,6 +1,6 @@
 # Story 1.8: First run experience — онбординг Азизы в бот
 
-Status: review
+Status: done
 
 ## Пользовательская история
 
@@ -484,3 +484,10 @@ claude-opus-4-7[1m] (Claude Opus 4.7, 1M context) — bmad-dev-story workflow, 2
 ### Change Log
 
 - 2026-05-20: Story 1.8 implementation complete. /start + /help onboarding handlers added, fallback hint в `bot.on('message:text')` закрывает UX-DR3 «Тишина — враг», setMyCommands расширен до `[start, help, report]`. 16 новых тестов (10 в bot.test.ts, 6 в telegram-formatter.test.ts), 279/279 regression pass, typecheck clean. Status → review.
+
+### Review Findings
+
+- [x] [Review][Patch] **P2 — `pendingNotes` set + non-reply text триггерит fallback hint** [src/bot.ts:932-975] — Codex P2 + Acceptance Auditor. AC#4 и Task 3.4 явно требуют «fallback hint срабатывает только когда оба pending отсутствуют», но текущая ветка пропускает через pendingNotes-fallthrough в `pendingEdits === undefined` → hint. UX-эффект: после тапа «📝 Уточнение» Азиза набирает текст обычным сообщением и получает «ℹ️ Не понял команду…» вместо более полезного «Ответь на сообщение с уточнением» или сохранённого silent-поведения. **Fix applied:** в pendingNotes-branch при mismatch теперь `return` вместо fallthrough — симметрично pendingEdits non-reply поведению.
+- [x] [Review][Patch] **P2 — `/start` и `/help` логируют `welcome sent`/`help sent` даже при упавшем `ctx.reply`** [src/bot.ts:601-624] — Codex P3, повышено до P2 из-за явного guardrail. Story 1.8 Dev Notes: «ВСЕГДА `log.info` после успешного reply, не до — log отражает реальное событие». **Fix applied:** добавлен `return` в catch обоих handlers — log.info теперь fires только при успешном reply.
+- [x] [Review][Patch] **P3 — AC#8 тест покрывает только success-path pendingNotes-reply** [src/bot.test.ts:1224-1263] — gap, из-за которого Codex P2 (находка #1) проскользнул в review. **Fix applied:** добавлен regression test «AC#4/AC#8: pendingNotes set + non-reply text → silent, нет fallback hint» — закрепляет fix #1.
+- [x] [Review][Defer] **P3 — дублирующий первый вариант AC#9 теста тестирует grammY API, не наш код** [src/bot.test.ts:1291-1314] — deferred, cleanup. Второй вариант (line 1316, через `built.start()`) полностью покрывает AC#9; первый дёргает `bot.api.setMyCommands` напрямую и валидирует поведение grammY, а не нашей обёртки. Удалить при следующей правке тестов.
