@@ -3,9 +3,17 @@ import { randomUUID } from 'node:crypto';
 import type { UserFromGetMe } from 'grammy/types';
 import { config, parseTrackerChatIds } from './config.js';
 import { logger as rootLogger, type Logger } from './logger.js';
-import { alertOps as defaultAlertOps, type AlertPayload } from './ops.js';
+import {
+  alertOps as defaultAlertOps,
+  recordOpsEvent,
+  setOpsTelegramSender,
+  setOpsSheetsWriter,
+  startWatchdog,
+  type AlertPayload,
+  type WatchdogHandle,
+} from './ops.js';
 import { transcribeFromUrl as defaultTranscribeFromUrl } from './adapters/transcript.js';
-import { readClientContext as defaultReadClientContext } from './adapters/sheets.js';
+import { readClientContext as defaultReadClientContext, appendOpsLog } from './adapters/sheets.js';
 import { runF1 as defaultRunF1, applyEditToReport as defaultApplyEditToReport } from './f1-report.js';
 import { appendApproval as defaultAppendApproval } from './utils/approvals.js';
 import type { ApprovalRecord } from './types.js';
@@ -121,6 +129,10 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
   // In tests, pass deps.botInfo explicitly to skip getMe(). In production, omit so grammY
   // calls getMe() on start — required for /cmd@username matching in group chats.
   const bot = new Bot(token, deps.botInfo !== undefined ? { botInfo: deps.botInfo } : undefined);
+
+  // Story 1.9: ops-channel watchdog (separate from per-job timeouts below).
+  // Lifecycle: started in createBot.start() (production only), stopped in createBot.stop().
+  let _watchdogHandle: WatchdogHandle | null = null;
 
   // Track watchdog timers per job so we can clear on completion.
   const jobTimers = new Map<string, NodeJS.Timeout>();
@@ -502,7 +514,20 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
       }
 
       const text = formatDeliveryReport(result.formattedReport);
+      const deliveryStart = Date.now();
       const lastMessageId = await renderFinalReport(job, text);
+      recordOpsEvent('info', {
+        pipeline: 'F1',
+        step: 'bot.report.delivery',
+        clientId: job.clientId,
+        durationMs: Date.now() - deliveryStart,
+        status: result.formattedReport.partial ? 'partial' : 'ok',
+        context: {
+          jobId: job.id,
+          partial: result.formattedReport.partial,
+          lastMessageId,
+        },
+      });
       job.lastReportText = text;
 
       // Preserve topMessageDraft for delivery step (Story 1.7).
@@ -533,6 +558,23 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
         },
         'F1 report delivered to Telegram',
       );
+
+      // Story 1.9: canonical success event → resets watchdog state, appends to _ops_logs.
+      // durationMs = end-to-end (queuedAt → completedAt), не только processJob.
+      const queuedMs = Date.parse(job.queuedAt);
+      const completedMs = Date.parse(job.completedAt);
+      const totalMs =
+        Number.isFinite(queuedMs) && Number.isFinite(completedMs)
+          ? completedMs - queuedMs
+          : Date.now() - start;
+      recordOpsEvent('info', {
+        pipeline: 'F1',
+        step: 'bot.report.completed',
+        clientId: job.clientId,
+        durationMs: totalMs,
+        status: 'ok',
+        context: { jobId: job.id, partial: result.formattedReport.partial },
+      });
     } catch (err) {
       if (timedOutJobs.has(job.id)) {
         jobLog.info('job timed out; suppressing post-timeout error');
@@ -1069,6 +1111,13 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
   let started = false;
 
   const stop = async (): Promise<void> => {
+    if (_watchdogHandle !== null) {
+      _watchdogHandle.stop();
+      _watchdogHandle = null;
+    }
+    // Story 1.9: clear module-level ops setters so subsequent bot lifecycles start clean.
+    setOpsTelegramSender(null);
+    setOpsSheetsWriter(null);
     if (stopWorker !== null) {
       await stopWorker();
       stopWorker = null;
@@ -1100,6 +1149,20 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
       await bot.api.setChatMenuButton({ menu_button: { type: 'commands' } });
     } catch (err) {
       log.warn({ err }, 'failed to set chat menu button — continuing');
+    }
+
+    // Story 1.9: wire ops channels. Skip in tests (deps.botInfo !== undefined).
+    // Reason: production needs Telegram sendMessage + Sheets append for ops-channel
+    // observability; tests inject mocks via deps and don't run the watchdog loop.
+    if (deps.botInfo === undefined) {
+      const opsChatId = config.TELEGRAM_CHAT_OPS_ID;
+      setOpsTelegramSender(async (text: string) => {
+        await bot.api.sendMessage(opsChatId, text);
+      });
+      setOpsSheetsWriter(async (row) => {
+        await appendOpsLog(row);
+      });
+      _watchdogHandle = await startWatchdog({ aidarMention: config.OPS_AIDAR_MENTION });
     }
 
     started = true;

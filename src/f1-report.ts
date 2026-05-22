@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { config } from './config.js';
 import { logger as rootLogger, type Logger } from './logger.js';
-import { alertOps } from './ops.js';
+import { alertOps, recordOpsEvent } from './ops.js';
 import { loadPrompt } from './utils/prompt-loader.js';
 import {
   callClaude,
@@ -395,6 +395,20 @@ export async function runF1Steps12(
       },
       'extraction step complete',
     );
+    recordOpsEvent('info', {
+      pipeline: 'F1',
+      step: 'f1.extraction.complete',
+      clientId: input.meta.clientId,
+      durationMs: durationsMs.extraction,
+      status: 'ok',
+      context: {
+        reportId,
+        commitmentsCount: extraction.commitments.length,
+        citationsCount: extraction.citations.length,
+        decisionsCount: extraction.decisions.length,
+        factsCount: extraction.facts.length,
+      },
+    });
 
     // Early-abort check between steps so we don't waste an API call when the
     // caller has already cancelled after extraction (AC #13 — prompt cancel).
@@ -516,6 +530,19 @@ export async function runF1Steps12(
       },
       'analysis step complete',
     );
+    recordOpsEvent('info', {
+      pipeline: 'F1',
+      step: 'f1.analysis.complete',
+      clientId: input.meta.clientId,
+      durationMs: durationsMs.analysis,
+      status: 'ok',
+      context: {
+        reportId,
+        krCount: analysis.okr_coverage.length,
+        alertsCount: analysis.alerts.length,
+        statusUpdatesCount: analysis.commitments_status_updates?.length ?? 0,
+      },
+    });
 
     finalStatus = 'ok';
     durationsMs.total = Date.now() - totalStart;
@@ -988,6 +1015,15 @@ export async function runF1Steps34(
         },
         'format step produced partial result',
       );
+      recordOpsEvent('warn', {
+        pipeline: 'F1',
+        step: 'f1.format.partial',
+        clientId: input.meta.clientId,
+        durationMs: formatDuration,
+        status: 'partial',
+        message: 'format step produced partial result',
+        context: { reportId, partialReason: 'format_retry_exhausted' },
+      });
       return {
         formattedReport: partial,
         partial: true,
@@ -1054,6 +1090,15 @@ export async function runF1Steps34(
         },
         'format step produced partial result',
       );
+      recordOpsEvent('warn', {
+        pipeline: 'F1',
+        step: 'f1.format.partial',
+        clientId: input.meta.clientId,
+        durationMs: formatDuration,
+        status: 'partial',
+        message: 'format step produced partial result',
+        context: { reportId, partialReason: 'format_step_failed' },
+      });
       return {
         formattedReport: partial,
         partial: true,
@@ -1122,6 +1167,15 @@ export async function runF1Steps34(
       },
       'format step produced partial result',
     );
+    recordOpsEvent('warn', {
+      pipeline: 'F1',
+      step: 'f1.format.partial',
+      clientId: input.meta.clientId,
+      durationMs: formatDuration,
+      status: 'partial',
+      message: 'format step produced partial result',
+      context: { reportId, partialReason: 'format_validation_failed' },
+    });
     return {
       formattedReport: partial,
       partial: true,
@@ -1187,6 +1241,20 @@ export async function runF1Steps34(
     },
     'format step complete',
   );
+  recordOpsEvent('info', {
+    pipeline: 'F1',
+    step: 'f1.format.complete',
+    clientId: input.meta.clientId,
+    durationMs: formatDuration,
+    status: 'ok',
+    context: {
+      reportId,
+      sectionsCount: safeResult.parsed.report_sections.length,
+      commitmentCount: safeResult.parsed.commitment_count,
+      alertCount: safeResult.parsed.alert_count,
+      topMessageDraftPresent: !!safeResult.parsed.top_message_draft,
+    },
+  });
 
   return {
     formattedReport: full,

@@ -12,6 +12,8 @@ import {
   formatTopMessagePlainText,
   formatWelcomeMessage,
   formatHelpHint,
+  formatOpsAlert,
+  formatWatchdogRepeat,
   splitForTelegram,
   TELEGRAM_SAFE_MARGIN,
 } from './telegram-formatter.js';
@@ -364,6 +366,168 @@ describe('formatHelpHint (Story 1.8)', () => {
   it('plain text — без backslash-escape MarkdownV2 символов', () => {
     const out = formatHelpHint();
     expect(out).not.toContain('\\');
+  });
+});
+
+describe('formatOpsAlert (Story 1.9)', () => {
+  it('error level → 🚨 + step/clientId + message + context', () => {
+    const out = formatOpsAlert({
+      pipeline: 'F1',
+      step: 'bot.report.pipeline_failed',
+      clientId: 'geonline',
+      level: 'error',
+      message: 'Connection refused to Claude API',
+      errorCode: 'F1PipelineError:claude_api',
+      context: { jobId: 'abc12345', attempt: 2 },
+    });
+    expect(out).toContain('🚨');
+    expect(out).toContain('[F1/bot.report.pipeline_failed]');
+    expect(out).toContain('geonline');
+    expect(out).toContain('Connection refused to Claude API');
+    expect(out).toContain('error_code: F1PipelineError:claude_api');
+    expect(out).toContain('"jobId":"abc12345"');
+  });
+
+  it('warn level → ⚠️ icon', () => {
+    const out = formatOpsAlert({
+      pipeline: 'F1',
+      step: 'bot.queue_overflow',
+      level: 'warn',
+      message: 'queue full',
+    });
+    expect(out.startsWith('⚠️')).toBe(true);
+  });
+
+  it('info level → ℹ️ icon', () => {
+    const out = formatOpsAlert({
+      pipeline: 'F1',
+      step: 'bot.report.completed',
+      level: 'info',
+      message: 'done',
+    });
+    expect(out.startsWith('ℹ️')).toBe(true);
+  });
+
+  it('без clientId — формат не падает', () => {
+    const out = formatOpsAlert({
+      pipeline: 'F1',
+      step: 'bot.unauthorized',
+      level: 'error',
+      message: 'unauthorized chat',
+    });
+    expect(out).toContain('[F1/bot.unauthorized]');
+    expect(out).not.toContain(' undefined');
+  });
+
+  it('без context — нет строки context', () => {
+    const out = formatOpsAlert({
+      pipeline: 'F1',
+      step: 'bot.report.timeout',
+      level: 'error',
+      message: 'job timeout',
+    });
+    expect(out).not.toContain('context:');
+  });
+
+  it('message > 500 chars → truncate с суффиксом', () => {
+    const longMsg = 'A'.repeat(800);
+    const out = formatOpsAlert({
+      pipeline: 'F1',
+      step: 'x',
+      level: 'error',
+      message: longMsg,
+    });
+    expect(out).toContain('...[truncated]');
+    // body line must not exceed 500 chars total
+    const bodyLine = out.split('\n')[1] ?? '';
+    expect(bodyLine.length).toBeLessThanOrEqual(500);
+  });
+
+  it('context > 500 chars JSON → truncate', () => {
+    const big: Record<string, unknown> = {};
+    for (let i = 0; i < 200; i++) big[`key_${i}`] = 'value_'.repeat(5);
+    const out = formatOpsAlert({
+      pipeline: 'F1',
+      step: 'x',
+      level: 'error',
+      message: 'm',
+      context: big,
+    });
+    const ctxLine = out.split('\n').find((l) => l.startsWith('context:')) ?? '';
+    // 'context: ' prefix + up to 500 chars truncated JSON
+    expect(ctxLine.length).toBeLessThanOrEqual('context: '.length + 500);
+    expect(ctxLine).toContain('...[truncated]');
+  });
+
+  it('plain text — без MarkdownV2 backslash-escape', () => {
+    const out = formatOpsAlert({
+      pipeline: 'F1',
+      step: 'bot.report.pipeline_failed',
+      clientId: 'geonline',
+      level: 'error',
+      message: 'Error with (parens) and _underscore_.',
+    });
+    expect(out).not.toContain('\\_');
+    expect(out).not.toContain('\\(');
+    expect(out).not.toContain('\\.');
+  });
+});
+
+describe('formatWatchdogRepeat (Story 1.9)', () => {
+  it('4ч down, без эскалации → ⚠️ без mention', () => {
+    const out = formatWatchdogRepeat({
+      hoursDown: 4,
+      lastSuccessAt: '2026-05-21T10:00:00.000Z',
+      lastFailureAt: '2026-05-21T14:00:00.000Z',
+      lastFailureReason: 'F1/extraction/claude_api',
+      aidarMention: '@aidar',
+      escalateAidar: false,
+    });
+    expect(out).toContain('⚠️');
+    expect(out).toContain('Pipeline down > 4ч.');
+    expect(out).not.toContain('@aidar');
+    expect(out).toContain('Последний успех: 2026-05-21 10:00');
+    expect(out).toContain('Последний сбой: 2026-05-21 14:00 (F1/extraction/claude_api)');
+    expect(out).toContain('Проверь логи на VPS.');
+  });
+
+  it('24ч + escalate + mention="@aidar_geonline" → 🚨 + mention', () => {
+    const out = formatWatchdogRepeat({
+      hoursDown: 25,
+      lastSuccessAt: '2026-05-20T13:00:00.000Z',
+      lastFailureAt: '2026-05-20T14:00:00.000Z',
+      aidarMention: '@aidar_geonline',
+      escalateAidar: true,
+    });
+    expect(out).toContain('🚨');
+    expect(out).toContain('Pipeline down > 25ч.');
+    expect(out).toContain('@aidar_geonline — Тимур может быть недоступен.');
+    expect(out).toContain('Запусти runbook docs/aziza-runbook-v1.0.md.');
+  });
+
+  it('24ч + escalate + пустая mention → 🚨 без @aidar строки', () => {
+    const out = formatWatchdogRepeat({
+      hoursDown: 25,
+      lastSuccessAt: '2026-05-20T13:00:00.000Z',
+      lastFailureAt: null,
+      aidarMention: '',
+      escalateAidar: true,
+    });
+    expect(out).toContain('🚨');
+    expect(out).not.toContain('@aidar');
+    expect(out).not.toContain('Тимур может быть недоступен');
+    expect(out).toContain('Запусти runbook');
+  });
+
+  it('lastFailureAt=null → нет строки "Последний сбой"', () => {
+    const out = formatWatchdogRepeat({
+      hoursDown: 5,
+      lastSuccessAt: '2026-05-21T10:00:00.000Z',
+      lastFailureAt: null,
+      escalateAidar: false,
+    });
+    expect(out).not.toContain('Последний сбой');
+    expect(out).toContain('Последний успех');
   });
 });
 

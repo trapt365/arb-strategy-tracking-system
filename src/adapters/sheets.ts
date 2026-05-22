@@ -13,6 +13,7 @@ import {
   type ClientContext,
 } from '../types.js';
 import { SheetsAdapterError, TranscriptConfigError } from '../errors.js';
+import type { OpsLogRow } from '../ops.js';
 
 export { SheetsAdapterError } from '../errors.js';
 export type { SheetsAdapterCode } from '../errors.js';
@@ -24,6 +25,11 @@ const SHEET_RANGES = [
   '_okr!A1:Z',
   '_f5_metrics!A1:Z',
 ] as const;
+
+// Story 1.9: append-only ops log worksheet.
+// Worksheet must be created manually by Тимур (see docs/aziza-runbook-v1.0.md) with header row:
+//   timestamp, pipeline, step, client_id, duration_ms, status, level, message, error_code, context_json
+const OPS_LOGS_RANGE = '_ops_logs!A1';
 
 const EXPECTED_HEADERS = {
   stakeholderMap: [
@@ -74,9 +80,11 @@ export async function getSheetsClient(): Promise<sheets_v4.Sheets> {
   cachedSheets = (async () => {
     try {
       const credentials = await loadServiceAccountCredentials();
+      // Story 1.9: write-scope для append-only `_ops_logs`. Read flows unaffected
+      // (read scope is a subset of full spreadsheets scope).
       const auth = new google.auth.GoogleAuth({
         credentials,
-        scopes: ['https://www.googleapis.com/auth/spreadsheets.readonly'],
+        scopes: ['https://www.googleapis.com/auth/spreadsheets'],
       });
       return google.sheets({ version: 'v4', auth });
     } catch (err) {
@@ -384,6 +392,66 @@ export async function readClientContext(opts: ReadClientContextOpts): Promise<Cl
     } else {
       log.info(logPayload, 'sheets batchGet complete');
     }
+  }
+}
+
+/**
+ * Story 1.9: append-only writer for the `_ops_logs` worksheet.
+ *
+ * Header row (created manually by Тимур, see runbook):
+ *   timestamp, pipeline, step, client_id, duration_ms, status, level, message, error_code, context_json
+ *
+ * Failures propagate as rejected Promises so callers (ops.ts) can log warnings —
+ * we never call `alertOps` from here (would create a recursive loop).
+ */
+export async function appendOpsLog(
+  row: OpsLogRow,
+  clientIdForSheet: string = 'geonline',
+): Promise<void> {
+  const sheetId = resolveSheetId(clientIdForSheet);
+  const sheets = await getSheetsClient();
+  const values: (string | number)[][] = [
+    [
+      row.timestamp,
+      row.pipeline,
+      row.step,
+      row.clientId,
+      row.durationMs === '' ? '' : String(row.durationMs),
+      row.status,
+      row.level,
+      row.message,
+      row.errorCode,
+      row.contextJson,
+    ],
+  ];
+  try {
+    await withRetry(
+      () =>
+        sheets.spreadsheets.values.append({
+          spreadsheetId: sheetId,
+          range: OPS_LOGS_RANGE,
+          valueInputOption: 'RAW',
+          insertDataOption: 'INSERT_ROWS',
+          requestBody: { values },
+        }),
+      {
+        maxRetries: 3,
+        backoffMs: [1000, 3000, 9000],
+        shouldRetry: shouldRetrySheets,
+      },
+    );
+  } catch (err) {
+    const mapped = mapGoogleApiError(err, sheetId);
+    rootLogger.warn(
+      {
+        step: 'ops.appendOpsLog.failed',
+        eventStep: row.step,
+        err: mapped,
+        ops_log_append_failed_total: 1,
+      },
+      'ops log append failed',
+    );
+    throw mapped;
   }
 }
 

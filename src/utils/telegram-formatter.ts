@@ -259,6 +259,101 @@ export function formatHelpHint(): string {
   return 'ℹ️ Не понял команду. Используй /report <ссылка> для отчёта или /help для инструкции.';
 }
 
+/**
+ * Story 1.9: ops-channel alert formatter (plain text, no parse_mode).
+ * Truncates each field independently; total budget ≤ 1500 chars (Telegram limit ~4096 with margin).
+ */
+export interface FormatOpsAlertArgs {
+  pipeline: string;
+  step: string;
+  clientId?: string;
+  level: 'error' | 'warn' | 'info';
+  message: string;
+  errorCode?: string;
+  context?: Record<string, unknown>;
+}
+
+const OPS_LEVEL_ICON: Record<FormatOpsAlertArgs['level'], string> = {
+  error: '🚨',
+  warn: '⚠️',
+  info: 'ℹ️',
+};
+
+function truncatePlain(s: string, max: number): string {
+  if (s.length <= max) return s;
+  const suffix = '...[truncated]';
+  const head = Math.max(0, max - suffix.length);
+  return s.slice(0, head) + suffix;
+}
+
+function safeStringifyForOps(v: unknown): string {
+  try {
+    return JSON.stringify(v);
+  } catch {
+    return String(v);
+  }
+}
+
+export function formatOpsAlert(args: FormatOpsAlertArgs): string {
+  const icon = OPS_LEVEL_ICON[args.level];
+  const clientIdPart = args.clientId && args.clientId.length > 0 ? ` ${args.clientId}` : '';
+  const header = `${icon} [${args.pipeline}/${args.step}]${clientIdPart}`;
+  const body = truncatePlain(args.message, 500);
+  const lines = [header, body];
+
+  if (args.errorCode && args.errorCode.length > 0) {
+    lines.push(`error_code: ${args.errorCode}`);
+  }
+  if (args.context && Object.keys(args.context).length > 0) {
+    lines.push(`context: ${truncatePlain(safeStringifyForOps(args.context), 500)}`);
+  }
+  return lines.join('\n');
+}
+
+/**
+ * Story 1.9: watchdog repeat-alert formatter (plain text).
+ * Used on 4h/24h thresholds. `escalateAidar` flips icon to 🚨 and adds aidar mention if provided.
+ */
+export interface FormatWatchdogRepeatArgs {
+  hoursDown: number;
+  lastSuccessAt: string;
+  lastFailureAt: string | null;
+  lastFailureReason?: string;
+  aidarMention?: string;
+  escalateAidar: boolean;
+}
+
+function humanReadableOpsDate(iso: string): string {
+  if (!iso) return '—';
+  const m = /^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})/.exec(iso);
+  return m ? `${m[1]} ${m[2]}` : iso;
+}
+
+export function formatWatchdogRepeat(args: FormatWatchdogRepeatArgs): string {
+  const icon = args.escalateAidar ? '🚨' : '⚠️';
+  const lines: string[] = [];
+  lines.push(`${icon} Pipeline down > ${args.hoursDown}ч.`);
+
+  if (args.escalateAidar && args.aidarMention && args.aidarMention.length > 0) {
+    lines.push(`${args.aidarMention} — Тимур может быть недоступен.`);
+  }
+
+  lines.push(`Последний успех: ${humanReadableOpsDate(args.lastSuccessAt)}`);
+
+  if (args.lastFailureAt) {
+    const reason = args.lastFailureReason ? ` (${args.lastFailureReason})` : '';
+    lines.push(`Последний сбой: ${humanReadableOpsDate(args.lastFailureAt)}${reason}`);
+  }
+
+  lines.push(
+    args.escalateAidar
+      ? 'Запусти runbook docs/aziza-runbook-v1.0.md.'
+      : 'Проверь логи на VPS.',
+  );
+
+  return lines.join('\n');
+}
+
 export function formatTopMessagePlainText(topName: string, draft: string): string {
   const prefix = `📱 Для ${topName}:\n`;
   const maxDraftLength = Math.max(0, 500 - prefix.length);

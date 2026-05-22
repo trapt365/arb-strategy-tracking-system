@@ -21,6 +21,9 @@ const ConfigSchema = z.object({
     .number()
     .int()
     .refine((n) => n !== 0, 'TELEGRAM_CHAT_OPS_ID is required (non-zero)'),
+  // Story 1.9: Telegram @mention для эскалации Айдару через 24ч down.
+  // Пустая строка = без mention (повторный alert идёт без ping). '@username' = ping в ops-чат.
+  OPS_AIDAR_MENTION: z.string().default(''),
 
   SONIOX_API_KEY: z.string().min(1, 'SONIOX_API_KEY is required'),
   SONIOX_API_URL: z.string().url().optional(),
@@ -73,6 +76,18 @@ function loadConfig(): Config {
     console.error('Configuration validation failed:');
     // eslint-disable-next-line no-console
     console.error(issues.join('\n'));
+    process.exit(1);
+  }
+
+  // Story 1.9: WORK≠OPS cross-field check. Architecture#Telegram UX «Два чата»
+  // требует изоляции ops-сообщений от рабочего чата (Azize не должна видеть stack traces).
+  if (parsed.data.TELEGRAM_CHAT_WORK_ID === parsed.data.TELEGRAM_CHAT_OPS_ID) {
+    // eslint-disable-next-line no-console
+    console.error(
+      'Configuration validation failed:\n  - TELEGRAM_CHAT_WORK_ID and TELEGRAM_CHAT_OPS_ID must differ (got ' +
+        String(parsed.data.TELEGRAM_CHAT_WORK_ID) +
+        ' for both — отдельный ops-чат обязателен per architecture#Telegram UX «Два чата»)',
+    );
     process.exit(1);
   }
 

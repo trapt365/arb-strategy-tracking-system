@@ -12,7 +12,7 @@ import {
   TranscriptConfigError,
 } from '../errors.js';
 import { logger as rootLogger } from '../logger.js';
-import { alertOps } from '../ops.js';
+import { alertOps, recordOpsEvent } from '../ops.js';
 import { createSonioxClient, type SonioxClient, type SonioxToken } from './soniox.js';
 import { downloadAudio, type DownloadResult } from './drive.js';
 
@@ -50,6 +50,7 @@ export async function transcribeFromUrl(
   let parseMs = 0;
   let download: DownloadResult | null = null;
   let fileId: string | undefined;
+  let status: 'ok' | 'error' = 'error';
 
   try {
     const downloadStart = Date.now();
@@ -94,6 +95,7 @@ export async function transcribeFromUrl(
     }
     parseMs = Date.now() - parseStart;
 
+    status = 'ok';
     return validated;
   } catch (err) {
     if (err instanceof TranscriptDownloadError) {
@@ -132,6 +134,14 @@ export async function transcribeFromUrl(
       },
       'transcribeFromUrl complete',
     );
+    recordOpsEvent(status === 'ok' ? 'info' : 'error', {
+      pipeline: 'F1',
+      step: 'transcript.total',
+      clientId: meta.clientId,
+      durationMs: Date.now() - totalStart,
+      status,
+      context: { downloadMs, transcribeMs, parseMs },
+    });
   }
 }
 
@@ -143,13 +153,16 @@ export async function transcribeFromPlainText(
   const baseLogger = deps.logger ?? rootLogger;
   const log = baseLogger.child({ pipeline: 'F1', step: 'transcript', clientId: meta.clientId });
   const totalStart = Date.now();
+  let status: 'ok' | 'error' = 'error';
   try {
     if (text.trim().length < PLAIN_TEXT_MIN_LENGTH) {
       throw new TranscriptValidationError('too_short', { length: text.length });
     }
     const parsed = parsePlainText(text, meta);
     try {
-      return TranscriptSchema.parse(parsed);
+      const validated = TranscriptSchema.parse(parsed);
+      status = 'ok';
+      return validated;
     } catch (err) {
       if (err instanceof ZodError) {
         alertOps({
@@ -168,6 +181,14 @@ export async function transcribeFromPlainText(
       { step: 'transcript.total', durationMs: Date.now() - totalStart, source: 'plain_text' },
       'transcribeFromPlainText complete',
     );
+    recordOpsEvent(status === 'ok' ? 'info' : 'error', {
+      pipeline: 'F1',
+      step: 'transcript.total',
+      clientId: meta.clientId,
+      durationMs: Date.now() - totalStart,
+      status,
+      context: { source: 'plain_text' },
+    });
   }
 }
 

@@ -23,12 +23,12 @@
 - **Sheets API rate limiter / queue** — Sheets API имеет лимит 100 req/100 s/user. На MVP с одним клиентом и ~5 встречами/неделю → ~5 batchGet в неделю, ничтожная нагрузка. Триггер: 3-й клиент или > 80 req/min в логах. Решение: in-memory token bucket или библиотека `bottleneck`. [architecture.md, Growth phase]
 - **Local cache для OKR/stakeholder data** — `readClientContext` бьёт Sheets API на каждый pipeline-запуск (~2-3 секунды латентности). На MVP допустимо. Триггер: устойчивая медиана `sheets.batchGet durationMs` > 2000ms (агрегированные warn-логи Story 1.9). Решение: in-memory TTL cache (5 мин) с inv. на manual refresh. [architecture.md, Growth phase]
 - **Multi-client `resolveSheetId`** — на MVP whitelisting `clientId === 'geonline'` с одним env var `GEONLINE_F0_SHEET_ID`. На 2-м клиенте: расширить `config.CLIENTS = { geonline: 'sheetId1', clientB: 'sheetId2' }` или вынести в data-table. Архитектурный stub `resolveSheetId(clientId)` уже есть — менять только тело. Триггер: Epic 6 / Story 6.2.
-- **Sheets write-side adapter (F5 metrics, ops logs)** — Story 1.3 покрывает только read. Append/write для ops logs (Story 1.9) и F5 manual entry (Story 1.10) добавят `appendRow` / `writeF5Metric` с обратной конверсией `camelToSnake`.
+- ~~**Sheets write-side adapter (F5 metrics, ops logs)** — Story 1.3 покрывает только read. Append/write для ops logs (Story 1.9) и F5 manual entry (Story 1.10) добавят `appendRow` / `writeF5Metric` с обратной конверсией `camelToSnake`.~~ **PARTIALLY CLOSED 2026-05-22 (Story 1.9):** `appendOpsLog(row)` в `src/adapters/sheets.ts` пишет в worksheet `_ops_logs` через `spreadsheets.values.append` (RAW, INSERT_ROWS). OAuth scope расширен до `spreadsheets`. **F5 manual entry — всё ещё deferred** до Story 1.10 (writeF5Metric с camelToSnake конверсией).
 
 ## Deferred from: implementation of story-1.4a (2026-04-30)
 
 - **Claude circuit breaker (3 fail/5 min → fallback)** — на 1.4a `src/adapters/claude.ts:isClaudeCircuitOpen()` всегда возвращает `false` (заглушка). Caller-логика (Story 1.5 telegram bot) не реализует ветвь fallback. Триггер: первая прод-инцидентная серия 5xx от Anthropic API. Story 1.9 заменит тело + добавит state (in-memory счётчик с TTL).
-- **Auto-cleanup `*.raw.txt` через 14 дней** — `data/{clientId}/{date}/f1-*.{step}.raw.txt` накапливаются без TTL. На MVP первого месяца disk usage <100 MB. Триггер: Story 1.9.x. Решение: cron-задача `find data/ -name '*.raw.txt' -mtime +14 -delete` или scheduled component.
+- **Auto-cleanup `*.raw.txt` через 14 дней** — `data/{clientId}/{date}/f1-*.{step}.raw.txt` накапливаются без TTL. На MVP первого месяца disk usage <100 MB. Триггер: ~~Story 1.9.x~~ → **остаётся deferred to Story 1.10** (Story 1.9 закрыла только ops-logging / alerting, не cleanup). Решение: cron-задача `find data/ -name '*.raw.txt' -mtime +14 -delete` или scheduled component.
 - **Smart transcript trimming для context_length_exceeded** — на длинных встречах (> 90 мин транскрипт) Claude может вернуть `context_length_exceeded`. На 1.4a — fail с понятным сообщением (не retryable). Триггер: первая такая встреча в проде. Решение: умная нарезка по segments + map-reduce summarize.
 - ~~**Запись/обновление статусов commitments в data/** — Story 1.4a реализует только чтение open commitments (`src/utils/commitments-history.ts`); analysis возвращает `commitments_status_updates`, но caller их НЕ применяет к источнику истины. Story 1.4b/1.10 добавит persistence-слой с записью `status: 'open'|'completed'|'overdue'`.~~ **PARTIALLY CLOSED 2026-04-30 (Story 1.4b):** `runF1Steps34` записывает `commitments-updates.json` overlay-файл (audit trail). **Source-of-truth update в `*.extraction.json`** ВСЁ ЕЩЁ deferred — append-only invariant сохранён в 1.4b; `loadOpenCommitments` (1.4a) пока НЕ читает overlay. Полная интеграция — Story 1.10.
 - **Streaming Claude response (TTFB)** — на 1.4a синхронный `messages.create` ждёт полного ответа (~30-60 с на extraction). Streaming через `messages.stream` сократит perceived latency, но усложнит `parseClaudeJSON` (нужен буфер на полный JSON). Триггер: Growth phase / pain в UX.
@@ -55,7 +55,7 @@
 
 ## Deferred from: implementation of story-1.4b (2026-04-30)
 
-- **Auto-cleanup `*.format.raw.txt` через 14 дней** — analogично 1.4a deferred для `.extraction.raw.txt` / `.analysis.raw.txt`; теперь `*.format.raw.txt` тоже накапливается. Триггер: Story 1.9.x (один cron на все `*.raw.txt`).
+- **Auto-cleanup `*.format.raw.txt` через 14 дней** — analogично 1.4a deferred для `.extraction.raw.txt` / `.analysis.raw.txt`; теперь `*.format.raw.txt` тоже накапливается. Триггер: ~~Story 1.9.x~~ → **остаётся deferred to Story 1.10** (Story 1.9 не покрывала data-cleanup; один cron на все `*.raw.txt`).
 - **Auto-cleanup `*.report.json` / `*.commitments-updates.json`** — на MVP retention неограничен; для GDPR-compliant offboarding (Story 1.10) нужен retention policy. Триггер: 2-й клиент или legal review.
 - **Полный persistence-слой commitments (read+update в источнике истины + интеграция overlay в `loadOpenCommitments`)** — Story 1.4b записывает `commitments-updates.json` overlay, но `loadOpenCommitments` пока НЕ учитывает их при чтении прошлых extraction'ов. Story 1.10 интегрирует: либо merge overlay при чтении, либо мигрирует на PostgreSQL и убирает overlay-файлы.
 - **Telegram rendering: `formatHeader()`, `approveKeyboard()`, message split > 4096** — Story 1.5/1.6. На 1.4b возвращается `DeliveryReadyReport` объект; сериализация в Telegram-сообщение делает bot.ts.
@@ -104,3 +104,18 @@
 ## Deferred from: code review of story 1-8-first-run-experience-onbording-azizy (2026-05-20)
 
 - **Redundant первый вариант AC#9 теста** [src/bot.test.ts:1291-1314] — тестирует grammY API (`bot.api.setMyCommands`) напрямую, а не нашу обёртку. Второй вариант через `built.start()` (line 1316) полностью покрывает AC. Удалить при следующей правке тестов.
+
+## Deferred from: implementation of story-1.9 (2026-05-22)
+
+Все эти пункты явно вынесены из scope Story 1.9 в самой story spec (секция «Что НЕ входит в Story 1.9»). Перечислены здесь для централизованного учёта:
+
+- **Weekly aggregated metrics aggregator** (`time_to_approve` avg, `f5_response_rate`, `bot_menu_usage`) — Story 1.9 обеспечивает только сырые события (`_ops_logs` + `approvals.jsonl`). Реализация query/render — Story 1.12 (Ops-статус pipeline для Айдара). `f5_response_rate` зависит от Epic 2 (deferred-growth).
+- **Cron job для backup-tar + cleanup `*.raw.txt` (14d)** — data-persistence работа Story 1.10. См. также карточки выше.
+- **Circuit breaker для Claude (3 fail / 5min)** — заглушка в `src/adapters/claude.ts:isClaudeCircuitOpen()`. Триггер: первая прод-инцидентная серия 5xx от Anthropic. Целевая story — Story 1.10 или Story 1.12 (бывшая mis-attribution на Story 1.9 в `1-4a` deferred — пересмотрено).
+- **Canary test (synthetic golden meeting)** — Story 1.11.
+- **Restart-recovery missed-job detection** — Story 1.10 / scheduler.
+- **`Email emergency mode` (FR87)** — deferred-growth; никогда не реализовывать на MVP.
+- **F3-lite escalation alerts (Дамиру если CEO не открыл)** — Epic 4.
+- **F4 watchdog (cron не выполнился к 9:30)** — Epic 3 (Story 3.0 / 3.1).
+- **Aidar separate Telegram chat / ROLE-based whitelist** — на MVP Айдар в общем ops-чате через `@mention`. Epic 6 / Story 6.2.
+- **Story 1.4b deferred items ранее помечены `Story 1.9` как trigger (lines 13, 15, 19, 30, 41, 43-49, 54, 67-68, 88)** — это были ошибочные scoped tags. Они остаются deferred до конкретных целевых stories (1.10, 1.11, 1.12, или Epic 3+). Не закрываются Story 1.9.

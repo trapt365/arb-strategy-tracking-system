@@ -1,12 +1,16 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
-const { batchGetMock } = vi.hoisted(() => ({ batchGetMock: vi.fn() }));
+const { batchGetMock, appendMock } = vi.hoisted(() => ({
+  batchGetMock: vi.fn(),
+  appendMock: vi.fn(),
+}));
 
 vi.mock('googleapis', () => {
   const sheetsClient = {
     spreadsheets: {
       values: {
         batchGet: batchGetMock,
+        append: appendMock,
       },
     },
   };
@@ -34,10 +38,12 @@ vi.mock('../ops.js', () => ({
 
 import {
   readClientContext,
+  appendOpsLog,
   __test_only_snakeToCamel,
   __test_only_parseSheetRange,
   _resetSheetsClientForTest,
 } from './sheets.js';
+import type { OpsLogRow } from '../ops.js';
 import { SheetsAdapterError, TranscriptConfigError } from '../errors.js';
 import { alertOps } from '../ops.js';
 import { loadServiceAccountCredentials } from '../utils/google-auth.js';
@@ -72,6 +78,7 @@ function mockBatchGetOk(values: unknown[][][]) {
 
 beforeEach(() => {
   batchGetMock.mockReset();
+  appendMock.mockReset();
   vi.mocked(alertOps).mockReset();
   _resetSheetsClientForTest();
 });
@@ -338,5 +345,96 @@ describe('readClientContext — retry behavior', () => {
     batchGetMock.mockRejectedValueOnce({ response: { status: 401 } });
     await readClientContext({ clientId: 'geonline' }).catch(() => undefined);
     expect(batchGetMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('appendOpsLog (Story 1.9)', () => {
+  const sampleRow: OpsLogRow = {
+    timestamp: '2026-05-21T14:00:00.000Z',
+    pipeline: 'F1',
+    step: 'bot.report.completed',
+    clientId: 'geonline',
+    durationMs: 12345,
+    status: 'ok',
+    level: 'info',
+    message: 'F1 report delivered',
+    errorCode: '',
+    contextJson: '{"jobId":"abc12345"}',
+  };
+
+  it('calls spreadsheets.values.append with correct spreadsheetId, range, options, row', async () => {
+    appendMock.mockResolvedValueOnce({ data: { updates: { updatedRows: 1 } } });
+    await appendOpsLog(sampleRow);
+    expect(appendMock).toHaveBeenCalledTimes(1);
+    const callArgs = appendMock.mock.calls[0]![0];
+    expect(callArgs.range).toBe('_ops_logs!A1');
+    expect(callArgs.valueInputOption).toBe('RAW');
+    expect(callArgs.insertDataOption).toBe('INSERT_ROWS');
+    expect(callArgs.requestBody.values).toEqual([
+      [
+        '2026-05-21T14:00:00.000Z',
+        'F1',
+        'bot.report.completed',
+        'geonline',
+        '12345',
+        'ok',
+        'info',
+        'F1 report delivered',
+        '',
+        '{"jobId":"abc12345"}',
+      ],
+    ]);
+  });
+
+  it('empty durationMs renders as empty string in row', async () => {
+    appendMock.mockResolvedValueOnce({ data: {} });
+    const alertRow: OpsLogRow = { ...sampleRow, durationMs: '', status: 'alert', level: 'error' };
+    await appendOpsLog(alertRow);
+    const callArgs = appendMock.mock.calls[0]![0];
+    expect(callArgs.requestBody.values[0][4]).toBe('');
+  });
+
+  it('retries 429 once then succeeds', async () => {
+    appendMock
+      .mockRejectedValueOnce({ response: { status: 429 } })
+      .mockResolvedValueOnce({ data: { updates: { updatedRows: 1 } } });
+    await appendOpsLog(sampleRow);
+    expect(appendMock).toHaveBeenCalledTimes(2);
+  }, 15000);
+
+  it('does not retry on 401, maps to auth error', async () => {
+    appendMock.mockRejectedValueOnce({ response: { status: 401 } });
+    const err = await appendOpsLog(sampleRow).catch((e) => e);
+    expect(err).toBeInstanceOf(SheetsAdapterError);
+    expect((err as SheetsAdapterError).code).toBe('auth');
+    expect(appendMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not retry on 403, maps to auth error', async () => {
+    appendMock.mockRejectedValueOnce({ response: { status: 403 } });
+    const err = await appendOpsLog(sampleRow).catch((e) => e);
+    expect((err as SheetsAdapterError).code).toBe('auth');
+    expect(appendMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('exhausted retries on 5xx → throws network error', async () => {
+    appendMock.mockRejectedValue({ response: { status: 503 } });
+    const err = await appendOpsLog(sampleRow).catch((e) => e);
+    expect((err as SheetsAdapterError).code).toBe('network');
+    expect(appendMock).toHaveBeenCalledTimes(4);
+  }, 30000);
+
+  it('unknown clientId → throws auth error before client call', async () => {
+    const err = await appendOpsLog(sampleRow, 'unknown-client').catch((e) => e);
+    expect(err).toBeInstanceOf(SheetsAdapterError);
+    expect((err as SheetsAdapterError).code).toBe('auth');
+    expect((err as SheetsAdapterError).context.reason).toBe('unknown_clientId');
+    expect(appendMock).not.toHaveBeenCalled();
+  });
+
+  it('does NOT call alertOps (recursive loop prevention)', async () => {
+    appendMock.mockRejectedValueOnce({ response: { status: 401 } });
+    await appendOpsLog(sampleRow).catch(() => undefined);
+    expect(vi.mocked(alertOps)).not.toHaveBeenCalled();
   });
 });
