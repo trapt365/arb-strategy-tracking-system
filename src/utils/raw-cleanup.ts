@@ -22,6 +22,10 @@ const IGNORE_TOP_DIRS = new Set([
   'prompt-results',
   'test-inputs',
   '.backups',
+  // Story 1.11: canary runs may persist *.raw.txt under each item-N subdir;
+  // those artifacts are the source of truth for post-mortem and must not be
+  // pruned by the daily cleanup scheduler.
+  'canary-results',
 ]);
 const IGNORE_PREFIXES = ['week-'];
 const RAW_SUFFIX = '.raw.txt';

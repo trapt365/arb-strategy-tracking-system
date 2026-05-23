@@ -17,7 +17,8 @@
     "transcript:smoke": "tsx scripts/transcript-smoke.ts",
     "sheets:smoke": "tsx scripts/sheets-smoke.ts",
     "f1:smoke": "tsx scripts/f1-smoke.ts",
-    "offboard": "tsx scripts/offboard-client.ts"
+    "offboard": "tsx scripts/offboard-client.ts",
+    "canary": "tsx scripts/canary.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.90.0",

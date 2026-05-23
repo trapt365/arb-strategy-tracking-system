@@ -166,3 +166,69 @@ In-process scheduler (setInterval, без `node-cron` — заменится в 
 Manual run (тест/debug): можно временно установить env `BACKUP_DIR` для
 изоляции, и запустить bot/процесс — scheduler сам выполнит pending cleanup /
 backup при следующем tick (intervalMs=1ч по умолчанию).
+
+---
+
+## Canary test (Story 1.11)
+
+Цель: убедиться, что промпты + модель Claude не деградировали структурно
+после изменений. Запускает production `runF1` на 7 фиксированных золотых
+транскриптах (Story 0.3) и сравнивает structural diff против
+`data/golden/f1-reference-N.json`.
+
+**Когда запускать:**
+
+1. После любой правки `prompts/*.md` (перед PR-merge).
+2. После уведомления Anthropic об обновлении модели (например, Claude 4.6 → 4.7).
+3. Ad-hoc раз в неделю — на Milestone 2 это автоматизирует Story 3.0 через cron.
+
+**Команды:**
+
+- Full run (7 items, ~$7, ~5 мин): `npm run canary`
+- Subset (быстрее, дешевле): `npm run canary -- --items 1,3,5`
+- Dry-run без Claude (sanity-check кода): `npm run canary -- --no-claude`
+- Override output dir: `npm run canary -- --out-dir /tmp/canary-test`
+
+**Интерпретация verdict:**
+
+- 🟢 PASS (exit 0) — мерж/деплой OK.
+- 🟡 REVIEW (exit 1) — проверить `report.md`, item-level diffs, решить:
+  (а) откатить промпт; (b) принять новый baseline через
+  `npx tsx scripts/build-golden-dataset.ts` после ручной валидации.
+- 🔴 ROLLBACK (exit 2) — выполнить Rollback Procedure (см. ниже).
+- ⚪ ERROR (exit 3) — Claude API down или canary infrastructure broken;
+  re-run после восстановления.
+
+**Rollback Procedure** (verdict ∈ {review, rollback}):
+
+1. `git log -- prompts/` — найти предыдущий стабильный commit.
+2. `git diff HEAD~1 -- prompts/` — что изменилось.
+3. `git checkout <prev-commit> -- prompts/` — rollback.
+4. `git commit -m "chore(prompts): rollback after canary <verdict>"`.
+5. Запись в `prompts/CHANGELOG.md`:
+   «## Rollback YYYY-MM-DD — canary <verdict>, diff X%, реверт к vN.M.P».
+6. Перезапустить `npm run canary` — verdict должен стать `pass`.
+
+**Cost protection:**
+
+- PRD estimate $2/мес weekly canary — это при manual ad-hoc запусках.
+- При full runs ежедневно ~$210/мес (вне бюджета). Используй `--items` для subset.
+- Cost printed в start-summary и финальном `report.md` для transparency.
+
+**Источники данных:**
+
+- `data/golden/manifest.json` — items[] + stats + semantic_checks.
+- `data/golden/transcript-N.json` + `data/golden/f1-reference-N.json` — fixtures (Story 0.3).
+- `data/golden/canary-items.json` — topName + meetingDate per item (Story 1.11).
+- `prompts/CHANGELOG.md` — версия промптов попадает в header `report.md`.
+
+**Артефакты:**
+
+- `data/canary-results/<timestamp>/report.md` + `report.json` — основные отчёты.
+- `data/canary-results/<timestamp>/item-N/runF1-result.json` — полный F1 output (для post-mortem).
+- `data/canary-results/<timestamp>/item-N/diff.json` — structural diff + assertions + verdict.
+- Каталог в `.gitignore` и в `IGNORE_TOP_DIRS` raw-cleanup; cleanup manual через
+  `rm -rf data/canary-results/<timestamp>`.
+
+**F4 canary:** ещё НЕ работает — F4 pipeline появится в Epic 3 / Story 3.1.
+F4 reference outputs существуют в `data/golden/f4-reference-N.json`, ожидают `runF4()`.

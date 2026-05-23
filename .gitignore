@@ -24,3 +24,6 @@ data/.ops-state.json
 data/.scheduler-state.json
 data/.backups/
 data/geonline/
+
+# Story 1.11: canary run outputs (developer artifact for post-mortem)
+data/canary-results/
