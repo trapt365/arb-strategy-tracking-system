@@ -18,3 +18,9 @@ data/week-*/
 
 # Harness state
 .claude/scheduled_tasks.lock
+
+# Story 1.10: runtime client data + scheduler/ops state
+data/.ops-state.json
+data/.scheduler-state.json
+data/.backups/
+data/geonline/

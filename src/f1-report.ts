@@ -17,6 +17,7 @@ import {
   loadOpenCommitments,
   topNameSlug,
 } from './utils/commitments-history.js';
+import { assertClientId, slugifyClientId } from './utils/client-id.js';
 import {
   ExtractionOutputSchema,
   AnalysisOutputSchema,
@@ -48,12 +49,6 @@ export type {
 
 const F1_TOTAL_LATENCY_WARN_MS = 15 * 60 * 1000;
 const MEETING_DATE_PREFIX_RE = /^\d{4}-\d{2}-\d{2}/;
-
-// Filesystem-unsafe chars + path separators. Aligned with `topNameSlug` for symmetry;
-// applied to clientId before path joining so callers can't traverse out of rootDir.
-function slugifyClientId(clientId: string): string {
-  return clientId.trim().toLowerCase().replace(/\s+/g, '-').replace(/[\\/<>:"|?*.]/g, '_');
-}
 
 // Reject slugs that collapse to empty after sanitization — they would produce
 // double-dash filenames like `f1--{reportId}.report.json` that collide across
@@ -152,6 +147,7 @@ async function persistStep(
   log: Pick<Logger, 'error' | 'warn'>,
 ): Promise<void> {
   try {
+    assertClientId(meta.clientId);
     const dateDir = meta.meetingDate.slice(0, 10);
     const dir = join(rootDir, slugifyClientId(meta.clientId), dateDir);
     await fs.mkdir(dir, { recursive: true });
@@ -205,6 +201,7 @@ async function persistMeta(
   log: Pick<Logger, 'error' | 'warn'>,
 ): Promise<void> {
   try {
+    assertClientId(meta.clientId);
     const dateDir = meta.meetingDate.slice(0, 10);
     const dir = join(rootDir, slugifyClientId(meta.clientId), dateDir);
     await fs.mkdir(dir, { recursive: true });
@@ -805,6 +802,7 @@ async function persistFormatStep(
   log: Pick<Logger, 'error' | 'warn'>,
 ): Promise<void> {
   try {
+    assertClientId(meta.clientId);
     const dateDir = meta.meetingDate.slice(0, 10);
     const dir = join(rootDir, slugifyClientId(meta.clientId), dateDir);
     await fs.mkdir(dir, { recursive: true });
@@ -842,6 +840,7 @@ async function persistDeliveryReport(
   log: Pick<Logger, 'error' | 'warn'>,
 ): Promise<void> {
   try {
+    assertClientId(meta.clientId);
     const dateDir = meta.meetingDate.slice(0, 10);
     const dir = join(rootDir, slugifyClientId(meta.clientId), dateDir);
     await fs.mkdir(dir, { recursive: true });
@@ -876,6 +875,7 @@ async function persistCommitmentsUpdates(
 ): Promise<void> {
   if (updates.length === 0) return;
   try {
+    assertClientId(meta.clientId);
     const dateDir = meta.meetingDate.slice(0, 10);
     const dir = join(rootDir, slugifyClientId(meta.clientId), dateDir);
     await fs.mkdir(dir, { recursive: true });

@@ -15,7 +15,12 @@ import {
 import { transcribeFromUrl as defaultTranscribeFromUrl } from './adapters/transcript.js';
 import { readClientContext as defaultReadClientContext, appendOpsLog } from './adapters/sheets.js';
 import { runF1 as defaultRunF1, applyEditToReport as defaultApplyEditToReport } from './f1-report.js';
-import { appendApproval as defaultAppendApproval } from './utils/approvals.js';
+import {
+  appendApproval as defaultAppendApproval,
+  isAlreadyApproved as defaultIsAlreadyApproved,
+} from './utils/approvals.js';
+import { assertClientId, ClientIdError } from './utils/client-id.js';
+import { startScheduler as defaultStartScheduler } from './scheduler.js';
 import type { ApprovalRecord } from './types.js';
 import {
   TranscriptDownloadError,
@@ -68,6 +73,8 @@ export interface BotDeps {
   alertOps?: typeof defaultAlertOps;
   applyEditToReport?: typeof defaultApplyEditToReport;
   appendApproval?: typeof defaultAppendApproval;
+  isAlreadyApproved?: typeof defaultIsAlreadyApproved;
+  startScheduler?: typeof defaultStartScheduler;
   logger?: Logger;
   queue?: ReportQueue;
   now?: () => Date;
@@ -123,6 +130,8 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
   const alertOps = deps.alertOps ?? defaultAlertOps;
   const applyEditToReport = deps.applyEditToReport ?? defaultApplyEditToReport;
   const appendApproval = deps.appendApproval ?? defaultAppendApproval;
+  const isAlreadyApproved = deps.isAlreadyApproved ?? defaultIsAlreadyApproved;
+  const startScheduler = deps.startScheduler ?? defaultStartScheduler;
   const now = deps.now ?? ((): Date => new Date());
   const queue = deps.queue ?? createReportQueue({ maxSize: queueMaxSize, logger: log });
 
@@ -133,6 +142,9 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
   // Story 1.9: ops-channel watchdog (separate from per-job timeouts below).
   // Lifecycle: started in createBot.start() (production only), stopped in createBot.stop().
   let _watchdogHandle: WatchdogHandle | null = null;
+
+  // Story 1.10: in-process scheduler for daily cleanup + tar backup.
+  let _schedulerHandle: { stop: () => void } | null = null;
 
   // Track watchdog timers per job so we can clear on completion.
   const jobTimers = new Map<string, NodeJS.Timeout>();
@@ -158,6 +170,28 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
    * Returns true if delivery succeeded, false otherwise.
    */
   async function deliverReport(job: ReportJob): Promise<boolean> {
+    try {
+      assertClientId(job.clientId);
+    } catch (err) {
+      log.error(
+        { err, jobId: job.id, clientId: job.clientId, step: 'delivery.invalid_client_id' },
+        'deliverReport blocked: invalid clientId',
+      );
+      recordOpsEvent('error', {
+        pipeline: 'F1',
+        step: 'delivery.invalid_client_id',
+        clientId: job.clientId,
+        context: { jobId: job.id },
+      });
+      alertOps({
+        pipeline: 'F1',
+        step: 'delivery.invalid_client_id',
+        clientId: job.clientId,
+        error: err,
+        context: { jobId: job.id },
+      });
+      return false;
+    }
     const messageIds: number[] = [];
     const continuation = `📋 ${escapeMarkdownV2(job.topName)} \\(продолжение\\)`;
     const parts = splitForTelegram(job.lastReportText ?? '', TELEGRAM_SAFE_MARGIN, continuation);
@@ -695,6 +729,25 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
       return;
     }
 
+    try {
+      assertClientId(DEFAULT_CLIENT_ID);
+    } catch (err) {
+      log.error(
+        { err, step: 'bot.report.invalid_client_id', clientId: DEFAULT_CLIENT_ID },
+        'invalid clientId — refusing to enqueue',
+      );
+      alertOps({
+        pipeline: 'F1',
+        step: 'bot.report.invalid_client_id',
+        error: err,
+        context: { clientId: DEFAULT_CLIENT_ID },
+      });
+      await ctx
+        .reply(formatErrorMessage('pipeline_failed'))
+        .catch(() => {});
+      return;
+    }
+
     const job: ReportJob = {
       id: randomUUID().slice(0, 8),
       chatId: ctx.chat.id,
@@ -765,6 +818,26 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
     if (job === undefined) {
       await ctx.answerCallbackQuery({ text: 'ℹ️ Отчёт уже недоступен.' });
       log.warn({ jobId }, 'bot.approve.job_not_found');
+      return;
+    }
+    // Story 1.10: disk-level idempotency guard for restart-replay scenarios.
+    // In-memory approvalStatus catches ~99% of double-tap cases; the disk read is
+    // the safety net when completedJobs is reseeded by a fresh process after restart.
+    let alreadyApprovedOnDisk = false;
+    try {
+      alreadyApprovedOnDisk = await isAlreadyApproved(job.clientId, job.id);
+    } catch (err) {
+      log.warn(
+        { err, jobId, step: 'bot.approve.idempotency_check_failed' },
+        'idempotency read failed, proceeding',
+      );
+    }
+    if (alreadyApprovedOnDisk) {
+      await ctx.answerCallbackQuery({ text: 'ℹ️ Уже отправлено.' });
+      log.info(
+        { jobId, step: 'bot.approve.disk_idempotency_hit' },
+        'approve replayed after restart',
+      );
       return;
     }
     if (job.approvalStatus === 'approved' || job.approvalStatus === 'delivered') {
@@ -1111,6 +1184,10 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
   let started = false;
 
   const stop = async (): Promise<void> => {
+    if (_schedulerHandle !== null) {
+      _schedulerHandle.stop();
+      _schedulerHandle = null;
+    }
     if (_watchdogHandle !== null) {
       _watchdogHandle.stop();
       _watchdogHandle = null;
@@ -1163,6 +1240,15 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
         await appendOpsLog(row);
       });
       _watchdogHandle = await startWatchdog({ aidarMention: config.OPS_AIDAR_MENTION });
+      // Story 1.10: cleanup + tar backup scheduler (in-process setInterval; no node-cron).
+      _schedulerHandle = await startScheduler({
+        dataRoot: 'data',
+        archiveDir: process.env.BACKUP_DIR && process.env.BACKUP_DIR.length > 0
+          ? process.env.BACKUP_DIR
+          : 'data/.backups',
+        rawMaxAgeDays: 14,
+        backupRetainDays: 7,
+      });
     }
 
     started = true;

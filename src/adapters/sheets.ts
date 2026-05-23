@@ -14,6 +14,7 @@ import {
 } from '../types.js';
 import { SheetsAdapterError, TranscriptConfigError } from '../errors.js';
 import type { OpsLogRow } from '../ops.js';
+import { assertClientId, ClientIdError } from '../utils/client-id.js';
 
 export { SheetsAdapterError } from '../errors.js';
 export type { SheetsAdapterCode } from '../errors.js';
@@ -100,6 +101,18 @@ export function _resetSheetsClientForTest(): void {
 }
 
 function resolveSheetId(clientId: string): string {
+  try {
+    assertClientId(clientId);
+  } catch (err) {
+    if (err instanceof ClientIdError) {
+      throw new SheetsAdapterError('auth', {
+        reason: 'invalid_clientId',
+        clientId,
+        clientIdReason: err.reason,
+      });
+    }
+    throw err;
+  }
   if (clientId !== 'geonline') {
     throw new SheetsAdapterError('auth', { reason: 'unknown_clientId', clientId });
   }

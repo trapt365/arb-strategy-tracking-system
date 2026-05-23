@@ -102,10 +102,67 @@ rm data/.ops-state.json
 ## Что Story 1.9 НЕ делает (см. story file для подробностей)
 
 - Weekly aggregated metrics (`time_to_approve` avg, `f5_response_rate`) — Story 1.12.
-- Cron job для backup-tar / cleanup `*.raw.txt` 14d — Story 1.10.
-- Circuit breaker для Claude — отдельная карточка, Story 1.10/1.12.
+- Circuit breaker для Claude — отдельная карточка, Story 1.12.
 - Canary test — Story 1.11.
 - Email emergency mode — Growth (deferred).
 - F4 watchdog (повестка к 9:30) — Epic 3.
 
 См. `_bmad-output/implementation-artifacts/deferred-work.md` для текущего списка.
+
+---
+
+## Offboarding клиента (Story 1.10, NFR8: < 1ч)
+
+Полное удаление данных клиента из `data/{slug}/`. Sheets / Telegram side требуют
+manual review — скрипт печатает чеклист.
+
+1. **Pre-flight:** убедиться, что клиент уведомлён и согласовал deletion (legal/GDPR).
+2. **Dry-run:** `npx tsx scripts/offboard-client.ts --client-id <id>` — печатает план
+   (файлы, bytes, by extension) без изменений.
+3. **Verify:** счётчики соответствуют ожиданиям (нет аномального переразмера).
+4. **Confirm:** `npx tsx scripts/offboard-client.ts --client-id <id> --confirm` —
+   удаляет `data/{slug}/`. Не трогает `data/.ops-state.json`,
+   `data/.scheduler-state.json`, `data/.backups/`.
+5. **Manual TODO** (печатается скриптом):
+   1. Revoke service-account access к Sheets (Share → remove).
+   2. Archive / filter `_ops_logs` rows for clientId через Sheet UI.
+   3. Remove client chat IDs из `TELEGRAM_TRACKER_CHAT_IDS`.
+   4. Удалить OAuth/API tokens из secret manager.
+   5. Запись deletion в журнал (compliance).
+6. **Verify:** `ls data/<slug>` → no such directory.
+
+SLA: full deletion < 1 час (NFR8).
+
+---
+
+## Restore from backup (Story 1.10)
+
+Бэкапы в `data/.backups/data-backup-YYYY-MM-DD.tar.gz` (последние 7 дней).
+
+```bash
+mkdir -p data/restore
+tar -xzf data/.backups/data-backup-2026-05-22.tar.gz -C data/restore/
+# Inspect data/restore/geonline/ before merging back to data/.
+```
+
+Внимание: tar НЕ содержит `*.raw.txt` (excluded). Только финальные `*.json` и
+`approvals.jsonl`.
+
+---
+
+## Scheduler hours (Story 1.10)
+
+In-process scheduler (setInterval, без `node-cron` — заменится в Story 3.0):
+
+- **03:00 Asia/Almaty** — daily cleanup `*.raw.txt` старше 14 дней.
+- **04:00 Asia/Almaty** — daily tar backup `data-backup-{date}.tar.gz`,
+  retain последние 7 файлов.
+- Состояние: `data/.scheduler-state.json` (`lastCleanupAt`, `lastBackupAt`,
+  atomic writeFile + rename).
+- Ошибки эскалируются через `alertOps` в ops-чат (`scheduler.cleanup_failed` /
+  `scheduler.backup_failed`); scheduler НЕ останавливается, следующий tick
+  ретраит на следующий день.
+
+Manual run (тест/debug): можно временно установить env `BACKUP_DIR` для
+изоляции, и запустить bot/процесс — scheduler сам выполнит pending cleanup /
+backup при следующем tick (intervalMs=1ч по умолчанию).
