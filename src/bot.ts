@@ -754,7 +754,7 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
       url: parsed.url,
       clientId: DEFAULT_CLIENT_ID,
       topName: DEFAULT_TOP_NAME,
-      meetingDate: now().toISOString().slice(0, 10),
+      meetingDate: now().toISOString(),
       status: 'queued',
       queuedAt: now().toISOString(),
       retryCount: 0,
