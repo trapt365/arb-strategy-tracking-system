@@ -7,6 +7,10 @@ dist/
 .DS_Store
 *.code-workspace
 
+# Credentials / service-account keys (never commit secrets)
+data/google-service-account.json
+**/*service-account*.json
+
 # Test audio files (large binaries)
 data/test-audio/
 data/golden/
