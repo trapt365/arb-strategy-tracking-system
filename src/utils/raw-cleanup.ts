@@ -22,6 +22,9 @@ const IGNORE_TOP_DIRS = new Set([
   'prompt-results',
   'test-inputs',
   '.backups',
+  // Story 7.1: черновики онбординга data/.onboarding/*.json — не клиентские данные
+  // и не *.raw.txt, cleanup их и так не тронет; в ignore для явности и без лишнего readdir.
+  '.onboarding',
   // Story 1.11: canary runs may persist *.raw.txt under each item-N subdir;
   // those artifacts are the source of truth for post-mortem and must not be
   // pruned by the daily cleanup scheduler.

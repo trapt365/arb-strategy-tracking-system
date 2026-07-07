@@ -28,8 +28,23 @@ import {
   TranscriptValidationError,
 } from './errors.js';
 import { parseReportUrl, type UrlParseFailure } from './utils/url-parser.js';
+import {
+  runF0FullDraft as defaultRunF0FullDraft,
+  renderF0FullDraftMessage,
+  persistF0FullDraft,
+  persistF0Session,
+  loadF0Session,
+  deleteF0Session,
+  markBlockingKrIssues,
+} from './f0-onboarding.js';
+import { computeF0Gaps, applyF0Answer, type F0Gap } from './f0-fill.js';
+import type { F0FullExtraction } from './types.js';
+import { extractTextFromDocument as defaultExtractTextFromDocument } from './utils/f0-document.js';
+import { isSupportedF0Document, F0_MAX_FILE_BYTES, F0_MAX_DOC_CHARS } from './utils/f0-input.js';
+import { F0OnboardingError } from './errors.js';
 import { assertTranscriptDuration } from './utils/transcript-duration-guard.js';
 import { createReportQueue, QueueOverflowError, type ReportQueue } from './utils/report-queue.js';
+import { withRetry } from './utils/retry.js';
 import {
   escapeMarkdownV2,
   formatDeliveryReport,
@@ -88,6 +103,11 @@ export interface BotDeps {
   progressUpdatesEnabled?: boolean;
   /** Override env-loaded queue max size (tests). */
   queueMaxSize?: number;
+  // Story 7.1/7.2: F0 onboarding deps (tests).
+  runF0FullDraft?: typeof defaultRunF0FullDraft;
+  extractTextFromDocument?: typeof defaultExtractTextFromDocument;
+  /** Скачивание файла Telegram по file_path (тесты подменяют, чтобы не ходить в Bot API). */
+  downloadTelegramFile?: (filePath: string) => Promise<Buffer>;
 }
 
 export interface CreatedBot {
@@ -116,6 +136,9 @@ function isAbortError(err: unknown): boolean {
 export function createBot(deps: BotDeps = {}): CreatedBot {
   const baseLogger = deps.logger ?? rootLogger;
   const log = baseLogger.child({ pipeline: 'F1', step: 'bot.report' });
+  // Story 7.3: отдельный child для F0-онбординга — иначе inline {pipeline:'F0'} даёт
+  // дубль ключа pipeline поверх привязанного 'F1' в NDJSON.
+  const f0Log = baseLogger.child({ pipeline: 'F0' });
 
   const token = deps.token ?? config.TELEGRAM_BOT_TOKEN;
   const trackerChatIds =
@@ -132,6 +155,25 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
   const appendApproval = deps.appendApproval ?? defaultAppendApproval;
   const isAlreadyApproved = deps.isAlreadyApproved ?? defaultIsAlreadyApproved;
   const startScheduler = deps.startScheduler ?? defaultStartScheduler;
+  const runF0FullDraftFn = deps.runF0FullDraft ?? defaultRunF0FullDraft;
+  const extractTextFromDocument = deps.extractTextFromDocument ?? defaultExtractTextFromDocument;
+  const downloadTelegramFile =
+    deps.downloadTelegramFile ??
+    (async (filePath: string): Promise<Buffer> =>
+      withRetry(
+        async () => {
+          const res = await fetch(`https://api.telegram.org/file/bot${token}/${filePath}`);
+          if (!res.ok) {
+            // httpStatus → defaultShouldRetry ретраит 429/5xx, но не 4xx (истёкший file_path).
+            const err = Object.assign(new Error(`telegram file download failed: HTTP ${res.status}`), {
+              httpStatus: res.status,
+            });
+            throw err;
+          }
+          return Buffer.from(await res.arrayBuffer());
+        },
+        { logger: log },
+      ));
   const now = deps.now ?? ((): Date => new Date());
   const queue = deps.queue ?? createReportQueue({ maxSize: queueMaxSize, logger: log });
 
@@ -159,6 +201,73 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
   // Story 1.7: pendingNotes for post-delivery correction flow.
   interface PendingNote { jobId: string; instructionMessageId: number }
   const pendingNotes = new Map<number, PendingNote>();
+  // Story 7.1: F0 onboarding session per chat (in-memory; восстановление после
+  // рестарта — Story 7.3). Пока значима одна бита: `processing` — идёт ли обработка
+  // документа (тогда новый документ отклоняем). Богатую машину состояний вводит 7.3,
+  // когда появится диалог дозаполнения.
+  interface F0AccumulatedDoc { sourceName: string; text: string }
+  interface F0Session {
+    id: string;
+    processing: boolean;
+    // collecting — приём файлов; filling — диалог дозаполнения; ready — онбординг завершён.
+    phase: 'collecting' | 'filling' | 'ready';
+    // Story 7.2: файлы пакета аккумулируются, черновик собирается по кнопке/команде.
+    documents: F0AccumulatedDoc[];
+    // Бегущая сумма символов пакета — ранний отказ до превышения бюджета извлечения.
+    documentsChars: number;
+    // Story 7.3: собранный черновик + очередь пробелов диалога дозаполнения.
+    draft?: { draftId: string; sourceNames: string[]; extraction: F0FullExtraction };
+    gaps: F0Gap[];
+    gapIndex: number;
+    schedule: string | null;
+  }
+  const f0Sessions = new Map<number, F0Session>();
+
+  // Story 7.3: снимок сессии на диск (warn-only) — переживает рестарт бота.
+  async function saveF0Session(chatId: number, s: F0Session): Promise<void> {
+    if (s.draft === undefined) return; // до сборки черновика персистить нечего
+    await persistF0Session({
+      chatId,
+      sessionId: s.id,
+      phase: s.phase,
+      draftId: s.draft.draftId,
+      sourceNames: s.draft.sourceNames,
+      extraction: s.draft.extraction,
+      gaps: s.gaps,
+      gapIndex: s.gapIndex,
+      schedule: s.schedule,
+      updatedAt: now().toISOString(),
+    });
+  }
+
+  /** Вернуть in-memory сессию или восстановить из персиста (AC3 Story 7.3). */
+  async function getOrRestoreF0Session(chatId: number): Promise<F0Session | undefined> {
+    const inMemory = f0Sessions.get(chatId);
+    if (inMemory !== undefined) return inMemory;
+    const persisted = await loadF0Session(chatId);
+    if (persisted === null) return undefined;
+    const restored: F0Session = {
+      id: persisted.sessionId,
+      processing: false,
+      phase: persisted.phase,
+      documents: [],
+      documentsChars: 0,
+      draft: {
+        draftId: persisted.draftId,
+        sourceNames: persisted.sourceNames,
+        extraction: persisted.extraction,
+      },
+      gaps: persisted.gaps,
+      gapIndex: persisted.gapIndex,
+      schedule: persisted.schedule,
+    };
+    f0Sessions.set(chatId, restored);
+    f0Log.info(
+      { step: 'f0.session_restored', chatId, sessionId: restored.id, phase: restored.phase },
+      'f0 session restored from disk',
+    );
+    return restored;
+  }
 
   /** Look up a job by id in both live queue and completed-jobs store. */
   function peekJob(jobId: string): ReportJob | undefined {
@@ -701,6 +810,434 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
     log.info({ step: 'bot.help.requested', chatId: ctx.chat.id }, 'help sent');
   });
 
+  // ───────── /newclient — F0 onboarding (Story 7.1 + 7.2) ─────────
+
+  const F0_START_TEXT = [
+    '🆕 Онбординг нового клиента.',
+    '',
+    'Пришли файлы артефактов стратегии (.md / .txt / .docx / .pdf): протокол сессии, OKR-документ, нарратив.',
+    'Можно несколько подряд — собирается один пакет. Когда всё прислал, нажми «Собрать черновик» или отправь /draft.',
+    '',
+    'Соберу панель OKR, банк гипотез и участников. KR без числовой базы «с X до Y»/ответственного и гипотезы без метрики помечу 🔴.',
+  ].join('\n');
+  const F0_BUSY_TEXT = '⏳ Уже обрабатываю пакет — дождись черновика.';
+  const F0_NO_SESSION_TEXT =
+    'Чтобы начать онбординг нового клиента, отправь /newclient — затем пришли документы.';
+  const F0_UNSUPPORTED_TEXT =
+    '⚠️ Поддерживаются .md, .txt, .docx, .pdf. Пришли документ в одном из этих форматов.';
+  const F0_TOO_LARGE_TEXT = '⚠️ Файл больше 20 МБ — Telegram не отдаёт такие боту. Сократи документ.';
+  const F0_NO_DOCS_TEXT = 'ℹ️ Пакет пуст — сначала пришли хотя бы один файл артефакта.';
+  const F0_MAX_PACKAGE_FILES = 20;
+  const F0_PACKAGE_FULL_TEXT =
+    `⚠️ В пакете уже ${F0_MAX_PACKAGE_FILES} файлов — достаточно. Собери черновик: /draft.`;
+
+  // Exhaustive по F0OnboardingCode: компилятор потребует запись при новом коде ошибки.
+  const F0_REPLY_BY_CODE: Record<F0OnboardingError['code'], string> = {
+    not_okr_document:
+      '⚠️ Не распознал материал как стратегию/OKR. Проверь, те ли файлы, или пришли другой артефакт.',
+    binary_document: '⚠️ Файл выглядит бинарным/битым. Пришли корректный .md, .txt, .docx или .pdf.',
+    empty_document: '⚠️ В файле нет извлекаемого текста (возможно, это скан-картинка без текстового слоя).',
+    document_too_large:
+      '⚠️ Пакет слишком большой для одного захода. Убери лишние файлы или пришли основной раздел.',
+    document_parse_failed: '⚠️ Не смог разобрать файл. Проверь, что .docx/.pdf не повреждён.',
+    file_too_large: F0_TOO_LARGE_TEXT,
+    unsupported_file: F0_UNSUPPORTED_TEXT,
+  };
+
+  const f0BuildKeyboard = new InlineKeyboard().text('✅ Собрать черновик', 'f0_build');
+
+  async function startF0Session(ctx: Context, trigger: string): Promise<void> {
+    const chatId = ctx.chat?.id;
+    if (chatId === undefined) return;
+    if (f0Sessions.get(chatId)?.processing) {
+      await ctx.reply(F0_BUSY_TEXT).catch(() => {});
+      return;
+    }
+    const session: F0Session = {
+      id: randomUUID().slice(0, 8),
+      processing: false,
+      phase: 'collecting',
+      documents: [],
+      documentsChars: 0,
+      gaps: [],
+      gapIndex: 0,
+      schedule: null,
+    };
+    f0Sessions.set(chatId, session);
+    await deleteF0Session(chatId); // сбрасываем персист прошлого онбординга этого чата
+    f0Log.info(
+      { step: 'f0.session_started', chatId, sessionId: session.id, trigger },
+      'f0 onboarding session started',
+    );
+    await ctx.reply(F0_START_TEXT).catch((err) => {
+      log.warn({ err, chatId }, 'f0.start.reply_failed');
+    });
+  }
+
+  bot.command('newclient', async (ctx) => {
+    await startF0Session(ctx, 'command');
+  });
+
+  // Приём файла в пакет: скачать → извлечь текст → аккумулировать. Черновик НЕ собирается здесь.
+  bot.on('message:document', async (ctx) => {
+    const chatId = ctx.chat.id;
+    const session = await getOrRestoreF0Session(chatId);
+    if (session === undefined) {
+      await ctx.reply(F0_NO_SESSION_TEXT).catch(() => {});
+      return;
+    }
+    if (session.processing) {
+      await ctx.reply(F0_BUSY_TEXT).catch(() => {});
+      return;
+    }
+    // Файлы принимаем только на этапе сбора. После сборки черновика (filling/ready)
+    // новый документ не должен затирать черновик и ответы дозаполнения (перезапуск — /newclient).
+    if (session.phase !== 'collecting') {
+      await ctx
+        .reply('ℹ️ Черновик уже собран, идёт дозаполнение. Новый пакет — /newclient; продолжить — /resume.')
+        .catch(() => {});
+      return;
+    }
+
+    const doc = ctx.message.document;
+    const sourceName = doc.file_name ?? 'document';
+    if (!isSupportedF0Document(doc.file_name, doc.mime_type)) {
+      f0Log.info(
+        { step: 'f0.unsupported_file', chatId, sourceName, mime: doc.mime_type },
+        'unsupported onboarding document',
+      );
+      await ctx.reply(F0_UNSUPPORTED_TEXT).catch(() => {});
+      return;
+    }
+    if (doc.file_size !== undefined && doc.file_size > F0_MAX_FILE_BYTES) {
+      await ctx.reply(F0_TOO_LARGE_TEXT).catch(() => {});
+      return;
+    }
+    if (session.documents.length >= F0_MAX_PACKAGE_FILES) {
+      await ctx.reply(F0_PACKAGE_FULL_TEXT).catch(() => {});
+      return;
+    }
+
+    // Держим processing на время скачивания/извлечения: без этого параллельный документ
+    // или сборка черновика видят полупустой пакет (файл ещё качается), а /newclient
+    // подменяет сессию, теряя in-flight файл. Reset — в finally.
+    session.processing = true;
+    try {
+      const file = await ctx.getFile();
+      if (file.file_path === undefined) {
+        throw new Error('telegram getFile returned no file_path');
+      }
+      const buf = await downloadTelegramFile(file.file_path);
+      const extracted = await extractTextFromDocument(buf, doc.file_name, doc.mime_type);
+
+      const projectedChars = session.documentsChars + extracted.text.length;
+      if (projectedChars > F0_MAX_DOC_CHARS) {
+        // Отклоняем раньше, чем пакет вырастет до неизвлекаемого размера, — не тратим
+        // ещё файлы и не доводим до отказа на финальной сборке.
+        f0Log.info(
+          { step: 'f0.package_too_large', chatId, sourceName, projectedChars },
+          'f0 package would exceed char budget',
+        );
+        await ctx.reply(F0_REPLY_BY_CODE.document_too_large).catch(() => {});
+        return;
+      }
+
+      session.documents.push({ sourceName: extracted.sourceName, text: extracted.text });
+      session.documentsChars = projectedChars;
+      f0Log.info(
+        {
+          step: 'f0.document_accepted',
+          chatId,
+          sessionId: session.id,
+          sourceName,
+          kind: extracted.kind,
+          packageSize: session.documents.length,
+          packageChars: session.documentsChars,
+        },
+        'f0 document accepted into package',
+      );
+      await ctx
+        .reply(
+          `📎 Принят: ${sourceName} (в пакете: ${session.documents.length}). ` +
+            'Пришли ещё или собери черновик.',
+          { reply_markup: f0BuildKeyboard },
+        )
+        .catch(() => {});
+    } catch (err) {
+      if (err instanceof F0OnboardingError) {
+        f0Log.info(
+          { step: 'f0.document_rejected', chatId, code: err.code, sourceName },
+          'f0 document rejected',
+        );
+        await ctx.reply(`${F0_REPLY_BY_CODE[err.code]}\nПакет цел — пришли другой файл.`).catch(() => {});
+      } else {
+        f0Log.error({ err, step: 'f0.document_failed', chatId, sourceName }, 'f0 document failed');
+        alertOps({
+          pipeline: 'F0',
+          step: 'f0.document_failed',
+          error: err,
+          context: { chatId, sourceName, sessionId: session.id },
+        });
+        await ctx.reply('⚠️ Не удалось принять файл — техническая ошибка. Попробуй ещё раз.').catch(() => {});
+      }
+    } finally {
+      session.processing = false;
+    }
+  });
+
+  // Сборка черновика из пакета: конкатенация файлов → полное извлечение (OKR + гипотезы + участники).
+  async function buildF0Draft(ctx: Context): Promise<void> {
+    const chatId = ctx.chat?.id;
+    if (chatId === undefined) return;
+    const session = f0Sessions.get(chatId);
+    if (session === undefined) {
+      await ctx.reply(F0_NO_SESSION_TEXT).catch(() => {});
+      return;
+    }
+    if (session.processing) {
+      await ctx.reply(F0_BUSY_TEXT).catch(() => {});
+      return;
+    }
+    if (session.documents.length === 0) {
+      await ctx.reply(F0_NO_DOCS_TEXT).catch(() => {});
+      return;
+    }
+
+    session.processing = true;
+    const sourceNames = session.documents.map((d) => d.sourceName);
+    // Разделяем файлы явными маркерами — модель понимает границы документов пакета.
+    const documentText = session.documents
+      .map((d) => `===== Файл: ${d.sourceName} =====\n\n${d.text}`)
+      .join('\n\n');
+
+    let progressMessageId: number | undefined;
+    try {
+      const progress = await ctx.reply('🧠 Собираю черновик из пакета… Обычно это 1-2 минуты.');
+      progressMessageId = progress.message_id;
+    } catch { /* прогресс не критичен */ }
+
+    try {
+      const result = await runF0FullDraftFn({
+        documentText,
+        sourceName: sourceNames.join(', '),
+      });
+
+      const draftId = randomUUID().slice(0, 8);
+      await persistF0FullDraft({ draftId, chatId, sourceNames, createdAt: now().toISOString(), result });
+
+      const message = renderF0FullDraftMessage({
+        extraction: result.extraction,
+        krIssues: result.krIssues,
+        hypothesisIssues: result.hypothesisIssues,
+        sourceName: sourceNames.join(', '),
+        draftId,
+      });
+      const parts = splitForTelegram(message, TELEGRAM_SAFE_MARGIN, '🆕 Черновик онбординга (продолжение)');
+      let sentAll = true;
+      for (const part of parts) {
+        try {
+          await ctx.reply(part);
+        } catch (sendErr) {
+          sentAll = false;
+          log.error({ err: sendErr, chatId, draftId }, 'f0.draft.send_failed');
+        }
+      }
+      if (!sentAll) {
+        // Часть сообщений не ушла — черновик показан фрагментарно; не выдаём за успех.
+        await ctx
+          .reply('⚠️ Черновик доставлен не полностью (сбой Telegram). Собери снова: /draft.')
+          .catch(() => {});
+      }
+      // Пакет использован — очищаем, чтобы новые файлы не липли к отработанному черновику.
+      session.documents = [];
+      session.documentsChars = 0;
+      // Story 7.3: переходим в диалог дозаполнения по пробелам черновика.
+      session.phase = 'filling';
+      session.draft = { draftId, sourceNames, extraction: result.extraction };
+      session.gaps = computeF0Gaps(result.extraction);
+      session.gapIndex = 0;
+      session.schedule = null;
+      await saveF0Session(chatId, session);
+      f0Log.info(
+        {
+          step: 'f0.draft_sent',
+          chatId,
+          sessionId: session.id,
+          draftId,
+          files: sourceNames.length,
+          delivered: sentAll,
+          blockingKrs: result.krIssues.length,
+          hypothesesWithoutMetric: result.hypothesisIssues.length,
+          totalKrs: result.totalKrs,
+          gaps: session.gaps.length,
+        },
+        'f0 draft delivered',
+      );
+      await askNextF0Gap(ctx, session);
+    } catch (err) {
+      if (err instanceof F0OnboardingError) {
+        f0Log.info(
+          { step: 'f0.draft_rejected', chatId, code: err.code, files: sourceNames.length },
+          'f0 draft rejected',
+        );
+        await ctx
+          .reply(`${F0_REPLY_BY_CODE[err.code]}\nПакет цел — поправь файлы и собери снова: /draft.`)
+          .catch(() => {});
+      } else {
+        // Не-F0 ошибка (напр. обрезка JSON по лимиту токенов, сбой Claude) — подсказываем
+        // действие: пакет большой → убрать файлы. Пакет сохраняем для повторной попытки.
+        f0Log.error({ err, step: 'f0.draft_failed', chatId }, 'f0 draft failed');
+        alertOps({
+          pipeline: 'F0',
+          step: 'f0.draft_failed',
+          error: err,
+          context: { chatId, sessionId: session.id, files: sourceNames.length },
+        });
+        await ctx
+          .reply(
+            '⚠️ Не удалось собрать черновик. Если файлов много — убери лишние и собери снова: /draft.',
+          )
+          .catch(() => {});
+      }
+    } finally {
+      session.processing = false;
+      if (progressMessageId !== undefined) {
+        await bot.api.deleteMessage(chatId, progressMessageId).catch(() => {});
+      }
+    }
+  }
+
+  bot.command('draft', async (ctx) => {
+    await buildF0Draft(ctx);
+  });
+
+  bot.callbackQuery('f0_build', async (ctx) => {
+    await ctx.answerCallbackQuery().catch(() => {});
+    await buildF0Draft(ctx);
+  });
+
+  // ───────── Story 7.3: диалог дозаполнения ─────────
+
+  const F0_FILL_HINT = 'Ответь текстом · /skip — пропустить · /confirm — завершить онбординг.';
+
+  /** Задать следующий вопрос из очереди пробелов, либо предложить /confirm. */
+  async function askNextF0Gap(ctx: Context, session: F0Session): Promise<void> {
+    if (session.gapIndex < session.gaps.length) {
+      const gap = session.gaps[session.gapIndex]!;
+      const pos = `(${session.gapIndex + 1}/${session.gaps.length})`;
+      await ctx.reply(`❓ ${pos} ${gap.question}\n${F0_FILL_HINT}`).catch(() => {});
+    } else {
+      await ctx
+        .reply('Все вопросы пройдены. Проверь черновик и заверши онбординг: /confirm.')
+        .catch(() => {});
+    }
+  }
+
+  /** Применить ответ трекера к текущему пробелу и перейти к следующему. */
+  async function handleF0FillAnswer(ctx: Context, session: F0Session, text: string): Promise<void> {
+    const chatId = ctx.chat!.id;
+    if (session.gapIndex >= session.gaps.length) {
+      await ctx.reply('Вопросы закончились — заверши онбординг: /confirm.').catch(() => {});
+      return;
+    }
+    const gap = session.gaps[session.gapIndex]!;
+    if (gap.kind === 'schedule') {
+      const value = text.trim();
+      if (value.length === 0) {
+        await ctx.reply('Пустой ответ. Впиши расписание или пропусти: /skip.').catch(() => {});
+        return; // не продвигаем очередь — вопрос остаётся
+      }
+      session.schedule = value;
+    } else {
+      // applyF0Answer возвращает false на пустой ответ — тогда НЕ продвигаем очередь,
+      // иначе пробел молча «съедается» и всплывёт только блоком на /confirm.
+      const written = session.draft !== undefined && applyF0Answer(session.draft.extraction, gap, text);
+      if (!written) {
+        await ctx.reply('Пустой ответ. Впиши значение или пропусти: /skip.').catch(() => {});
+        return;
+      }
+    }
+    session.gapIndex += 1;
+    await saveF0Session(chatId, session);
+    f0Log.info(
+      { step: 'f0.gap_answered', chatId, sessionId: session.id, kind: gap.kind, ref: gap.ref },
+      'f0 gap answered',
+    );
+    await askNextF0Gap(ctx, session);
+  }
+
+  bot.command('skip', async (ctx) => {
+    const session = await getOrRestoreF0Session(ctx.chat.id);
+    if (session === undefined || session.phase !== 'filling') {
+      await ctx.reply('ℹ️ Сейчас нечего пропускать — активного диалога онбординга нет.').catch(() => {});
+      return;
+    }
+    if (session.gapIndex < session.gaps.length) {
+      const gap = session.gaps[session.gapIndex]!;
+      session.gapIndex += 1;
+      await saveF0Session(ctx.chat.id, session);
+      f0Log.info(
+        { step: 'f0.gap_skipped', chatId: ctx.chat.id, kind: gap.kind, ref: gap.ref },
+        'f0 gap skipped',
+      );
+    }
+    await askNextF0Gap(ctx, session);
+  });
+
+  bot.command('resume', async (ctx) => {
+    const session = await getOrRestoreF0Session(ctx.chat.id);
+    if (session === undefined) {
+      await ctx.reply('ℹ️ Нет активного онбординга. Начни новый: /newclient.').catch(() => {});
+      return;
+    }
+    if (session.phase === 'filling') {
+      await ctx.reply('↩️ Продолжаем онбординг с места остановки.').catch(() => {});
+      await askNextF0Gap(ctx, session);
+    } else if (session.phase === 'ready') {
+      await ctx.reply('✅ Онбординг этого клиента уже завершён.').catch(() => {});
+    } else {
+      await ctx.reply('Онбординг на этапе сбора файлов — пришли документы или собери черновик: /draft.').catch(() => {});
+    }
+  });
+
+  bot.command('confirm', async (ctx) => {
+    const chatId = ctx.chat.id;
+    const session = await getOrRestoreF0Session(chatId);
+    if (session === undefined || session.draft === undefined) {
+      await ctx.reply('ℹ️ Нет черновика для подтверждения. Начни онбординг: /newclient.').catch(() => {});
+      return;
+    }
+    // Инвариант 1: пока есть 🔴-KR (нет базы/цели/ответственного) — выпуск заблокирован.
+    const blocking = markBlockingKrIssues(session.draft.extraction);
+    if (blocking.length > 0) {
+      const lines = [
+        `🔴 Нельзя завершить: ${blocking.length} KR без базы «с X до Y» или ответственного (инвариант 1).`,
+        'Дозаполни их (/resume) или поправь:',
+      ];
+      for (const issue of blocking.slice(0, 15)) {
+        const reasons = issue.reasons.join(', ');
+        lines.push(`  – ${issue.ref} «${issue.formulation.slice(0, 60)}»: ${reasons}`);
+      }
+      if (blocking.length > 15) lines.push(`  … и ещё ${blocking.length - 15}`);
+      await ctx.reply(lines.join('\n')).catch(() => {});
+      return;
+    }
+    session.phase = 'ready';
+    await saveF0Session(chatId, session);
+    f0Log.info(
+      { step: 'f0.confirmed', chatId, sessionId: session.id, draftId: session.draft.draftId },
+      'f0 onboarding confirmed ready',
+    );
+    const readyLines = ['✅ Онбординг подтверждён — данные готовы.'];
+    if (session.schedule !== null && session.schedule.length > 0) {
+      readyLines.push(`🗓 Расписание встреч: ${session.schedule}`);
+    }
+    readyLines.push(
+      'Следующие шаги: карточка клиента и Google Sheets (появятся в ближайших обновлениях бота).',
+    );
+    await ctx.reply(readyLines.join('\n')).catch(() => {});
+  });
+
   // ───────── /report command ─────────
   bot.command('report', async (ctx) => {
     const arg = ctx.match ?? '';
@@ -1078,8 +1615,28 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
       return;
     }
 
+    // Story 7.1: текстовый триггер онбординга «новый клиент». Не срабатывает во время
+    // активного диалога дозаполнения — иначе ответ, дословно равный «новый клиент»,
+    // случайно сбросил бы сессию. Явный перезапуск во время filling — команда /newclient.
+    const f0InMemory = f0Sessions.get(chatId);
+    if (f0InMemory?.phase !== 'filling' && /^новый клиент$/iu.test(ctx.message.text.trim())) {
+      await startF0Session(ctx, 'text');
+      return;
+    }
+
     const pending = pendingEdits.get(chatId);
     if (pending === undefined) {
+      // Story 7.3: диалог дозаполнения. Проверяем ПОСЛЕ pendingEdits, чтобы F1-правка
+      // (reply на инструкцию) не перехватывалась онбордингом. Восстанавливаем сессию
+      // с диска, если её нет в памяти после рестарта (AC3).
+      const f0 = f0InMemory ?? (await getOrRestoreF0Session(chatId));
+      if (f0?.phase === 'filling') {
+        if (f0InMemory === undefined) {
+          await ctx.reply('↩️ Восстановил онбординг после перерыва.').catch(() => {});
+        }
+        await handleF0FillAnswer(ctx, f0, ctx.message.text);
+        return;
+      }
       // Story 1.8: fallback hint вместо молчания (UX-DR3 «Тишина — враг»).
       // Сюда падают: свободный текст без reply и неизвестные команды
       // (Telegram доставляет их как обычный message:text без bot_command match).
@@ -1218,6 +1775,9 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
         { command: 'start',  description: 'Начать работу с ботом' },
         { command: 'help',   description: 'Инструкция и список команд' },
         { command: 'report', description: 'Создать отчёт по встрече' },
+        { command: 'newclient', description: 'Онбординг нового клиента' },
+        { command: 'draft', description: 'Собрать черновик онбординга из пакета' },
+        { command: 'confirm', description: 'Завершить онбординг клиента' },
       ]);
     } catch (err) {
       log.warn({ err }, 'failed to set bot commands — continuing');

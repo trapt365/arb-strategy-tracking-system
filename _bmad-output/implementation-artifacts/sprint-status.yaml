@@ -36,7 +36,8 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 
 generated: 2026-04-01
-last_updated: 2026-05-23  # story 1.11 → review: bmad-dev-story workflow complete — 12/12 tasks + all subtasks; canary CLI (~570 LOC) + pure helpers (~390 LOC) + 38 tests + canary-items.json + runbook section + raw-cleanup defensive IGNORE; 427/427 vitest pass (+38 новых), tsc clean; smoke --no-claude exit 0 PASS; no production code modified; deferred-work 4 carded CLOSED (config.ts partial, logger.child test, golden regression, canary itself)
+last_updated: 2026-07-07  # WP-39 Ф2: Epic 7 (F0 онбординг + мультиклиентность, 6 stories, FR91-FR97). Stories 7.1 (OKR→черновик), 7.2 (docx/pdf, мультифайл, гипотезы+участники, синтез из решений), 7.3 (диалог дозаполнения + persist/restore) РЕАЛИЗОВАНЫ + code-review → done. 469/469 vitest, tsc clean, smoke SAM+GeOnline PASS. Осталось (нужен вход Тимура): 7.4 Google Sheets — Drive write-scope + шаблон v2.0 + аккаунт/папка; 7.5 карточка клиента + чеклист; 7.6 мультиклиентность — данные 2-го пилотного клиента. См. sprint-change-proposal-2026-07-07-wp39-f2.md
+last_updated_prev0: 2026-05-23  # story 1.11 → review: bmad-dev-story workflow complete — 12/12 tasks + all subtasks; canary CLI (~570 LOC) + pure helpers (~390 LOC) + 38 tests + canary-items.json + runbook section + raw-cleanup defensive IGNORE; 427/427 vitest pass (+38 новых), tsc clean; smoke --no-claude exit 0 PASS; no production code modified; deferred-work 4 carded CLOSED (config.ts partial, logger.child test, golden regression, canary itself)
 last_updated_prev: 2026-05-23  # story 1.10 → done: code-review fixes applied — scheduler exact local hours only; backup archive naming + retention use Asia/Almaty calendar date; targeted scheduler/data-backup regression 17/17 pass; typecheck attempted but environment timed out without diagnostics
 last_updated_prev2: 2026-05-23  # story 1.10 → review: bmad-dev-story workflow — 12/12 tasks + 40/40 subtasks complete; 388/388 vitest pass (+56 new tests), tsc clean; client-id utils + assertClientId на 5 persist*+resolveSheetId+/report+deliverReport; raw-cleanup (14d, ignore-paths defensive); data-backup tar -czf (injectable spawn, prune после успеха, 7d retention, BackupError); scheduler.ts setInterval+hourInTz formatToParts (cleanup 03:00 + backup 04:00 Asia/Almaty + atomic data/.scheduler-state.json); overlay-merge в loadOpenCommitments (newer-wins-by-mtime); isAlreadyApproved disk-level guard wired в approve callback; offboard-client.ts CLI (dry-run + Manual TODO); .gitignore runtime data; docs/timur-ops-runbook.md +Offboarding/+Restore/+Scheduler hours; deferred-work.md 6 CLOSED + 3 retargeted
 project: ARB AI-Tracking System
@@ -118,8 +119,19 @@ development_status:
   # Epic 6: Масштабирование и рост
   epic-6: backlog
   6-1-migraciya-na-postgresql: backlog
-  6-2-adaptaciya-pod-novogo-klienta: backlog
+  6-2-adaptaciya-pod-novogo-klienta: backlog  # минимум «2-й клиент» (реестр clientId→sheetId, расшивка хардкода) забрал Epic 7 / Story 7.6 (2026-07-07)
   6-3-degradaciya-rezhima-odobreniya: backlog
   6-4-sravnenie-trekerov-i-otslezhivanie-raskhodov: backlog
   6-5-tekhnicheskaya-izolyaciya-pri-neskolkikh-trekerakh: backlog
   epic-6-retrospective: optional
+
+  # Epic 7: Онбординг клиента через бота (F0) + минимальная мультиклиентность — WP-39 Ф2 (2026-07-07)
+  # Лёгкий формат stories (solo MVP): 3 AC, ~5 задач, 1 проход ревью
+  epic-7: in-progress
+  7-1-vertikalnyy-srez-okr-dokument-v-chernovik-paneli-okr: done  # 2026-07-07: код + code-review; src/f0-onboarding.ts + src/utils/f0-input.ts + prompts/f0-okr-extraction.md + bot /newclient & message:document; 450/450 vitest, tsc clean; review-фиксы: regex backtracking DoS (bounded quantifiers), byte/size-guard до replace, download withRetry, safeEditMessage, exhaustive error map
+  7-2-polnyy-vkhod-docx-pdf-gipotezy-i-uchastniki: done  # 2026-07-07: docx/pdf (mammoth/pdf-parse) + мультифайл-пакет + банк гипотез (инвариант 2) + участники + синтез из решений (SAM); code-review + фиксы; 458/458 vitest, smoke SAM PASS
+  7-3-dialog-dozapolneniya-voprosy-tolko-pro-otsutstvuyushchee: done  # 2026-07-07: диалог дозаполнения (вопросы только про отсутствующее, /skip /confirm /resume) + persist/restore сессии (переживает рестарт) + инвариант 1 блокирует /confirm; code-review + фиксы; 469/469 vitest
+  7-4-sozdanie-google-sheets-po-shablonu-v2: backlog
+  7-5-kartochka-klienta-i-cheklist-gotovnosti: backlog
+  7-6-minimalnaya-multiklientnost-i-regress-geonline: backlog
+  epic-7-retrospective: optional

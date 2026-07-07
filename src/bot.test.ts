@@ -1349,7 +1349,15 @@ describe('bot — setMyCommands payload (Story 1.8)', () => {
       const cmdCall = built.calls.find((c) => c.method === 'setMyCommands');
       expect(cmdCall).toBeDefined();
       const cmds = (cmdCall!.payload as { commands: Array<{ command: string }> }).commands;
-      expect(cmds.map((c) => c.command)).toEqual(['start', 'help', 'report']);
+      // Story 7.1/7.2/7.3: + newclient + draft + confirm (F0 онбординг)
+      expect(cmds.map((c) => c.command)).toEqual([
+        'start',
+        'help',
+        'report',
+        'newclient',
+        'draft',
+        'confirm',
+      ]);
       expect(cmds[0]!.command).toBe('start');
     } finally {
       await built.stop();

@@ -286,6 +286,11 @@ function truncatePlain(s: string, max: number): string {
   return s.slice(0, head) + suffix;
 }
 
+/** Обрезка с многоточием «…» для пользовательских текстов (F0-черновики и вопросы). */
+export function truncateEllipsis(text: string, max: number): string {
+  return text.length <= max ? text : `${text.slice(0, max - 1)}…`;
+}
+
 function safeStringifyForOps(v: unknown): string {
   try {
     return JSON.stringify(v);

@@ -137,3 +137,30 @@ export class F1PipelineError extends Error {
     this.name = 'F1PipelineError';
   }
 }
+
+// === Story 7.1: F0 onboarding (WP-39 Ф2) ===
+
+export type F0OnboardingCode =
+  | 'unsupported_file'
+  | 'file_too_large'
+  | 'binary_document'
+  | 'empty_document'
+  | 'document_too_large'
+  | 'document_parse_failed'
+  | 'not_okr_document';
+
+export class F0OnboardingError extends Error {
+  public readonly code: F0OnboardingCode;
+  public readonly context: Record<string, unknown>;
+
+  constructor(
+    code: F0OnboardingCode,
+    context: Record<string, unknown>,
+    options?: { cause?: unknown },
+  ) {
+    super(`f0:${code}`, options as ErrorOptions);
+    this.code = code;
+    this.context = context;
+    this.name = 'F0OnboardingError';
+  }
+}

@@ -275,3 +275,86 @@ export const ApprovalRecordSchema = z.object({
   status: z.literal('approved'),
 });
 export type ApprovalRecord = z.infer<typeof ApprovalRecordSchema>;
+
+// === Story 7.1: F0 onboarding — черновик панели OKR (WP-39 Ф2) ===
+// Контракт Claude-ответа. Инвариант 3 («не выдумывать») зашит в схему:
+// отсутствующее в документе значение — null, сомнительные фрагменты — в unrecognized.
+
+export const F0KrDraftSchema = z.object({
+  formulation: z.string().min(1),
+  // Числовая база «с X» как записано в документе; null если базы в документе нет.
+  base: z.string().nullable(),
+  // Целевое значение «до Y»; null если цель не числовая/отсутствует.
+  target: z.string().nullable(),
+  owner: z.string().nullable(),
+  // Срок как записан в документе («До 30.07.2026», «Q1 2026», «Постоянно»); не нормализуем.
+  deadline: z.string().nullable(),
+});
+export type F0KrDraft = z.infer<typeof F0KrDraftSchema>;
+
+export const F0ObjectiveDraftSchema = z.object({
+  title: z.string().min(1),
+  krs: z.array(F0KrDraftSchema),
+});
+export type F0ObjectiveDraft = z.infer<typeof F0ObjectiveDraftSchema>;
+
+// === Story 7.2: полный вход — гипотезы + участники ===
+
+export const F0HypothesisDraftSchema = z.object({
+  // Краткое название гипотезы (как в трекере) — всегда есть.
+  statement: z.string().min(1),
+  // Полная формулировка ЕСЛИ-ТО-ПОТОМУ ЧТО; null если в документе только краткое название.
+  ifThenBecause: z.string().nullable(),
+  // Метрика проверки (инвариант 2). null → бот пометит 🔴 и потребует дозаполнения.
+  metric: z.string().nullable(),
+  department: z.string().nullable(),
+  // true — гипотеза синтезирована из решения/инициативы (кейс SAM), требует подтверждения.
+  synthesized: z.boolean(),
+});
+export type F0HypothesisDraft = z.infer<typeof F0HypothesisDraftSchema>;
+
+export const F0ParticipantDraftSchema = z.object({
+  name: z.string().min(1),
+  role: z.string().nullable(),
+  department: z.string().nullable(),
+  // telegram/телефон — почти всегда отсутствует в артефактах, спрашивается в 7.3.
+  contact: z.string().nullable(),
+});
+export type F0ParticipantDraft = z.infer<typeof F0ParticipantDraftSchema>;
+
+export const F0FullExtractionSchema = z.object({
+  document_type: z.enum(['strategy', 'other']),
+  company: z.string().nullable(),
+  objectives: z.array(F0ObjectiveDraftSchema),
+  hypotheses: z.array(F0HypothesisDraftSchema),
+  participants: z.array(F0ParticipantDraftSchema),
+  unrecognized: z.array(z.string()),
+});
+export type F0FullExtraction = z.infer<typeof F0FullExtractionSchema>;
+
+// === Story 7.3: диалог дозаполнения + персист сессии ===
+
+export const F0GapSchema = z.object({
+  kind: z.enum(['kr_base', 'kr_target', 'kr_owner', 'hypo_metric', 'participant_contact', 'schedule']),
+  objectiveIndex: z.number().int().optional(),
+  krIndex: z.number().int().optional(),
+  hypothesisIndex: z.number().int().optional(),
+  participantIndex: z.number().int().optional(),
+  ref: z.string(),
+  question: z.string(),
+});
+
+// Персист сессии онбординга — переживает рестарт бота (AC3 Story 7.3).
+export const F0PersistedSessionSchema = z.object({
+  chatId: z.number().int(),
+  sessionId: z.string().min(1),
+  phase: z.enum(['collecting', 'filling', 'ready']),
+  draftId: z.string().min(1),
+  sourceNames: z.array(z.string()),
+  extraction: F0FullExtractionSchema,
+  gaps: z.array(F0GapSchema),
+  gapIndex: z.number().int().nonnegative(),
+  schedule: z.string().nullable(),
+  updatedAt: z.string().min(1),
+});
+export type F0PersistedSession = z.infer<typeof F0PersistedSessionSchema>;
