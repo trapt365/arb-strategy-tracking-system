@@ -12,6 +12,13 @@ export interface CallClaudeOpts<T> {
   schema: ZodType<T>;
   model?: string;
   maxTokens?: number;
+  /**
+   * Per-call SDK request timeout (ms), overriding the client-level
+   * `CLAUDE_TIMEOUT_MS`. Heavy calls (F0 full extraction, до 16k выходных токенов)
+   * не укладываются в дефолтные 120с и падают с `claude_api: Request timed out.`
+   * Undefined → используется клиентский таймаут.
+   */
+  timeoutMs?: number;
   signal?: AbortSignal;
   logger?: Pick<Logger, 'info' | 'warn' | 'error'>;
 }
@@ -95,7 +102,12 @@ export function shouldRetryClaude(error: unknown): boolean {
   const code = typeof e.code === 'string' ? e.code : findCauseProperty(error, 'code');
   if (code && RETRYABLE_NETWORK_CODES.includes(code)) return true;
   const message = typeof e.message === 'string' ? e.message : findCauseProperty(error, 'message');
-  if (message && /fetch failed|network|socket/i.test(message)) return true;
+  // Anthropic SDK v0.90 бросает таймаут запроса как `APIConnectionTimeoutError`
+  // с message "Request timed out." и name НЕ 'AbortError'/'TimeoutError' — регекс
+  // по name (line 88) его не ловил, поэтому таймаут не ретраился (attemptCount:1).
+  // Ловим по message. Пара: heavy-вызовы получают достаточный per-call `timeoutMs`,
+  // так что ретрай срабатывает только на реально транзиентном таймауте.
+  if (message && /fetch failed|network|socket|timed out|timeout/i.test(message)) return true;
   return false;
 }
 
@@ -217,7 +229,7 @@ interface ExecuteClaudeCallResult {
 
 async function executeClaudeCall(
   prompt: string,
-  opts: { stepName: string; model?: string; maxTokens?: number; signal?: AbortSignal; logger?: Pick<Logger, 'info' | 'warn' | 'error'> },
+  opts: { stepName: string; model?: string; maxTokens?: number; timeoutMs?: number; signal?: AbortSignal; logger?: Pick<Logger, 'info' | 'warn' | 'error'> },
 ): Promise<ExecuteClaudeCallResult> {
   const baseLogger = opts.logger ?? rootLogger;
   const log =
@@ -235,13 +247,18 @@ async function executeClaudeCall(
       async () => {
         attemptCount++;
         const client = getClient();
+        // Per-request options: signal (caller abort) + timeout (overrides client
+        // CLAUDE_TIMEOUT_MS для тяжёлых вызовов). undefined когда ни того, ни другого.
+        const requestOpts: { signal?: AbortSignal; timeout?: number } = {};
+        if (opts.signal) requestOpts.signal = opts.signal;
+        if (opts.timeoutMs !== undefined) requestOpts.timeout = opts.timeoutMs;
         return client.messages.create(
           {
             model,
             max_tokens: maxTokens,
             messages: [{ role: 'user', content: prompt }],
           },
-          opts.signal ? { signal: opts.signal } : undefined,
+          Object.keys(requestOpts).length > 0 ? requestOpts : undefined,
         );
       },
       {

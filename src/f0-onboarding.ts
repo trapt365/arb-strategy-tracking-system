@@ -106,6 +106,11 @@ export interface RunF0DraftDeps {
 // выше дефолтного 8192, иначе большой пакет обрезается на середине JSON.
 export const F0_FULL_MAX_TOKENS = 16000;
 
+// Генерация до 16k токенов из нескольких транскриптов занимает ~4-5 мин — дефолтный
+// клиентский таймаут SDK (CLAUDE_TIMEOUT_MS=120с) не хватает → `claude_api: Request
+// timed out.` (см. deferred-work.md, прод-баг Ф2). Даём щедрый per-call таймаут.
+export const F0_FULL_TIMEOUT_MS = 420_000;
+
 export interface F0FullDraftResult {
   extraction: F0FullExtraction;
   krIssues: F0KrIssue[];
@@ -131,6 +136,7 @@ export async function runF0FullDraft(
     stepName: 'f0_full_extraction',
     schema: F0FullExtractionSchema,
     maxTokens: F0_FULL_MAX_TOKENS,
+    timeoutMs: F0_FULL_TIMEOUT_MS,
     signal: args.signal,
     logger: log,
   });

@@ -85,6 +85,13 @@ describe('shouldRetryClaude', () => {
     e.code = 'ETIMEDOUT';
     expect(shouldRetryClaude(e)).toBe(true);
   });
+
+  it('DOES retry on SDK request timeout ("Request timed out.")', () => {
+    // Anthropic SDK v0.90 throws APIConnectionTimeoutError with this message and
+    // a name that is NOT AbortError/TimeoutError — прод-баг Ф2 (attemptCount:1,
+    // без ретрая). Ловим по message.
+    expect(shouldRetryClaude(new Error('Request timed out.'))).toBe(true);
+  });
 });
 
 describe('callClaude', () => {
@@ -189,6 +196,16 @@ describe('callClaude', () => {
     });
     queueMicrotask(() => ctrl.abort());
     await expect(promise).rejects.toMatchObject({ name: 'AbortError' });
+    expect(create).toHaveBeenCalledTimes(1);
+  });
+
+  it('passes per-call timeoutMs to SDK request options', async () => {
+    const create = vi.fn().mockImplementation((_args, opts) => {
+      expect((opts as { timeout?: number } | undefined)?.timeout).toBe(420_000);
+      return Promise.resolve(ok('{"decisions":[],"count":0}'));
+    });
+    _setClaudeClientForTest(makeClient(create) as unknown as never);
+    await callClaude('p', { stepName: 'extraction', schema: TestSchema, timeoutMs: 420_000 });
     expect(create).toHaveBeenCalledTimes(1);
   });
 });
