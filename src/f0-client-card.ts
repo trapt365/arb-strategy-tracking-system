@@ -6,7 +6,8 @@ import { ClientCardSchema, type ClientCard, type F0FullExtraction } from './type
 
 // Story 7.5 (WP-39 Ф2): карточка клиента + чеклист готовности к неделе 1.
 // Собирает карточку из данных онбординга (7.1–7.4), кладёт в data/{clientId}/card.json,
-// считает чеклист готовности (🟢/🔴 + действие по каждому 🔴, инвариант 1 не обойти).
+// считает чеклист готовности (🟢/🔴 + действие по каждому 🔴; инвариант 1 ослаблен —
+// /confirm предупреждает о неполных KR, но не блокирует).
 
 const DATA_ROOT = 'data';
 
@@ -155,7 +156,7 @@ export function computeReadinessChecklist(
       key: 'kr_countable',
       label: 'KR считаемы (есть база «с X до Y» и ответственный)',
       ok: blocking.length === 0,
-      action: `Дозаполни ${blocking.length} 🔴 KR (базы/цели/ответственных): /resume — инвариант 1 не обойти.`,
+      action: `Дозаполни ${blocking.length} 🔴 KR (базы/цели/ответственных): /resume или прямо в таблице (инвариант 1: /confirm предупреждает, не блокирует).`,
     },
     {
       key: 'participants_and_schedule',

@@ -47,7 +47,13 @@ import {
   computeReadinessChecklist,
   renderReadinessMessage,
 } from './f0-client-card.js';
-import { upsertClient, getClientTopName, listClientIds, getClientSheetId } from './client-registry.js';
+import {
+  upsertClient,
+  getClientTopName,
+  getClientName,
+  listClientIds,
+  getClientSheetId,
+} from './client-registry.js';
 import type { F0FullExtraction } from './types.js';
 import { extractTextFromDocument as defaultExtractTextFromDocument } from './utils/f0-document.js';
 import { isSupportedF0Document, F0_MAX_FILE_BYTES, F0_MAX_DOC_CHARS } from './utils/f0-input.js';
@@ -71,7 +77,9 @@ import {
 import type { ReportJob } from './types.js';
 
 const DEFAULT_CLIENT_ID = 'geonline';
-const DEFAULT_TOP_NAME = 'Жанель';
+// Story 8.2 (W8): имя топа Geonline — только для его же fallback-пути (пилот без записи
+// в реестре). Для остальных клиентов дефолт нейтральный: имя компании из реестра.
+const GEONLINE_DEFAULT_TOP_NAME = 'Жанель';
 const JOB_TIMEOUT_MS = 30 * 60 * 1000;
 const MAX_COMPLETED_JOBS = 100;
 
@@ -1498,7 +1506,11 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
       }
       clientId = clientIdArg;
     }
-    const topName = (await getClientTopName(clientId)) ?? DEFAULT_TOP_NAME;
+    const topName =
+      (await getClientTopName(clientId)) ??
+      (clientId === DEFAULT_CLIENT_ID
+        ? GEONLINE_DEFAULT_TOP_NAME
+        : (await getClientName(clientId)) ?? 'Клиент');
 
     try {
       assertClientId(clientId);

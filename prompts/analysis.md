@@ -74,7 +74,7 @@
   "alerts": ["Алерт 1", "Алерт 2"],
   "commitments_status_updates": [
     {
-      "who": "Жанель",
+      "who": "Алия",
       "what": "подготовить отчёт",
       "previous_quote": "[01:23] ...",
       "new_status": "completed",

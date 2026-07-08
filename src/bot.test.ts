@@ -1132,7 +1132,9 @@ describe('bot — onboarding /start (Story 1.8)', () => {
     expect(payload.text).toContain('/help');
     expect(payload.text).toContain('🔍 Найти');
     expect(payload.text).toContain('📋 Повестка');
-    expect(payload.text).toContain('📊 Статус');
+    // Story 8.2 (W1): /status реализован — в welcome он команда, а не пункт «Скоро».
+    expect(payload.text).toContain('/status');
+    expect(payload.text).toContain('/newclient');
     expect(payload.parse_mode).toBeUndefined();
     expect(queue.size()).toBe(0);
   });

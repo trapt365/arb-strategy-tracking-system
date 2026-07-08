@@ -75,6 +75,15 @@ export async function getClientSheetId(
   return undefined;
 }
 
+/** Название компании клиента из реестра; undefined если клиент не зарегистрирован. */
+export async function getClientName(
+  clientId: string,
+  deps: RegistryDeps = {},
+): Promise<string | undefined> {
+  const registry = await loadRegistry(deps);
+  return registry[clientId]?.name;
+}
+
 /** Имя топ-менеджера клиента (для F1 /report); undefined если не задано. */
 export async function getClientTopName(
   clientId: string,

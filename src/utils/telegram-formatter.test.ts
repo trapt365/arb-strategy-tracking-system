@@ -335,12 +335,25 @@ describe('formatWelcomeMessage (Story 1.8)', () => {
     expect(out).toContain('/help');
   });
 
-  it('перечисляет будущие Bot Menu items «скоро»', () => {
+  it('Story 8.2 (W1): упоминает онбординг и реализованные команды', () => {
     const out = formatWelcomeMessage('Азиза');
+    expect(out).toContain('/newclient');
+    expect(out).toContain('/status');
+    expect(out).toContain('/confirm');
+  });
+
+  it('Story 8.2 (W1): в «Скоро» только нереализованное — /status не числится', () => {
+    const out = formatWelcomeMessage('Азиза');
+    expect(out).toContain('Скоро');
     expect(out).toContain('🔍 Найти');
     expect(out).toContain('📋 Повестка');
-    expect(out).toContain('📊 Статус');
-    expect(out).toContain('Скоро');
+    const soonBlock = out.slice(out.indexOf('Скоро'));
+    expect(soonBlock).not.toContain('Статус');
+  });
+
+  it('Story 8.2 (W7): /confirm описан как предупреждающий, не блокирующий', () => {
+    const out = formatWelcomeMessage('Азиза');
+    expect(out).toContain('не блокируют');
   });
 
   it('plain text — НЕ содержит MarkdownV2-escape backslashes', () => {

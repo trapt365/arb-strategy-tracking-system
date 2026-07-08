@@ -18,7 +18,8 @@ import {
 // Один Claude-вызов извлечения + чистая валидация инварианта 1 + рендер черновика.
 // Диалог дозаполнения — Story 7.3; создание Sheets — Story 7.4.
 
-// === Инвариант 1: KR без числовой базы «с X до Y» и ответственного не выпускается ===
+// === Инвариант 1 (ослаблен, c81754c): KR без числовой базы «с X до Y» и ответственного
+// помечается 🔴 и попадает в предупреждение /confirm — но не блокирует завершение ===
 
 export type F0KrIssueReason = 'no_base' | 'no_target' | 'no_owner';
 
@@ -210,7 +211,9 @@ function renderOkrSection(
       const reasons = issue.reasons.map((r) => F0_ISSUE_REASON_LABELS[r]).join(', ');
       lines.push(`  – ${issue.ref} «${truncate(issue.formulation, 80)}»: ${reasons}`);
     }
-    lines.push('Такие KR не выпускаются без базы «с X до Y» и ответственного.');
+    lines.push(
+      '⚠️ На /confirm такие KR попадут в предупреждение (не блокируют) — дозаполни базу «с X до Y» и ответственного в диалоге или позже в таблице.',
+    );
     lines.push('');
   } else if (totalKrs > 0) {
     lines.push(`✅ Все ${totalKrs} KR считаемы.`);

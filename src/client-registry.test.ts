@@ -8,6 +8,7 @@ import {
   upsertClient,
   getClientSheetId,
   getClientTopName,
+  getClientName,
   listClientIds,
 } from './client-registry.js';
 
@@ -36,6 +37,12 @@ describe('client-registry', () => {
     // geonline не в реестре → fallback на config.GEONLINE_F0_SHEET_ID (vitest env = 'test-sheet-id')
     expect(await getClientSheetId('geonline', deps())).toBe('test-sheet-id');
     expect(await getClientSheetId('unknown-x', deps())).toBeUndefined();
+  });
+
+  it('getClientName (Story 8.2) — название компании из реестра, undefined для незарегистрированного', async () => {
+    await upsertClient('romashka', { sheetId: 'sheet-R', name: 'Ромашка' }, deps());
+    expect(await getClientName('romashka', deps())).toBe('Ромашка');
+    expect(await getClientName('geonline', deps())).toBeUndefined();
   });
 
   it('getClientTopName', async () => {
