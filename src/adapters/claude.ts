@@ -307,6 +307,22 @@ async function executeClaudeCall(
   const usage = response.usage ?? { input_tokens: 0, output_tokens: 0 };
   const durationMs = Date.now() - startMs;
 
+  // stop_reason 'max_tokens' → вывод оборван на потолке maxTokens; JSON почти всегда
+  // невалиден (незакрытый объект/фенс) и caller видит загадочный "Unexpected token '`'".
+  // Бросаем внятную ошибку ДО парсинга. Не ретраится (детерминизм — повтор даст то же).
+  if ((response as { stop_reason?: string | null }).stop_reason === 'max_tokens') {
+    log.warn(
+      { step: `claude.${opts.stepName}.max_tokens_truncated`, outputTokens: usage.output_tokens, maxTokens },
+      'claude output truncated at max_tokens ceiling',
+    );
+    throw new F1PipelineError('claude_response_invalid', {
+      reason: 'max_tokens_truncated',
+      stepName: opts.stepName,
+      outputTokens: usage.output_tokens,
+      maxTokens,
+    });
+  }
+
   log.info(
     {
       step: `claude.${opts.stepName}.complete`,

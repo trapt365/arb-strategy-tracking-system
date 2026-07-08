@@ -208,6 +208,26 @@ describe('callClaude', () => {
     await callClaude('p', { stepName: 'extraction', schema: TestSchema, timeoutMs: 420_000 });
     expect(create).toHaveBeenCalledTimes(1);
   });
+
+  it('throws max_tokens_truncated (not a cryptic parse error) when stop_reason is max_tokens', async () => {
+    // Обрезанный по потолку токенов вывод: JSON невалиден, но ошибку даём внятную
+    // ДО парсинга (иначе "Unexpected token '`'" от незакрытого фенса). Прод-баг Ф2.
+    const create = vi.fn().mockResolvedValue({
+      content: [{ type: 'text', text: '```json\n{"decisions":["a"' }],
+      usage: { input_tokens: 100, output_tokens: 16_000 },
+      id: 'msg_trunc',
+      stop_reason: 'max_tokens',
+    });
+    _setClaudeClientForTest(makeClient(create) as unknown as never);
+    await expect(
+      callClaude('p', { stepName: 'f0_full_extraction', schema: TestSchema }),
+    ).rejects.toMatchObject({
+      name: 'F1PipelineError',
+      code: 'claude_response_invalid',
+      context: { reason: 'max_tokens_truncated', outputTokens: 16_000 },
+    });
+    expect(create).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('callClaudeSafe', () => {

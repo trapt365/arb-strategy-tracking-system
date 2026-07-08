@@ -103,13 +103,16 @@ export interface RunF0DraftDeps {
 }
 
 // Полное извлечение шире OKR-only (панель + гипотезы + участники) — потолок токенов
-// выше дефолтного 8192, иначе большой пакет обрезается на середине JSON.
-export const F0_FULL_MAX_TOKENS = 16000;
+// выше дефолтного 8192, иначе большой пакет обрезается на середине JSON. Консолидированный
+// вход (~38k токенов, все сессии в одном файле) даёт >16k выходного JSON → обрезка;
+// подняли до 32k. Если и этого мало → stop_reason=max_tokens отдаст внятную ошибку
+// («убери лишние файлы»); устойчивое решение — почанковая экстракция (deferred-work #3).
+export const F0_FULL_MAX_TOKENS = 32_000;
 
-// Генерация до 16k токенов из нескольких транскриптов занимает ~4-5 мин — дефолтный
-// клиентский таймаут SDK (CLAUDE_TIMEOUT_MS=120с) не хватает → `claude_api: Request
-// timed out.` (см. deferred-work.md, прод-баг Ф2). Даём щедрый per-call таймаут.
-export const F0_FULL_TIMEOUT_MS = 420_000;
+// Генерация до 32k токенов из большого пакета занимает ~8-10 мин — дефолтный клиентский
+// таймаут SDK (CLAUDE_TIMEOUT_MS=120с) не хватает → `claude_api: Request timed out.`
+// (см. deferred-work.md, прод-баг Ф2). Даём щедрый per-call таймаут под 32k.
+export const F0_FULL_TIMEOUT_MS = 720_000;
 
 export interface F0FullDraftResult {
   extraction: F0FullExtraction;
