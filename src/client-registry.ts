@@ -101,6 +101,66 @@ export async function listClientIds(deps: RegistryDeps = {}): Promise<string[]> 
   return [...ids];
 }
 
+// === Story 8.4 (W10): активный клиент чата — выбор из меню «Клиенты» ===
+// Персистится (data/clients/active-clients.json {chatId: clientId}), чтобы выбор
+// переживал рестарт: иначе /report молча уехал бы в geonline-fallback.
+
+const ACTIVE_FILE = 'active-clients.json';
+
+async function loadActiveClients(deps: RegistryDeps = {}): Promise<Record<string, string>> {
+  const dir = deps.rootDir ?? REGISTRY_DIR;
+  const log = deps.logger ?? rootLogger;
+  let raw: string;
+  try {
+    raw = await fs.readFile(join(dir, ACTIVE_FILE), 'utf8');
+  } catch {
+    return {};
+  }
+  try {
+    const obj: unknown = JSON.parse(raw);
+    if (obj === null || typeof obj !== 'object' || Array.isArray(obj)) return {};
+    const out: Record<string, string> = {};
+    for (const [chatId, clientId] of Object.entries(obj as Record<string, unknown>)) {
+      if (typeof clientId === 'string' && clientId.length > 0) out[chatId] = clientId;
+    }
+    return out;
+  } catch (err) {
+    log.warn({ err }, 'active-clients unreadable JSON — treating as empty');
+    return {};
+  }
+}
+
+/** Активный клиент чата; undefined если не выбран. */
+export async function getActiveClient(
+  chatId: number,
+  deps: RegistryDeps = {},
+): Promise<string | undefined> {
+  const map = await loadActiveClients(deps);
+  return map[String(chatId)];
+}
+
+/** Атомарно запомнить активного клиента чата. Warn-only (не бросает). */
+export async function setActiveClient(
+  chatId: number,
+  clientId: string,
+  deps: RegistryDeps = {},
+): Promise<void> {
+  const dir = deps.rootDir ?? REGISTRY_DIR;
+  const log = deps.logger ?? rootLogger;
+  const map = await loadActiveClients(deps);
+  map[String(chatId)] = clientId;
+  const path = join(dir, ACTIVE_FILE);
+  try {
+    await fs.mkdir(dirname(path), { recursive: true });
+    const tmp = `${path}.tmp`;
+    await fs.writeFile(tmp, JSON.stringify(map, null, 2), 'utf8');
+    await fs.rename(tmp, path);
+    log.info({ chatId, clientId }, 'active client saved');
+  } catch (err) {
+    log.warn({ err, chatId, clientId }, 'active client save failed — continuing');
+  }
+}
+
 /** Атомарно добавить/обновить клиента в реестре. Warn-only (не бросает). */
 export async function upsertClient(
   clientId: string,

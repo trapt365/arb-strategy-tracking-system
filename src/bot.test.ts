@@ -274,6 +274,8 @@ interface BuildOpts {
   extractTextFromDocument?: BotDeps['extractTextFromDocument'];
   downloadTelegramFile?: BotDeps['downloadTelegramFile'];
   createClientSpreadsheet?: BotDeps['createClientSpreadsheet'];
+  // Story 8.4: подмена очереди — перехват enqueue для проверки clientId.
+  queue?: BotDeps['queue'];
 }
 
 function buildBot(opts: BuildOpts = {}) {
@@ -297,6 +299,7 @@ function buildBot(opts: BuildOpts = {}) {
     extractTextFromDocument: opts.extractTextFromDocument,
     downloadTelegramFile: opts.downloadTelegramFile ?? (async () => Buffer.from('doc')),
     createClientSpreadsheet: opts.createClientSpreadsheet,
+    queue: opts.queue,
     logger: silentLogger,
     token: 'TEST:TOKEN',
     botInfo: FALLBACK_BOT_INFO,
@@ -1407,7 +1410,8 @@ describe('bot — setMyCommands payload (Story 1.8)', () => {
       const cmdCall = built.calls.find((c) => c.method === 'setMyCommands');
       expect(cmdCall).toBeDefined();
       const cmds = (cmdCall!.payload as { commands: Array<{ command: string }> }).commands;
-      // Story 7.1/7.2/7.3: + newclient + draft + confirm (F0 онбординг); 7.5: + status
+      // Story 7.1/7.2/7.3: + newclient + draft + confirm; 7.5: + status;
+      // Story 8.4 (W9): + resume + skip + cancel — команды видны в меню Telegram.
       expect(cmds.map((c) => c.command)).toEqual([
         'start',
         'help',
@@ -1416,6 +1420,9 @@ describe('bot — setMyCommands payload (Story 1.8)', () => {
         'draft',
         'confirm',
         'status',
+        'resume',
+        'skip',
+        'cancel',
       ]);
       expect(cmds[0]!.command).toBe('start');
     } finally {
@@ -1560,5 +1567,260 @@ describe('bot — F0 сборка черновика (Story 8.3, W2+W4)', () => 
       (c) => c.method === 'sendMessage' && (c.payload.text as string).includes('Собираю черновик'),
     );
     expect(progress!.payload.text).toContain('1–2 минуты');
+  });
+});
+
+// ─── Story 8.4: стартовое меню, навигация по клиентам, защита сессии ─────────
+
+import { createReportQueue } from './utils/report-queue.js';
+
+const CLIENTS_DIR = joinPath('data', 'clients');
+const TEST_CLIENT_ID = 'romashka-x-test';
+const TEST_CARD_DIR = joinPath('data', TEST_CLIENT_ID);
+
+async function backupFile(path: string): Promise<string | null> {
+  try {
+    return await fsp.readFile(path, 'utf8');
+  } catch {
+    return null;
+  }
+}
+
+async function restoreFile(path: string, content: string | null): Promise<void> {
+  if (content === null) {
+    await fsp.rm(path, { force: true }).catch(() => {});
+  } else {
+    await fsp.writeFile(path, content, 'utf8');
+  }
+}
+
+describe('bot — меню, клиенты и защита сессии (Story 8.4)', () => {
+  const registryPath = joinPath(CLIENTS_DIR, 'registry.json');
+  const activePath = joinPath(CLIENTS_DIR, 'active-clients.json');
+  let registryBackup: string | null = null;
+  let activeBackup: string | null = null;
+
+  beforeEach(async () => {
+    registryBackup = await backupFile(registryPath);
+    activeBackup = await backupFile(activePath);
+    await fsp.mkdir(CLIENTS_DIR, { recursive: true });
+    await fsp.writeFile(
+      registryPath,
+      JSON.stringify({
+        [TEST_CLIENT_ID]: {
+          sheetId: 'sheet-RX',
+          name: 'Ромашка',
+          createdAt: '2026-07-08T00:00:00.000Z',
+        },
+      }),
+      'utf8',
+    );
+    await fsp.rm(activePath, { force: true }).catch(() => {});
+    await fsp.rm(TEST_CARD_DIR, { recursive: true, force: true }).catch(() => {});
+    await cleanOnboardingArtifacts();
+  });
+
+  afterEach(async () => {
+    await restoreFile(registryPath, registryBackup);
+    await restoreFile(activePath, activeBackup);
+    await fsp.rm(TEST_CARD_DIR, { recursive: true, force: true }).catch(() => {});
+    await cleanOnboardingArtifacts();
+  });
+
+  function menuButtons(call: ApiCall): string[] {
+    const markup = call.payload.reply_markup as
+      | { inline_keyboard?: Array<Array<{ callback_data?: string }>> }
+      | undefined;
+    return (markup?.inline_keyboard ?? []).flat().map((b) => b.callback_data ?? '');
+  }
+
+  it('W1: /start приходит с меню — 3 inline-кнопки', async () => {
+    const { bot, calls } = buildBot();
+    await bot.handleUpdate(startUpdate(TEST_TRACKER_CHAT_ID, 'Азиза'));
+    const welcome = calls.find(
+      (c) => c.method === 'sendMessage' && (c.payload.text as string).includes('Привет'),
+    );
+    expect(welcome).toBeDefined();
+    expect(menuButtons(welcome!)).toEqual(['menu:help', 'menu:new', 'menu:clients']);
+  });
+
+  it('menu:clients → список клиентов реестра с кнопками client:{id}', async () => {
+    const { bot, calls } = buildBot();
+    await bot.handleUpdate(callbackUpdate('menu:clients'));
+    const list = calls.find(
+      (c) => c.method === 'sendMessage' && (c.payload.text as string).includes('Клиенты из реестра'),
+    );
+    expect(list).toBeDefined();
+    expect(menuButtons(list!)).toContain(`client:${TEST_CLIENT_ID}`);
+    expect(list!.payload.text).toContain('выбери');
+  });
+
+  it('W10: client:{id} с карточкой → статус из card.json (и для завершённого клиента)', async () => {
+    await fsp.mkdir(TEST_CARD_DIR, { recursive: true });
+    await fsp.writeFile(
+      joinPath(TEST_CARD_DIR, 'card.json'),
+      JSON.stringify({
+        clientId: TEST_CLIENT_ID,
+        company: 'Ромашка',
+        industry: null,
+        participants: [{ name: 'Айгерим', role: 'CEO', okrDirection: null, telegram: '@aigerim' }],
+        ceo: 'Айгерим',
+        trackerChatId: TEST_TRACKER_CHAT_ID,
+        schedule: 'вт 15:00',
+        spreadsheetId: 'sheet-RX',
+        sheetsUrl: 'https://docs.google.com/spreadsheets/d/sheet-RX/edit',
+        startDate: '2026-07-01T00:00:00.000Z',
+        createdAt: '2026-07-01T00:00:00.000Z',
+      }),
+      'utf8',
+    );
+    const { bot, calls } = buildBot();
+    await bot.handleUpdate(callbackUpdate(`client:${TEST_CLIENT_ID}`));
+    const cardMsg = calls.find(
+      (c) => c.method === 'sendMessage' && (c.payload.text as string).includes('👤 Ромашка'),
+    );
+    expect(cardMsg).toBeDefined();
+    expect(cardMsg!.payload.text).toContain('🟢 Google Sheets создан');
+    expect(cardMsg!.payload.text).toContain('CEO: Айгерим');
+    expect(menuButtons(cardMsg!)).toContain(`client_use:${TEST_CLIENT_ID}`);
+  });
+
+  it('client:{id} без карточки → внятный fallback, а не молчание', async () => {
+    const { bot, calls } = buildBot();
+    await bot.handleUpdate(callbackUpdate(`client:${TEST_CLIENT_ID}`));
+    const msg = calls.find(
+      (c) => c.method === 'sendMessage' && (c.payload.text as string).includes('Карточки онбординга нет'),
+    );
+    expect(msg).toBeDefined();
+  });
+
+  it('W10: client_use → активный клиент персистится и /report без clientId идёт по нему', async () => {
+    const enqueued: ReportJob[] = [];
+    const realQueue = createReportQueue({ maxSize: 20, logger: silentLogger });
+    const spyQueue = {
+      ...realQueue,
+      enqueue: (job: ReportJob) => {
+        enqueued.push(job);
+        return realQueue.enqueue(job);
+      },
+    } as typeof realQueue;
+    const { bot, calls } = buildBot({ queue: spyQueue });
+
+    await bot.handleUpdate(callbackUpdate(`client_use:${TEST_CLIENT_ID}`));
+    const ack = calls.find(
+      (c) => c.method === 'sendMessage' && (c.payload.text as string).includes('Активный клиент: Ромашка'),
+    );
+    expect(ack).toBeDefined();
+    const persisted = JSON.parse(await fsp.readFile(activePath, 'utf8')) as Record<string, string>;
+    expect(persisted[String(TEST_TRACKER_CHAT_ID)]).toBe(TEST_CLIENT_ID);
+
+    await bot.handleUpdate(reportUpdate('/report https://drive.google.com/file/d/abc123/view'));
+    expect(enqueued).toHaveLength(1);
+    expect(enqueued[0]!.clientId).toBe(TEST_CLIENT_ID);
+    // Story 8.2 (W8): fallback имени топа для не-geonline — название компании, не «Жанель».
+    expect(enqueued[0]!.topName).toBe('Ромашка');
+  });
+
+  it('регресс: без активного клиента /report по-прежнему уходит в geonline (+Жанель)', async () => {
+    const enqueued: ReportJob[] = [];
+    const realQueue = createReportQueue({ maxSize: 20, logger: silentLogger });
+    const spyQueue = {
+      ...realQueue,
+      enqueue: (job: ReportJob) => {
+        enqueued.push(job);
+        return realQueue.enqueue(job);
+      },
+    } as typeof realQueue;
+    const { bot } = buildBot({ queue: spyQueue });
+    await bot.handleUpdate(reportUpdate('/report https://drive.google.com/file/d/abc123/view'));
+    expect(enqueued).toHaveLength(1);
+    expect(enqueued[0]!.clientId).toBe('geonline');
+    expect(enqueued[0]!.topName).toBe('Жанель');
+  });
+
+  it('W3: /newclient при активном filling → подтверждение; f0_new_no сохраняет сессию', async () => {
+    const { bot, calls } = buildBot({
+      extractTextFromDocument: ((async () => ({
+        sourceName: 'strategy.md',
+        kind: 'text',
+        text: 'x'.repeat(5_000),
+      })) as unknown) as BotDeps['extractTextFromDocument'],
+      runF0FullDraft: ((async () => f0DraftResult()) as unknown) as BotDeps['runF0FullDraft'],
+    });
+    await bot.handleUpdate(commandUpdate('/newclient'));
+    await bot.handleUpdate(documentUpdate('strategy.md'));
+    await bot.handleUpdate(commandUpdate('/draft')); // → phase filling
+
+    const before = calls.length;
+    await bot.handleUpdate(commandUpdate('/newclient'));
+    const guard = calls.slice(before).find(
+      (c) => c.method === 'sendMessage' && (c.payload.text as string).includes('сбросить этот прогресс'),
+    );
+    expect(guard).toBeDefined();
+    expect(guard!.payload.text).toContain('«Ромашка»');
+    expect(menuButtons(guard!)).toEqual(['f0_new_yes', 'f0_new_no']);
+
+    await bot.handleUpdate(callbackUpdate('f0_new_no'));
+    // Сессия жива: /status отдаёт чеклист по черновику, а не «Нет активного онбординга».
+    const beforeStatus = calls.length;
+    await bot.handleUpdate(commandUpdate('/status'));
+    const status = calls.slice(beforeStatus).find((c) => c.method === 'sendMessage');
+    expect(status!.payload.text).toContain('Готовность к неделе 1');
+  });
+
+  it('W3: f0_new_yes сбрасывает и стартует новый онбординг', async () => {
+    const { bot, calls } = buildBot({
+      extractTextFromDocument: ((async () => ({
+        sourceName: 'strategy.md',
+        kind: 'text',
+        text: 'x'.repeat(5_000),
+      })) as unknown) as BotDeps['extractTextFromDocument'],
+      runF0FullDraft: ((async () => f0DraftResult()) as unknown) as BotDeps['runF0FullDraft'],
+    });
+    await bot.handleUpdate(commandUpdate('/newclient'));
+    await bot.handleUpdate(documentUpdate('strategy.md'));
+    await bot.handleUpdate(commandUpdate('/draft'));
+    await bot.handleUpdate(commandUpdate('/newclient')); // guard
+    const before = calls.length;
+    await bot.handleUpdate(callbackUpdate('f0_new_yes'));
+    const started = calls.slice(before).find(
+      (c) => c.method === 'sendMessage' && (c.payload.text as string).includes('Онбординг нового клиента'),
+    );
+    expect(started).toBeDefined();
+  });
+
+  it('W3: /cancel с подтверждением удаляет сессию; без сессии — внятный ответ', async () => {
+    const { bot, calls } = buildBot({
+      extractTextFromDocument: ((async () => ({
+        sourceName: 'strategy.md',
+        kind: 'text',
+        text: 'x'.repeat(5_000),
+      })) as unknown) as BotDeps['extractTextFromDocument'],
+      runF0FullDraft: ((async () => f0DraftResult()) as unknown) as BotDeps['runF0FullDraft'],
+    });
+    await bot.handleUpdate(commandUpdate('/newclient'));
+    await bot.handleUpdate(documentUpdate('strategy.md'));
+    await bot.handleUpdate(commandUpdate('/draft'));
+
+    let before = calls.length;
+    await bot.handleUpdate(commandUpdate('/cancel'));
+    const prompt = calls.slice(before).find(
+      (c) => c.method === 'sendMessage' && (c.payload.text as string).includes('Завершить онбординг'),
+    );
+    expect(prompt).toBeDefined();
+    expect(menuButtons(prompt!)).toEqual(['f0_cancel_yes', 'f0_cancel_no']);
+
+    await bot.handleUpdate(callbackUpdate('f0_cancel_yes'));
+    before = calls.length;
+    await bot.handleUpdate(commandUpdate('/status'));
+    const status = calls.slice(before).find((c) => c.method === 'sendMessage');
+    expect(status!.payload.text).toContain('Нет активного онбординга');
+
+    before = calls.length;
+    await bot.handleUpdate(commandUpdate('/cancel'));
+    const noSession = calls.slice(before).find(
+      (c) => c.method === 'sendMessage' && (c.payload.text as string).includes('отменять нечего'),
+    );
+    expect(noSession).toBeDefined();
   });
 });

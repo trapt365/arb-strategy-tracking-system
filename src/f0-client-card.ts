@@ -173,6 +173,31 @@ export function computeReadinessChecklist(
   ];
 }
 
+/**
+ * Story 8.4 (W10): карточка клиента для меню «Клиенты» — работает и для завершённых
+ * клиентов (extraction сессии недоступен). Чеклист — по полям карточки; полнота KR
+ * видна в панели таблицы, поэтому здесь не оценивается.
+ */
+export function renderClientCardMessage(card: ClientCard): string {
+  const lines = [`👤 ${card.company} (${card.clientId})`];
+  if (card.ceo !== null && card.ceo.length > 0) lines.push(`CEO: ${card.ceo}`);
+  const names = card.participants.slice(0, 6).map((p) => p.name).join(', ');
+  lines.push(
+    `Участники: ${card.participants.length}${names.length > 0 ? ` — ${names}` : ''}` +
+      (card.participants.length > 6 ? ' …' : ''),
+  );
+  lines.push(`Расписание: ${card.schedule ?? '—'}`);
+  lines.push(`Старт: ${card.startDate.slice(0, 10)}`);
+  lines.push('');
+  const hasSchedule = card.schedule !== null && card.schedule.trim().length > 0;
+  lines.push(`${card.participants.length > 0 ? '🟢' : '🔴'} Данные онбординга загружены`);
+  lines.push(`${hasSchedule ? '🟢' : '🔴'} Расписание встреч заполнено`);
+  lines.push(`${card.spreadsheetId !== null ? '🟢' : '🔴'} Google Sheets создан`);
+  lines.push('Полнота KR (инвариант 1) — в панели «📊 Все OKR» таблицы.');
+  if (card.sheetsUrl !== null && card.sheetsUrl.length > 0) lines.push(`\n🔗 ${card.sheetsUrl}`);
+  return lines.join('\n');
+}
+
 /** Рендер чеклиста для Telegram: 🟢/🔴 по пунктам + действие для каждого 🔴. */
 export function renderReadinessMessage(card: ClientCard, items: ReadinessItem[]): string {
   const allOk = items.every((i) => i.ok);

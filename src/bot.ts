@@ -46,6 +46,7 @@ import {
   clientIdFromCompany,
   computeReadinessChecklist,
   renderReadinessMessage,
+  renderClientCardMessage,
 } from './f0-client-card.js';
 import {
   upsertClient,
@@ -53,6 +54,9 @@ import {
   getClientName,
   listClientIds,
   getClientSheetId,
+  loadRegistry,
+  getActiveClient,
+  setActiveClient,
 } from './client-registry.js';
 import type { F0FullExtraction } from './types.js';
 import { extractTextFromDocument as defaultExtractTextFromDocument } from './utils/f0-document.js';
@@ -814,12 +818,23 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
     await next();
   });
 
-  // ───────── /start and /help (Story 1.8) ─────────
+  // ───────── /start and /help (Story 1.8; меню — Story 8.4) ─────────
+
+  // Story 8.4 (W1): стартовое меню — онбординг и клиенты доступны без запоминания команд.
+  function buildMainMenuKeyboard(): InlineKeyboard {
+    return new InlineKeyboard()
+      .text('ℹ️ Что умеет бот', 'menu:help')
+      .row()
+      .text('🆕 Онбординг нового клиента', 'menu:new')
+      .row()
+      .text('👥 Клиенты', 'menu:clients');
+  }
+
   bot.command('start', async (ctx) => {
     const firstName = ctx.from?.first_name?.trim() || undefined;
     const welcomeText = formatWelcomeMessage(firstName);
     try {
-      await ctx.reply(welcomeText);
+      await ctx.reply(welcomeText, { reply_markup: buildMainMenuKeyboard() });
     } catch (err) {
       log.warn({ err, chatId: ctx.chat.id }, 'bot.start.reply_failed');
       return;
@@ -906,8 +921,173 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
     });
   }
 
+  // Story 8.4 (W3): сессия с несохранённым прогрессом — черновик с ответами (filling)
+  // или собранный, но не отработанный пакет файлов (collecting). Ready не в счёт:
+  // онбординг завершён, данные в таблице/карточке.
+  function f0SessionAtRisk(session: F0Session | undefined): session is F0Session {
+    if (session === undefined) return false;
+    if (session.phase === 'filling') return true;
+    return session.phase === 'collecting' && session.documents.length > 0;
+  }
+
+  /** Запуск онбординга с защитой от молчаливого сброса активной сессии (W3). */
+  async function startF0SessionGuarded(ctx: Context, trigger: string): Promise<void> {
+    const chatId = ctx.chat?.id;
+    if (chatId === undefined) return;
+    const session = await getOrRestoreF0Session(chatId);
+    if (f0SessionAtRisk(session)) {
+      const company = session.draft?.extraction.company;
+      const progress =
+        session.phase === 'filling'
+          ? `отвечено ${session.gapIndex} из ${session.gaps.length} вопросов`
+          : `файлов в пакете: ${session.documents.length}`;
+      await ctx
+        .reply(
+          `⚠️ Идёт онбординг${company !== undefined && company !== null ? ` «${company}»` : ''} (${progress}).\n` +
+            'Начать нового клиента и сбросить этот прогресс?',
+          {
+            reply_markup: new InlineKeyboard()
+              .text('🗑 Да, сбросить', 'f0_new_yes')
+              .text('↩️ Продолжить текущий', 'f0_new_no'),
+          },
+        )
+        .catch(() => {});
+      f0Log.info(
+        { step: 'f0.reset_guard', chatId, sessionId: session.id, phase: session.phase, trigger },
+        'f0 new-client reset guarded — confirmation requested',
+      );
+      return;
+    }
+    await startF0Session(ctx, trigger);
+  }
+
   bot.command('newclient', async (ctx) => {
-    await startF0Session(ctx, 'command');
+    await startF0SessionGuarded(ctx, 'command');
+  });
+
+  bot.callbackQuery('f0_new_yes', async (ctx) => {
+    await ctx.answerCallbackQuery().catch(() => {});
+    await startF0Session(ctx, 'reset_confirmed');
+  });
+
+  bot.callbackQuery('f0_new_no', async (ctx) => {
+    await ctx.answerCallbackQuery().catch(() => {});
+    await ctx
+      .reply('↩️ Продолжаем текущий онбординг. Вернуться к вопросам — /resume.')
+      .catch(() => {});
+  });
+
+  // Story 8.4 (W3): /cancel — завершить сессию онбординга с подтверждением.
+  bot.command('cancel', async (ctx) => {
+    const session = await getOrRestoreF0Session(ctx.chat.id);
+    if (session === undefined) {
+      await ctx.reply('ℹ️ Нет активного онбординга — отменять нечего.').catch(() => {});
+      return;
+    }
+    const company = session.draft?.extraction.company;
+    await ctx
+      .reply(
+        `Завершить онбординг${company !== undefined && company !== null ? ` «${company}»` : ''}? Несохранённый прогресс будет удалён.`,
+        {
+          reply_markup: new InlineKeyboard()
+            .text('🗑 Да, завершить', 'f0_cancel_yes')
+            .text('↩️ Нет, продолжить', 'f0_cancel_no'),
+        },
+      )
+      .catch(() => {});
+  });
+
+  bot.callbackQuery('f0_cancel_yes', async (ctx) => {
+    await ctx.answerCallbackQuery().catch(() => {});
+    const chatId = ctx.chat?.id;
+    if (chatId === undefined) return;
+    const session = f0Sessions.get(chatId);
+    f0Sessions.delete(chatId);
+    await deleteF0Session(chatId);
+    f0Log.info(
+      { step: 'f0.session_cancelled', chatId, sessionId: session?.id },
+      'f0 onboarding cancelled by tracker',
+    );
+    await ctx.reply('✅ Онбординг отменён. Новый — /newclient или меню /start.').catch(() => {});
+  });
+
+  bot.callbackQuery('f0_cancel_no', async (ctx) => {
+    await ctx.answerCallbackQuery().catch(() => {});
+    await ctx
+      .reply('↩️ Онбординг продолжается. Вернуться к вопросам — /resume.')
+      .catch(() => {});
+  });
+
+  // ───────── Story 8.4: меню и навигация по клиентам (W1, W10) ─────────
+
+  bot.callbackQuery('menu:help', async (ctx) => {
+    await ctx.answerCallbackQuery().catch(() => {});
+    const firstName = ctx.from?.first_name?.trim() || undefined;
+    await ctx.reply(formatWelcomeMessage(firstName)).catch(() => {});
+  });
+
+  bot.callbackQuery('menu:new', async (ctx) => {
+    await ctx.answerCallbackQuery().catch(() => {});
+    await startF0SessionGuarded(ctx, 'menu');
+  });
+
+  bot.callbackQuery('menu:clients', async (ctx) => {
+    await ctx.answerCallbackQuery().catch(() => {});
+    const registry = await loadRegistry();
+    const ids = Object.keys(registry);
+    if (ids.length === 0) {
+      await ctx
+        .reply(
+          'Реестр клиентов пуст. Онбординг первого — /newclient.\n' +
+            '(Пилот Geonline работает как встроенный: /report без clientId.)',
+        )
+        .catch(() => {});
+      return;
+    }
+    const kb = new InlineKeyboard();
+    for (const id of ids) {
+      kb.text(`${registry[id]!.name} (${id})`, `client:${id}`).row();
+    }
+    await ctx.reply('👥 Клиенты из реестра — выбери:', { reply_markup: kb }).catch(() => {});
+  });
+
+  // W10: статус любого клиента из карточки — не только активной сессии.
+  bot.callbackQuery(/^client:(.+)$/, async (ctx) => {
+    await ctx.answerCallbackQuery().catch(() => {});
+    const clientId = ctx.match[1]!;
+    const card = await loadClientCard(clientId);
+    const kb = new InlineKeyboard().text('✅ Работать с этим клиентом', `client_use:${clientId}`);
+    if (card === null) {
+      const name = (await getClientName(clientId)) ?? clientId;
+      await ctx
+        .reply(`👤 ${name} (${clientId})\nКарточки онбординга нет (клиент заведён до карточек). /report доступен.`, {
+          reply_markup: kb,
+        })
+        .catch(() => {});
+      return;
+    }
+    await ctx.reply(renderClientCardMessage(card), { reply_markup: kb }).catch(() => {});
+  });
+
+  bot.callbackQuery(/^client_use:(.+)$/, async (ctx) => {
+    await ctx.answerCallbackQuery().catch(() => {});
+    const chatId = ctx.chat?.id;
+    if (chatId === undefined) return;
+    const clientId = ctx.match[1]!;
+    const known = await listClientIds();
+    if (!known.includes(clientId)) {
+      await ctx.reply(`ℹ️ Клиент «${clientId}» не найден в реестре.`).catch(() => {});
+      return;
+    }
+    await setActiveClient(chatId, clientId);
+    const name = (await getClientName(clientId)) ?? clientId;
+    f0Log.info({ step: 'bot.active_client_set', chatId, clientId }, 'active client selected');
+    await ctx
+      .reply(
+        `✅ Активный клиент: ${name} (${clientId}).\n` +
+          `/report <ссылка> теперь идёт по нему; явный clientId в команде имеет приоритет.`,
+      )
+      .catch(() => {});
   });
 
   // Приём файла в пакет: скачать → извлечь текст → аккумулировать. Черновик НЕ собирается здесь.
@@ -1501,7 +1681,18 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
     const chatId = ctx.chat.id;
     const session = await getOrRestoreF0Session(chatId);
     if (session === undefined || session.draft === undefined) {
-      await ctx.reply('ℹ️ Нет активного онбординга. Начни: /newclient.').catch(() => {});
+      // Story 8.4 (W10): онбординга нет, но клиент выбран в меню → статус из карточки.
+      const active = await getActiveClient(chatId);
+      if (active !== undefined) {
+        const card = await loadClientCard(active);
+        if (card !== null) {
+          await ctx.reply(renderClientCardMessage(card)).catch(() => {});
+          return;
+        }
+      }
+      await ctx
+        .reply('ℹ️ Нет активного онбординга. Начни: /newclient — или выбери клиента: /start → «Клиенты».')
+        .catch(() => {});
       return;
     }
     const extraction = session.draft.extraction;
@@ -1558,7 +1749,8 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
       return;
     }
 
-    // Story 7.6: резолв клиента из аргумента (иначе DEFAULT_CLIENT_ID для обратной совместимости).
+    // Story 7.6: резолв клиента из аргумента; Story 8.4 (W10): иначе — активный клиент
+    // чата из меню «Клиенты»; и только потом DEFAULT_CLIENT_ID (обратная совместимость).
     let clientId = DEFAULT_CLIENT_ID;
     if (clientIdArg !== undefined) {
       const known = await listClientIds();
@@ -1569,6 +1761,19 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
         return;
       }
       clientId = clientIdArg;
+    } else {
+      const active = await getActiveClient(ctx.chat.id);
+      if (active !== undefined) {
+        const known = await listClientIds();
+        if (known.includes(active)) {
+          clientId = active;
+        } else {
+          log.warn(
+            { step: 'bot.report.active_client_stale', chatId: ctx.chat.id, active },
+            'active client no longer in registry — falling back to default',
+          );
+        }
+      }
     }
     const topName =
       (await getClientTopName(clientId)) ??
@@ -1930,7 +2135,8 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
     // случайно сбросил бы сессию. Явный перезапуск во время filling — команда /newclient.
     const f0InMemory = f0Sessions.get(chatId);
     if (f0InMemory?.phase !== 'filling' && /^новый клиент$/iu.test(ctx.message.text.trim())) {
-      await startF0Session(ctx, 'text');
+      // Story 8.4 (W3): guarded — пакет collecting с файлами тоже не сбрасываем молча.
+      await startF0SessionGuarded(ctx, 'text');
       return;
     }
 
@@ -2081,14 +2287,18 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
     stopWorker = queue.startWorker((job) => processJob(job), { logger: log });
 
     try {
+      // Story 8.4 (W9): resume/skip/cancel зарегистрированы — видны в меню команд.
       await bot.api.setMyCommands([
-        { command: 'start',  description: 'Начать работу с ботом' },
+        { command: 'start',  description: 'Меню: онбординг, клиенты, инструкция' },
         { command: 'help',   description: 'Инструкция и список команд' },
         { command: 'report', description: 'Создать отчёт по встрече' },
         { command: 'newclient', description: 'Онбординг нового клиента' },
         { command: 'draft', description: 'Собрать черновик онбординга из пакета' },
         { command: 'confirm', description: 'Завершить онбординг клиента' },
         { command: 'status', description: 'Готовность клиента к неделе 1' },
+        { command: 'resume', description: 'Продолжить дозаполнение онбординга' },
+        { command: 'skip', description: 'Пропустить текущий вопрос онбординга' },
+        { command: 'cancel', description: 'Отменить онбординг (с подтверждением)' },
       ]);
     } catch (err) {
       log.warn({ err }, 'failed to set bot commands — continuing');
