@@ -1368,28 +1368,32 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
       await ctx.reply('ℹ️ Нет черновика для подтверждения. Начни онбординг: /newclient.').catch(() => {});
       return;
     }
-    // Инвариант 1: пока есть 🔴-KR (нет базы/цели/ответственного) — выпуск заблокирован.
-    const blocking = markBlockingKrIssues(session.draft.extraction);
-    if (blocking.length > 0) {
-      const lines = [
-        `🔴 Нельзя завершить: ${blocking.length} KR без базы «с X до Y» или ответственного (инвариант 1).`,
-        'Дозаполни их (/resume) или поправь:',
-      ];
-      for (const issue of blocking.slice(0, 15)) {
-        const reasons = issue.reasons.join(', ');
-        lines.push(`  – ${issue.ref} «${issue.formulation.slice(0, 60)}»: ${reasons}`);
-      }
-      if (blocking.length > 15) lines.push(`  … и ещё ${blocking.length - 15}`);
-      await ctx.reply(lines.join('\n')).catch(() => {});
-      return;
-    }
+    // Инвариант 1 (ослаблен, WP-39.x): неполные KR больше НЕ блокируют завершение —
+    // показываем ⚠️ предупреждение и продолжаем; трекер дозаполнит базу/цель/овнера прямо
+    // в таблице (или /resume). milestone-KR base/target не требуют (см. markBlockingKrIssues).
+    const warnings = markBlockingKrIssues(session.draft.extraction);
     session.phase = 'ready';
     await saveF0Session(chatId, session);
     f0Log.info(
-      { step: 'f0.confirmed', chatId, sessionId: session.id, draftId: session.draft.draftId },
+      {
+        step: 'f0.confirmed',
+        chatId,
+        sessionId: session.id,
+        draftId: session.draft.draftId,
+        krWarnings: warnings.length,
+      },
       'f0 onboarding confirmed ready',
     );
     const readyLines = ['✅ Онбординг подтверждён — данные готовы.'];
+    if (warnings.length > 0) {
+      readyLines.push(
+        `⚠️ ${warnings.length} KR стоит дозаполнить (база/цель/ответственный) — можно позже в таблице или через /resume:`,
+      );
+      for (const issue of warnings.slice(0, 10)) {
+        readyLines.push(`  – ${issue.ref} «${issue.formulation.slice(0, 50)}»: ${issue.reasons.join(', ')}`);
+      }
+      if (warnings.length > 10) readyLines.push(`  … и ещё ${warnings.length - 10}`);
+    }
     if (session.schedule !== null && session.schedule.length > 0) {
       readyLines.push(`🗓 Расписание встреч: ${session.schedule}`);
     }

@@ -42,8 +42,11 @@ export function markBlockingKrIssues(extraction: { objectives: F0ObjectiveDraft[
   extraction.objectives.forEach((objective, objectiveIndex) => {
     objective.krs.forEach((kr, krIndex) => {
       const reasons: F0KrIssueReason[] = [];
-      if (!hasNumeric(kr.base)) reasons.push('no_base');
-      if (!hasNumeric(kr.target)) reasons.push('no_target');
+      // milestone-KR (бинарная веха «внедрено/согласовано/запущено») не имеет базы/цели
+      // «с X до Y» — не требуем их (иначе ложные no_base/no_target). metric-KR — как раньше.
+      const isMilestone = kr.kr_type === 'milestone';
+      if (!isMilestone && !hasNumeric(kr.base)) reasons.push('no_base');
+      if (!isMilestone && !hasNumeric(kr.target)) reasons.push('no_target');
       if (kr.owner === null || kr.owner.trim().length === 0) reasons.push('no_owner');
       if (reasons.length > 0) {
         issues.push({

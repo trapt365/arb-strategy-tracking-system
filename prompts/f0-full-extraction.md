@@ -14,7 +14,8 @@
 ### 2. Objectives и Key Results
 Как в базовом извлечении:
 - `objectives[].title` — формулировка objective (сохрани нумерацию O1/TO1/IN1).
-- `krs[]`: `formulation` (как в документе), `base` («с X», null если нет), `target` («до Y», null), `owner` (null если не указан), `deadline` (как записан: «До 30.07.2026», «Q1 2026», «Постоянно»; null если нет).
+- `krs[]`: `formulation` (как в документе), `kr_type`, `base` («с X», null если нет), `target` («до Y», null), `owner` (null если не указан), `deadline` (как записан: «До 30.07.2026», «Q1 2026», «Постоянно»; null если нет).
+- `kr_type`: `"metric"` — численный KR с измеримой базой/целью «с X до Y» (напр. «CAC снизить с 15000 до 10000», «NPS до 60»). `"milestone"` — бинарная веха «сделано/не сделано» без числовой шкалы (напр. «Внедрена система бюджетирования», «Единый формат согласован», «Запущены финсессии», «Создан комитет», «Автоматизирован сбор»). Если сомневаешься и у KR нет числовой цели — ставь `"milestone"`.
 - Табличный rowspan: пустая ячейка Objective → относи KR к последнему непустому выше.
 
 ### 3. Банк гипотез (hypotheses)
@@ -49,7 +50,7 @@
   "document_type": "strategy" | "other",
   "company": "Название" | null,
   "objectives": [
-    { "title": "…", "krs": [ { "formulation": "…", "base": "…"|null, "target": "…"|null, "owner": "…"|null, "deadline": "…"|null } ] }
+    { "title": "…", "krs": [ { "formulation": "…", "kr_type": "metric"|"milestone", "base": "…"|null, "target": "…"|null, "owner": "…"|null, "deadline": "…"|null } ] }
   ],
   "hypotheses": [
     { "statement": "…", "ifThenBecause": "ЕСЛИ … ТО … ПОТОМУ ЧТО …"|null, "metric": "…"|null, "department": "…"|null, "synthesized": false }

@@ -282,6 +282,11 @@ export type ApprovalRecord = z.infer<typeof ApprovalRecordSchema>;
 
 export const F0KrDraftSchema = z.object({
   formulation: z.string().min(1),
+  // metric — численный KR с базой/целью «с X до Y»; milestone — бинарная веха
+  // (внедрено/согласовано/запущено/создано), у которой base/target не требуются
+  // (инвариант 1 их не спрашивает). optional — обратная совместимость: старые черновики
+  // и отсутствующее поле трактуются как metric (markBlockingKrIssues).
+  kr_type: z.enum(['metric', 'milestone']).optional(),
   // Числовая база «с X» как записано в документе; null если базы в документе нет.
   base: z.string().nullable(),
   // Целевое значение «до Y»; null если цель не числовая/отсутствует.

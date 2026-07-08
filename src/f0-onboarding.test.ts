@@ -72,6 +72,23 @@ describe('markBlockingKrIssues (инвариант 1)', () => {
       'no_owner',
     ]);
   });
+
+  it('milestone KR: не требует базы/цели, только ответственного (WP-39.x)', () => {
+    const milestone = {
+      formulation: 'Внедрена система бюджетирования',
+      kr_type: 'milestone' as const,
+      base: null,
+      target: null,
+      owner: 'Мақсат',
+      deadline: null,
+    };
+    // milestone с owner — чист (base/target не спрашиваем).
+    expect(markBlockingKrIssues(objectives([milestone]))).toEqual([]);
+    // milestone без owner — только no_owner (не no_base/no_target).
+    expect(markBlockingKrIssues(objectives([{ ...milestone, owner: null }]))[0]!.reasons).toEqual([
+      'no_owner',
+    ]);
+  });
 });
 
 describe('markHypothesesWithoutMetric (инвариант 2)', () => {
