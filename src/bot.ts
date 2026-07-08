@@ -946,8 +946,10 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
           `⚠️ Идёт онбординг${company !== undefined && company !== null ? ` «${company}»` : ''} (${progress}).\n` +
             'Начать нового клиента и сбросить этот прогресс?',
           {
+            // session.id в callback_data: протухшая кнопка от ПРОШЛОЙ сессии не должна
+            // молча сбросить текущую (W3 — ровно тот сценарий, от которого защищаемся).
             reply_markup: new InlineKeyboard()
-              .text('🗑 Да, сбросить', 'f0_new_yes')
+              .text('🗑 Да, сбросить', `f0_new_yes:${session.id}`)
               .text('↩️ Продолжить текущий', 'f0_new_no'),
           },
         )
@@ -965,7 +967,16 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
     await startF0SessionGuarded(ctx, 'command');
   });
 
-  bot.callbackQuery('f0_new_yes', async (ctx) => {
+  const F0_STALE_BUTTON_TEXT = '⌛ Кнопка устарела — она от другой сессии онбординга.';
+
+  bot.callbackQuery(/^f0_new_yes:(.+)$/, async (ctx) => {
+    const chatId = ctx.chat?.id;
+    if (chatId === undefined) return;
+    const current = await getOrRestoreF0Session(chatId);
+    if (current === undefined || current.id !== ctx.match[1]!) {
+      await ctx.answerCallbackQuery({ text: F0_STALE_BUTTON_TEXT }).catch(() => {});
+      return;
+    }
     await ctx.answerCallbackQuery().catch(() => {});
     await startF0Session(ctx, 'reset_confirmed');
   });
@@ -984,28 +995,37 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
       await ctx.reply('ℹ️ Нет активного онбординга — отменять нечего.').catch(() => {});
       return;
     }
+    if (session.processing) {
+      await ctx.reply(F0_BUSY_TEXT).catch(() => {});
+      return;
+    }
     const company = session.draft?.extraction.company;
     await ctx
       .reply(
         `Завершить онбординг${company !== undefined && company !== null ? ` «${company}»` : ''}? Несохранённый прогресс будет удалён.`,
         {
           reply_markup: new InlineKeyboard()
-            .text('🗑 Да, завершить', 'f0_cancel_yes')
+            .text('🗑 Да, завершить', `f0_cancel_yes:${session.id}`)
             .text('↩️ Нет, продолжить', 'f0_cancel_no'),
         },
       )
       .catch(() => {});
   });
 
-  bot.callbackQuery('f0_cancel_yes', async (ctx) => {
-    await ctx.answerCallbackQuery().catch(() => {});
+  bot.callbackQuery(/^f0_cancel_yes:(.+)$/, async (ctx) => {
     const chatId = ctx.chat?.id;
     if (chatId === undefined) return;
-    const session = f0Sessions.get(chatId);
+    // getOrRestore: id сессии переживает рестарт в персисте — «да» после рестарта работает.
+    const session = await getOrRestoreF0Session(chatId);
+    if (session === undefined || session.id !== ctx.match[1]!) {
+      await ctx.answerCallbackQuery({ text: F0_STALE_BUTTON_TEXT }).catch(() => {});
+      return;
+    }
+    await ctx.answerCallbackQuery().catch(() => {});
     f0Sessions.delete(chatId);
     await deleteF0Session(chatId);
     f0Log.info(
-      { step: 'f0.session_cancelled', chatId, sessionId: session?.id },
+      { step: 'f0.session_cancelled', chatId, sessionId: session.id },
       'f0 onboarding cancelled by tracker',
     );
     await ctx.reply('✅ Онбординг отменён. Новый — /newclient или меню /start.').catch(() => {});
@@ -1035,20 +1055,22 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
     await ctx.answerCallbackQuery().catch(() => {});
     const registry = await loadRegistry();
     const ids = Object.keys(registry);
-    if (ids.length === 0) {
-      await ctx
-        .reply(
-          'Реестр клиентов пуст. Онбординг первого — /newclient.\n' +
-            '(Пилот Geonline работает как встроенный: /report без clientId.)',
-        )
-        .catch(() => {});
-      return;
-    }
     const kb = new InlineKeyboard();
     for (const id of ids) {
+      // Лимит Telegram: callback_data ≤ 64 байта. Слаги из онбординга капятся (≤32),
+      // но реестр могли править руками — одна длинная запись не должна ронять весь список.
+      if (Buffer.byteLength(`client_use:${id}`, 'utf8') > 64) {
+        log.warn({ step: 'bot.clients_menu.id_too_long', clientId: id }, 'client id skipped in menu');
+        continue;
+      }
       kb.text(`${registry[id]!.name} (${id})`, `client:${id}`).row();
     }
-    await ctx.reply('👥 Клиенты из реестра — выбери:', { reply_markup: kb }).catch(() => {});
+    // Встроенный пилот доступен из меню наравне с реестром — в т.ч. чтобы вернуть
+    // активный выбор на geonline без запоминания «/report <url> geonline».
+    if (registry['geonline'] === undefined) {
+      kb.text('Geonline (встроенный пилот)', 'client:geonline').row();
+    }
+    await ctx.reply('👥 Клиенты — выбери:', { reply_markup: kb }).catch(() => {});
   });
 
   // W10: статус любого клиента из карточки — не только активной сессии.
@@ -1058,7 +1080,8 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
     const card = await loadClientCard(clientId);
     const kb = new InlineKeyboard().text('✅ Работать с этим клиентом', `client_use:${clientId}`);
     if (card === null) {
-      const name = (await getClientName(clientId)) ?? clientId;
+      const name =
+        (await getClientName(clientId)) ?? (clientId === DEFAULT_CLIENT_ID ? 'Geonline' : clientId);
       await ctx
         .reply(`👤 ${name} (${clientId})\nКарточки онбординга нет (клиент заведён до карточек). /report доступен.`, {
           reply_markup: kb,
@@ -1263,8 +1286,12 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
     } catch { /* прогресс не критичен */ }
 
     const startedAt = Date.now();
+    // finished выставляется ДО финального edit: иначе тик (или его in-flight edit),
+    // сработавший между итогом и clearInterval в finally, затёр бы доставленное саммари
+    // обратно на «Собираю черновик…» — невосстановимо, пакет уже очищен.
+    let finished = false;
     const progressTimer = setInterval(() => {
-      if (progressMessageId === undefined) return;
+      if (finished || progressMessageId === undefined) return;
       void editPlainMessage(
         chatId,
         progressMessageId,
@@ -1275,6 +1302,8 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
 
     // Итог/ошибка: сначала пробуем отредактировать progress-сообщение, иначе шлём новое.
     const finishProgress = async (text: string): Promise<boolean> => {
+      finished = true;
+      clearInterval(progressTimer);
       if (progressMessageId !== undefined && (await editPlainMessage(chatId, progressMessageId, text))) {
         return true;
       }
@@ -1292,6 +1321,17 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
         documentText,
         sourceName: sourceNames.join(', '),
       });
+
+      // Сессию могли отменить (/cancel) или заменить (сброс) за время долгой сборки —
+      // тогда результат не сохраняем, иначе отменённая сессия воскресла бы через persist.
+      if (f0Sessions.get(chatId) !== session) {
+        f0Log.info(
+          { step: 'f0.draft_discarded', chatId, sessionId: session.id },
+          'f0 draft discarded — session cancelled/replaced during build',
+        );
+        await finishProgress('ℹ️ Онбординг был отменён во время сборки — черновик не сохранён. Новый: /newclient.');
+        return;
+      }
 
       const draftId = randomUUID().slice(0, 8);
       await persistF0FullDraft({ draftId, chatId, sourceNames, createdAt: now().toISOString(), result });

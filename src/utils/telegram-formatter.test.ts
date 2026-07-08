@@ -275,6 +275,20 @@ describe('formatDeliveryReportCompact (Story 8.3, W4)', () => {
     const out = formatDeliveryReportCompact(PARTIAL_FIXTURE, 'https://docs.google.com/spreadsheets/d/x/edit');
     expect(out).toBe(formatDeliveryReport(PARTIAL_FIXTURE));
   });
+
+  it('ревью 8.2–8.4: усечение секции не оставляет lone surrogate (эмодзи на границе 700)', () => {
+    const report: Extract<DeliveryReadyReport, { partial: false }> = {
+      ...FULL_FIXTURE,
+      sections: [
+        // Символ 699 — начало суррогатной пары 😀: slice(0,700) разрезал бы её пополам.
+        { title: 'Граница', content: `${'a'.repeat(699)}😀${'b'.repeat(50)}` },
+        { title: 'Балласт', content: Array.from({ length: 40 }, () => 'x'.repeat(80)).join('\n') },
+      ],
+    };
+    const out = formatDeliveryReportCompact(report);
+    expect(out).toContain('сокращён');
+    expect(/[\ud800-\udbff](?![\udc00-\udfff])/u.test(out)).toBe(false);
+  });
 });
 
 describe('commitment lifecycle emojis (Story 1.7)', () => {

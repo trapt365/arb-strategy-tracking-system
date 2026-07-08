@@ -1644,15 +1644,16 @@ describe('bot — меню, клиенты и защита сессии (Story 8
     expect(menuButtons(welcome!)).toEqual(['menu:help', 'menu:new', 'menu:clients']);
   });
 
-  it('menu:clients → список клиентов реестра с кнопками client:{id}', async () => {
+  it('menu:clients → список клиентов реестра с кнопками client:{id} + встроенный geonline', async () => {
     const { bot, calls } = buildBot();
     await bot.handleUpdate(callbackUpdate('menu:clients'));
     const list = calls.find(
-      (c) => c.method === 'sendMessage' && (c.payload.text as string).includes('Клиенты из реестра'),
+      (c) => c.method === 'sendMessage' && (c.payload.text as string).includes('Клиенты — выбери'),
     );
     expect(list).toBeDefined();
     expect(menuButtons(list!)).toContain(`client:${TEST_CLIENT_ID}`);
-    expect(list!.payload.text).toContain('выбери');
+    // Ревью пачки: geonline доступен из меню — выбор можно вернуть на встроенного пилота.
+    expect(menuButtons(list!)).toContain('client:geonline');
   });
 
   it('W10: client:{id} с карточкой → статус из card.json (и для завершённого клиента)', async () => {
@@ -1758,7 +1759,9 @@ describe('bot — меню, клиенты и защита сессии (Story 8
     );
     expect(guard).toBeDefined();
     expect(guard!.payload.text).toContain('«Ромашка»');
-    expect(menuButtons(guard!)).toEqual(['f0_new_yes', 'f0_new_no']);
+    const guardButtons = menuButtons(guard!);
+    expect(guardButtons[0]).toMatch(/^f0_new_yes:.+/); // ревью пачки: кнопка привязана к сессии
+    expect(guardButtons[1]).toBe('f0_new_no');
 
     await bot.handleUpdate(callbackUpdate('f0_new_no'));
     // Сессия жива: /status отдаёт чеклист по черновику, а не «Нет активного онбординга».
@@ -1781,12 +1784,26 @@ describe('bot — меню, клиенты и защита сессии (Story 8
     await bot.handleUpdate(documentUpdate('strategy.md'));
     await bot.handleUpdate(commandUpdate('/draft'));
     await bot.handleUpdate(commandUpdate('/newclient')); // guard
+    const guard = calls.find(
+      (c) => c.method === 'sendMessage' && (c.payload.text as string).includes('сбросить этот прогресс'),
+    );
+    const yesButton = menuButtons(guard!).find((d) => d.startsWith('f0_new_yes:'))!;
     const before = calls.length;
-    await bot.handleUpdate(callbackUpdate('f0_new_yes'));
+    await bot.handleUpdate(callbackUpdate(yesButton));
     const started = calls.slice(before).find(
       (c) => c.method === 'sendMessage' && (c.payload.text as string).includes('Онбординг нового клиента'),
     );
     expect(started).toBeDefined();
+
+    // Протухшая кнопка (id старой сессии) больше не сбрасывает новую сессию.
+    const afterStale = calls.length;
+    await bot.handleUpdate(callbackUpdate(yesButton));
+    const stale = calls.slice(afterStale).find(
+      (c) =>
+        c.method === 'answerCallbackQuery' &&
+        ((c.payload as { text?: string }).text ?? '').includes('устарела'),
+    );
+    expect(stale).toBeDefined();
   });
 
   it('W3: /cancel с подтверждением удаляет сессию; без сессии — внятный ответ', async () => {
@@ -1808,9 +1825,11 @@ describe('bot — меню, клиенты и защита сессии (Story 8
       (c) => c.method === 'sendMessage' && (c.payload.text as string).includes('Завершить онбординг'),
     );
     expect(prompt).toBeDefined();
-    expect(menuButtons(prompt!)).toEqual(['f0_cancel_yes', 'f0_cancel_no']);
+    const cancelButtons = menuButtons(prompt!);
+    expect(cancelButtons[0]).toMatch(/^f0_cancel_yes:.+/);
+    expect(cancelButtons[1]).toBe('f0_cancel_no');
 
-    await bot.handleUpdate(callbackUpdate('f0_cancel_yes'));
+    await bot.handleUpdate(callbackUpdate(cancelButtons[0]!));
     before = calls.length;
     await bot.handleUpdate(commandUpdate('/status'));
     const status = calls.slice(before).find((c) => c.method === 'sendMessage');

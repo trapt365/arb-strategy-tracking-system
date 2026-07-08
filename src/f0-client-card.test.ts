@@ -60,6 +60,13 @@ describe('clientIdFromCompany', () => {
     expect(clientIdFromCompany('GeOnline')).toBe('geonline');
     expect(clientIdFromCompany('')).toBe('client');
   });
+
+  it('ревью 8.2–8.4: слаг капится до 32 символов без хвостового дефиса (callback_data ≤ 64 байта)', () => {
+    const long = clientIdFromCompany('Товарищество с ограниченной ответственностью «Щупальца юга»');
+    expect(long.length).toBeLessThanOrEqual(32);
+    expect(long.endsWith('-')).toBe(false);
+    expect(Buffer.byteLength(`client_use:${long}`, 'utf8')).toBeLessThanOrEqual(64);
+  });
 });
 
 describe('buildClientCard', () => {

@@ -19,7 +19,11 @@ const TRANSLIT: Record<string, string> = {
   э: 'e', ю: 'yu', я: 'ya',
 };
 
-/** clientId-слаг из названия компании: транслит → [a-z0-9-], fallback 'client'. */
+// Кап длины слага: callback_data кнопок меню (`client_use:{id}`, story 8.4) ограничен
+// 64 байтами Telegram, а assertClientId — 64 символами. 32 оставляет запас обоим.
+export const CLIENT_ID_MAX_LENGTH = 32;
+
+/** clientId-слаг из названия компании: транслит → [a-z0-9-], ≤32 симв., fallback 'client'. */
 export function clientIdFromCompany(company: string): string {
   const lower = (company ?? '').toLowerCase();
   let out = '';
@@ -29,6 +33,9 @@ export function clientIdFromCompany(company: string): string {
     else out += '-';
   }
   out = out.replace(/-+/g, '-').replace(/^-|-$/g, '');
+  if (out.length > CLIENT_ID_MAX_LENGTH) {
+    out = out.slice(0, CLIENT_ID_MAX_LENGTH).replace(/-+$/g, '');
+  }
   return out.length > 0 ? out : 'client';
 }
 

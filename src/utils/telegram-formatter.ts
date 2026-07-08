@@ -211,10 +211,14 @@ function renderSectionCompact(section: FormatSection): string {
     return renderSection(section);
   }
   // Сначала режем сырой текст, потом экранируем — иначе можно разрезать escape-пару.
-  const keptRaw = lines
+  let keptRaw = lines
     .slice(0, F1_COMPACT_SECTION_MAX_LINES)
     .join('\n')
     .slice(0, F1_COMPACT_SECTION_MAX_CHARS);
+  // Срез мог разрезать суррогатную пару (эмодзи на границе) — lone surrogate валит
+  // sendMessage и в MarkdownV2, и в plain-фолбэке.
+  const lastCode = keptRaw.charCodeAt(keptRaw.length - 1);
+  if (lastCode >= 0xd800 && lastCode <= 0xdbff) keptRaw = keptRaw.slice(0, -1);
   const omittedLines = Math.max(0, lines.length - F1_COMPACT_SECTION_MAX_LINES);
   const tail =
     omittedLines > 0 ? `\n… (ещё ${omittedLines} строк — сокращено)` : '\n… (сокращено)';
@@ -311,6 +315,7 @@ export function formatWelcomeMessage(firstName?: string): string {
     '/draft — собрать черновик из присланных файлов',
     '/resume — продолжить дозаполнение · /skip — пропустить вопрос',
     '/confirm — завершить (неполные KR не блокируют — покажу предупреждение)',
+    '/cancel — отменить онбординг (с подтверждением)',
     '',
     'Скоро:',
     '🔍 Найти — поиск прошлых отчётов',
