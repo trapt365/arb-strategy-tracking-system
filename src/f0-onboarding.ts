@@ -286,6 +286,66 @@ export function renderF0FullDraftMessage(args: RenderF0FullDraftArgs): string {
   return lines.join('\n');
 }
 
+/**
+ * Story 8.3 (W4): компактная доставка черновика — саммари + счётчики + блоки 🔴 и
+ * «Не распознано» вместо полной простыни. Полные таблицы не инлайнятся: они появятся
+ * в Google Sheets клиента после /confirm. Полный рендер (renderF0FullDraftMessage)
+ * остаётся для смоуков/отладки.
+ */
+export function renderF0DraftSummaryMessage(args: RenderF0FullDraftArgs): string {
+  const { extraction, krIssues, hypothesisIssues, sourceName, draftId } = args;
+  const totalKrs = extraction.objectives.reduce((sum, o) => sum + o.krs.length, 0);
+  const lines: string[] = [];
+  lines.push(`🆕 Черновик онбординга — ${extraction.company ?? 'компания не определена'}`);
+  lines.push(`Источник: ${truncate(sourceName, 140)}`);
+  lines.push('');
+  lines.push(
+    `Извлечено: цели ${extraction.objectives.length} · KR ${totalKrs} · ` +
+      `гипотезы ${extraction.hypotheses.length} · участники ${extraction.participants.length}`,
+  );
+  if (extraction.objectives.length === 0) {
+    lines.push('📊 OKR в документах не найдены — приложи OKR-документ или заполни вручную.');
+  }
+  lines.push('');
+
+  if (krIssues.length > 0) {
+    lines.push(`🔴 Неполные KR — ${krIssues.length} из ${totalKrs} (дозаполним в диалоге):`);
+    for (const issue of krIssues.slice(0, 10)) {
+      const reasons = issue.reasons.map((r) => F0_ISSUE_REASON_LABELS[r]).join(', ');
+      lines.push(`  – ${issue.ref} «${truncate(issue.formulation, 60)}»: ${reasons}`);
+    }
+    if (krIssues.length > 10) lines.push(`  … и ещё ${krIssues.length - 10}`);
+  } else if (totalKrs > 0) {
+    lines.push(`✅ Все ${totalKrs} KR считаемы.`);
+  }
+  if (hypothesisIssues.length > 0) {
+    lines.push(
+      `🔴 Гипотезы без метрики — ${hypothesisIssues.length} из ${extraction.hypotheses.length}: ` +
+        `${hypothesisIssues.map((i) => i.ref).join(', ')} (спрошу в диалоге).`,
+    );
+  }
+  const synthesized = extraction.hypotheses.filter((h) => h.synthesized).length;
+  if (synthesized > 0) {
+    lines.push(`⚠️ Гипотез синтезировано из решений/инициатив: ${synthesized} — подтверди формулировки.`);
+  }
+
+  if (extraction.unrecognized.length > 0) {
+    lines.push('');
+    lines.push(`❓ Не распознано — ${extraction.unrecognized.length}:`);
+    for (const item of extraction.unrecognized.slice(0, 5)) {
+      lines.push(`  – ${truncate(item, 120)}`);
+    }
+    if (extraction.unrecognized.length > 5) {
+      lines.push(`  … и ещё ${extraction.unrecognized.length - 5}`);
+    }
+  }
+
+  lines.push('');
+  lines.push('Полные таблицы (OKR, гипотезы, участники) будут в Google Sheets клиента после /confirm — пришлю ссылку.');
+  lines.push(`Черновик сохранён (${draftId}).`);
+  return lines.join('\n');
+}
+
 // === Persist черновика (warn-only, по паттерну persistStep из f1-report) ===
 
 export const F0_DRAFTS_DIR = join('data', '.onboarding');

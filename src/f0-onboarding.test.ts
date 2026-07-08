@@ -6,6 +6,7 @@ import {
   markBlockingKrIssues,
   markHypothesesWithoutMetric,
   renderF0FullDraftMessage,
+  renderF0DraftSummaryMessage,
   runF0FullDraft,
   persistF0FullDraft,
   persistF0Session,
@@ -151,6 +152,70 @@ describe('renderF0FullDraftMessage', () => {
     });
     expect(msg).toContain('❓ Не распознано');
     expect(msg).toContain('противоречивыми цифрами');
+  });
+});
+
+describe('renderF0DraftSummaryMessage (Story 8.3, W4)', () => {
+  it('компактно: счётчики + 🔴-блоки, без полных таблиц KR/гипотез/участников', () => {
+    const ex = fullExtraction({
+      objectives: [{ title: 'O1', krs: [countableKr, uncountableKr] }],
+    });
+    const msg = renderF0DraftSummaryMessage({
+      extraction: ex,
+      krIssues: markBlockingKrIssues(ex),
+      hypothesisIssues: markHypothesesWithoutMetric(ex),
+      sourceName: 'strategy.pdf, okr.md',
+      draftId: 'abc12345',
+    });
+    expect(msg).toContain('Извлечено: цели 1 · KR 2 · гипотезы 2 · участники 2');
+    expect(msg).toContain('🔴 Неполные KR — 1 из 2');
+    expect(msg).toContain('🔴 Гипотезы без метрики — 1 из 2: H2');
+    // Полные таблицы не инлайнятся: нет по-строчных деталей KR и списка участников.
+    expect(msg).not.toContain('база: ');
+    expect(msg).not.toContain('👥 Участники');
+    expect(msg).not.toContain('Дамир Самарханов');
+    // Обещание ссылки после /confirm.
+    expect(msg).toContain('/confirm');
+    expect(msg).toContain('Черновик сохранён (abc12345)');
+  });
+
+  it('🔴 KR обрезаются до 10, «Не распознано» до 5 — с хвостом «и ещё N»', () => {
+    const krs = Array.from({ length: 13 }, (_, i) => ({
+      formulation: `KR номер ${i + 1}`,
+      base: null,
+      target: null,
+      owner: null,
+      deadline: null,
+    }));
+    const ex = fullExtraction({
+      objectives: [{ title: 'O1', krs }],
+      unrecognized: Array.from({ length: 7 }, (_, i) => `непонятная строка ${i + 1}`),
+    });
+    const msg = renderF0DraftSummaryMessage({
+      extraction: ex,
+      krIssues: markBlockingKrIssues(ex),
+      hypothesisIssues: [],
+      sourceName: 'okr.md',
+      draftId: 'abc12345',
+    });
+    expect(msg).toContain('🔴 Неполные KR — 13 из 13');
+    expect(msg).toContain('… и ещё 3');
+    expect(msg).toContain('❓ Не распознано — 7:');
+    expect(msg).toContain('… и ещё 2');
+    expect(msg).not.toContain('KR номер 11');
+  });
+
+  it('OKR отсутствуют → явный сигнал, а не молчание', () => {
+    const ex = fullExtraction({ objectives: [] });
+    const msg = renderF0DraftSummaryMessage({
+      extraction: ex,
+      krIssues: [],
+      hypothesisIssues: markHypothesesWithoutMetric(ex),
+      sourceName: 'protocol.md',
+      draftId: 'abc12345',
+    });
+    expect(msg).toContain('📊 OKR в документах не найдены');
+    expect(msg).toContain('цели 0');
   });
 });
 

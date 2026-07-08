@@ -30,7 +30,7 @@ import {
 import { parseReportUrl, type UrlParseFailure } from './utils/url-parser.js';
 import {
   runF0FullDraft as defaultRunF0FullDraft,
-  renderF0FullDraftMessage,
+  renderF0DraftSummaryMessage,
   persistF0FullDraft,
   persistF0Session,
   loadF0Session,
@@ -63,7 +63,7 @@ import { createReportQueue, QueueOverflowError, type ReportQueue } from './utils
 import { withRetry } from './utils/retry.js';
 import {
   escapeMarkdownV2,
-  formatDeliveryReport,
+  formatDeliveryReportCompact,
   formatTopMessagePlainText,
   formatErrorMessage,
   formatHelpHint,
@@ -681,7 +681,14 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
         });
       }
 
-      const text = formatDeliveryReport(result.formattedReport);
+      // Story 8.3 (W4): длинные отчёты — компактно + ссылка на таблицу клиента;
+      // короткие проходят без изменений (formatDeliveryReportCompact сам решает).
+      const sheetId = await getClientSheetId(job.clientId).catch(() => undefined);
+      const sheetsUrl =
+        sheetId !== undefined && sheetId.length > 0
+          ? `https://docs.google.com/spreadsheets/d/${sheetId}/edit`
+          : undefined;
+      const text = formatDeliveryReportCompact(result.formattedReport, sheetsUrl);
       const deliveryStart = Date.now();
       const lastMessageId = await renderFinalReport(job, text);
       recordOpsEvent('info', {
@@ -1010,6 +1017,37 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
     }
   });
 
+  // Story 8.3 (W2): честная оценка времени сборки — зависит от размера пакета
+  // (реально до ~10 мин на большой пакет при таймауте 12 мин; см. F0_FULL_TIMEOUT_MS).
+  function f0DraftProgressText(files: number, chars: number, elapsedMs?: number): string {
+    const kChars = Math.max(1, Math.round(chars / 1000));
+    const estimate =
+      chars > 60_000
+        ? 'большой пакет — обычно 5–12 минут'
+        : chars > 20_000
+          ? 'обычно 2–5 минут'
+          : 'обычно 1–2 минуты';
+    const head = `🧠 Собираю черновик из пакета (файлов: ${files}, ~${kChars} тыс. знаков) — ${estimate}.`;
+    if (elapsedMs === undefined) return head;
+    const min = Math.floor(elapsedMs / 60_000);
+    const sec = Math.round((elapsedMs % 60_000) / 1000);
+    return `${head}\n⏳ Прошло ${min} мин ${sec} с — работаю (потолок 12 минут).`;
+  }
+
+  /** Редактирование plain-text сообщения (F0-тексты без parse_mode). */
+  async function editPlainMessage(chatId: number, messageId: number, text: string): Promise<boolean> {
+    try {
+      await bot.api.editMessageText(chatId, messageId, text);
+      return true;
+    } catch (err) {
+      if (err instanceof GrammyError && err.description?.includes('message is not modified')) {
+        return true;
+      }
+      log.warn({ err, chatId, messageId }, 'f0.progress.edit_failed');
+      return false;
+    }
+  }
+
   // Сборка черновика из пакета: конкатенация файлов → полное извлечение (OKR + гипотезы + участники).
   async function buildF0Draft(ctx: Context): Promise<void> {
     const chatId = ctx.chat?.id;
@@ -1030,16 +1068,44 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
 
     session.processing = true;
     const sourceNames = session.documents.map((d) => d.sourceName);
+    const packageChars = session.documentsChars;
     // Разделяем файлы явными маркерами — модель понимает границы документов пакета.
     const documentText = session.documents
       .map((d) => `===== Файл: ${d.sourceName} =====\n\n${d.text}`)
       .join('\n\n');
 
+    // Story 8.3 (W2): progress-сообщение живёт до результата — обновляется тикером и в конце
+    // редактируется в итог/ошибку, а не удаляется молча («бот завис» → повторный /newclient).
     let progressMessageId: number | undefined;
     try {
-      const progress = await ctx.reply('🧠 Собираю черновик из пакета… Обычно это 1-2 минуты.');
+      const progress = await ctx.reply(f0DraftProgressText(sourceNames.length, packageChars));
       progressMessageId = progress.message_id;
     } catch { /* прогресс не критичен */ }
+
+    const startedAt = Date.now();
+    const progressTimer = setInterval(() => {
+      if (progressMessageId === undefined) return;
+      void editPlainMessage(
+        chatId,
+        progressMessageId,
+        f0DraftProgressText(sourceNames.length, packageChars, Date.now() - startedAt),
+      );
+    }, 45_000);
+    progressTimer.unref?.();
+
+    // Итог/ошибка: сначала пробуем отредактировать progress-сообщение, иначе шлём новое.
+    const finishProgress = async (text: string): Promise<boolean> => {
+      if (progressMessageId !== undefined && (await editPlainMessage(chatId, progressMessageId, text))) {
+        return true;
+      }
+      try {
+        await ctx.reply(text);
+        return true;
+      } catch (err) {
+        log.error({ err, chatId }, 'f0.draft.finish_send_failed');
+        return false;
+      }
+    };
 
     try {
       const result = await runF0FullDraftFn({
@@ -1050,7 +1116,9 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
       const draftId = randomUUID().slice(0, 8);
       await persistF0FullDraft({ draftId, chatId, sourceNames, createdAt: now().toISOString(), result });
 
-      const message = renderF0FullDraftMessage({
+      // Story 8.3 (W4): компактное саммари вместо полной простыни — полные таблицы
+      // появятся в Google Sheets после /confirm (ссылку пришлёт createSheetForSession).
+      const message = renderF0DraftSummaryMessage({
         extraction: result.extraction,
         krIssues: result.krIssues,
         hypothesisIssues: result.hypothesisIssues,
@@ -1058,8 +1126,8 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
         draftId,
       });
       const parts = splitForTelegram(message, TELEGRAM_SAFE_MARGIN, '🆕 Черновик онбординга (продолжение)');
-      let sentAll = true;
-      for (const part of parts) {
+      let sentAll = await finishProgress(parts[0]!);
+      for (const part of parts.slice(1)) {
         try {
           await ctx.reply(part);
         } catch (sendErr) {
@@ -1115,9 +1183,9 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
           { step: 'f0.draft_rejected', chatId, code: err.code, files: sourceNames.length },
           'f0 draft rejected',
         );
-        await ctx
-          .reply(`${F0_REPLY_BY_CODE[err.code]}\nПакет цел — поправь файлы и собери снова: /draft.`)
-          .catch(() => {});
+        await finishProgress(
+          `${F0_REPLY_BY_CODE[err.code]}\nПакет цел — поправь файлы и собери снова: /draft.`,
+        );
       } else {
         // Не-F0 ошибка (напр. обрезка JSON по лимиту токенов, сбой Claude) — подсказываем
         // действие: пакет большой → убрать файлы. Пакет сохраняем для повторной попытки.
@@ -1128,17 +1196,13 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
           error: err,
           context: { chatId, sessionId: session.id, files: sourceNames.length },
         });
-        await ctx
-          .reply(
-            '⚠️ Не удалось собрать черновик. Если файлов много — убери лишние и собери снова: /draft.',
-          )
-          .catch(() => {});
+        await finishProgress(
+          '⚠️ Не удалось собрать черновик. Если файлов много — убери лишние и собери снова: /draft.',
+        );
       }
     } finally {
+      clearInterval(progressTimer);
       session.processing = false;
-      if (progressMessageId !== undefined) {
-        await bot.api.deleteMessage(chatId, progressMessageId).catch(() => {});
-      }
     }
   }
 

@@ -28,6 +28,9 @@ data/.ops-state.json
 data/.scheduler-state.json
 data/.backups/
 data/geonline/
+# Story 8.3: runtime F0-онбординг (черновики + persisted-сессии; создаются и тестами)
+data/.onboarding/
+data/clients/
 
 # Story 1.11: canary run outputs (developer artifact for post-mortem)
 data/canary-results/

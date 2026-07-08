@@ -197,6 +197,70 @@ export function formatDeliveryReport(report: DeliveryReadyReport): string {
   return formatFullDeliveryReport(report);
 }
 
+// Story 8.3 (W4): компактная доставка длинных отчётов — читается с телефона за минуту.
+export const F1_COMPACT_SECTION_MAX_LINES = 8;
+export const F1_COMPACT_SECTION_MAX_CHARS = 700;
+export const F1_COMPACT_COMMITMENTS_MAX = 8;
+
+function renderSectionCompact(section: FormatSection): string {
+  const lines = section.content.split('\n');
+  if (
+    lines.length <= F1_COMPACT_SECTION_MAX_LINES &&
+    section.content.length <= F1_COMPACT_SECTION_MAX_CHARS
+  ) {
+    return renderSection(section);
+  }
+  // Сначала режем сырой текст, потом экранируем — иначе можно разрезать escape-пару.
+  const keptRaw = lines
+    .slice(0, F1_COMPACT_SECTION_MAX_LINES)
+    .join('\n')
+    .slice(0, F1_COMPACT_SECTION_MAX_CHARS);
+  const omittedLines = Math.max(0, lines.length - F1_COMPACT_SECTION_MAX_LINES);
+  const tail =
+    omittedLines > 0 ? `\n… (ещё ${omittedLines} строк — сокращено)` : '\n… (сокращено)';
+  return `*${escapeMarkdownV2(section.title)}*\n${escapeMarkdownV2(keptRaw)}${escapeMarkdownV2(tail)}`;
+}
+
+/**
+ * Story 8.3: короткие отчёты — без изменений (полный формат); длинные (не влезают в одно
+ * сообщение) — компактный формат: заголовок + саммари + усечённые секции + первые
+ * commitments + ссылка на таблицу клиента вместо простыни. Partial-fallback не сжимается —
+ * это диагностический сырой дамп. Лимит 4096 в любом случае страхует splitForTelegram.
+ */
+export function formatDeliveryReportCompact(
+  report: DeliveryReadyReport,
+  sheetsUrl?: string,
+): string {
+  const full = formatDeliveryReport(report);
+  if (report.partial || full.length <= TELEGRAM_SAFE_MARGIN) return full;
+
+  const parts: string[] = [];
+  parts.push(buildHeaderForReport(report));
+  parts.push(`*${escapeMarkdownV2(report.summaryLine)}*`);
+  for (const section of report.sections) {
+    parts.push(renderSectionCompact(section));
+  }
+  if (report.commitments.length > 0) {
+    const shown = report.commitments
+      .slice(0, F1_COMPACT_COMMITMENTS_MAX)
+      .map((c) => renderCommitment(c));
+    const more = report.commitments.length - F1_COMPACT_COMMITMENTS_MAX;
+    if (more > 0) shown.push(escapeMarkdownV2(`… и ещё ${more}`));
+    parts.push(['*Commitments:*', ...shown].join('\n'));
+  }
+  if (report.topMessageDraft && report.topMessageDraft.trim().length > 0) {
+    const draftHeader = `📱 *Для ${escapeMarkdownV2(report.topName)}:*`;
+    const draftBody = `_${escapeMarkdownV2(report.topMessageDraft)}_`;
+    parts.push(`${draftHeader}\n${draftBody}`);
+  }
+  const footer = [escapeMarkdownV2('📄 Отчёт сокращён для чтения с телефона.')];
+  if (sheetsUrl !== undefined && sheetsUrl.length > 0) {
+    footer.push(escapeMarkdownV2(`🔗 Таблица клиента: ${sheetsUrl}`));
+  }
+  parts.push(footer.join('\n'));
+  return parts.join('\n\n');
+}
+
 /**
  * Plain-text delivery format for Telegram forwarding.
  * No MarkdownV2 escaping — Aziza forwards this message to the top manager.

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import pino from 'pino';
 import { createBot, FALLBACK_BOT_INFO, type BotDeps } from './bot.js';
 import {
@@ -70,6 +70,22 @@ function helpUpdate(
   } as unknown as Update;
 }
 
+// Story 8.3/8.4: произвольная команда (/newclient, /draft, /cancel, …) с bot_command entity.
+function commandUpdate(command: string, chatId: number = TEST_TRACKER_CHAT_ID): Update {
+  const message_id = 1000 + updateCounter;
+  return {
+    update_id: updateCounter++,
+    message: {
+      message_id,
+      date: Math.floor(Date.now() / 1000),
+      chat: { id: chatId, type: 'private', first_name: 'Test' },
+      from: { id: chatId, is_bot: false, first_name: 'Test' },
+      text: command,
+      entities: [{ type: 'bot_command', offset: 0, length: command.split(' ')[0]!.length }],
+    },
+  } as unknown as Update;
+}
+
 function plainTextUpdate(
   text: string,
   chatId: number = TEST_TRACKER_CHAT_ID,
@@ -129,9 +145,40 @@ function attachApiSpy(
     if (method === 'setMyCommands' || method === 'setChatMenuButton') {
       return { ok: true, result: true } as never;
     }
+    // Story 8.3: приём документа F0 требует file_path из getFile.
+    if (method === 'getFile') {
+      return {
+        ok: true,
+        result: { file_id: 'file-1', file_unique_id: 'u-1', file_path: 'documents/doc.md' },
+      } as never;
+    }
     return { ok: true, result: true } as never;
   });
   return calls;
+}
+
+// Story 8.3/8.4: message:document update для F0-пакета.
+function documentUpdate(
+  fileName: string,
+  chatId: number = TEST_TRACKER_CHAT_ID,
+): Update {
+  const message_id = 1000 + updateCounter;
+  return {
+    update_id: updateCounter++,
+    message: {
+      message_id,
+      date: Math.floor(Date.now() / 1000),
+      chat: { id: chatId, type: 'private', first_name: 'Test' },
+      from: { id: chatId, is_bot: false, first_name: 'Test' },
+      document: {
+        file_id: 'file-1',
+        file_unique_id: 'u-1',
+        file_name: fileName,
+        mime_type: 'text/markdown',
+        file_size: 1024,
+      },
+    },
+  } as unknown as Update;
 }
 
 // ─── Fixtures ───────────────────────────────────────────────────────────────
@@ -222,6 +269,11 @@ interface BuildOpts {
   alertOps?: ReturnType<typeof vi.fn>;
   appendApproval?: BotDeps['appendApproval'];
   applyEditToReport?: BotDeps['applyEditToReport'];
+  // Story 8.3/8.4: F0-онбординг в тестах без Google/Claude/Telegram-файлов.
+  runF0FullDraft?: BotDeps['runF0FullDraft'];
+  extractTextFromDocument?: BotDeps['extractTextFromDocument'];
+  downloadTelegramFile?: BotDeps['downloadTelegramFile'];
+  createClientSpreadsheet?: BotDeps['createClientSpreadsheet'];
 }
 
 function buildBot(opts: BuildOpts = {}) {
@@ -241,6 +293,10 @@ function buildBot(opts: BuildOpts = {}) {
     alertOps: alertOpsSpy as unknown as BotDeps['alertOps'],
     appendApproval: opts.appendApproval ?? (async () => {}),
     applyEditToReport: opts.applyEditToReport,
+    runF0FullDraft: opts.runF0FullDraft,
+    extractTextFromDocument: opts.extractTextFromDocument,
+    downloadTelegramFile: opts.downloadTelegramFile ?? (async () => Buffer.from('doc')),
+    createClientSpreadsheet: opts.createClientSpreadsheet,
     logger: silentLogger,
     token: 'TEST:TOKEN',
     botInfo: FALLBACK_BOT_INFO,
@@ -1365,5 +1421,144 @@ describe('bot — setMyCommands payload (Story 1.8)', () => {
     } finally {
       await built.stop();
     }
+  });
+});
+
+// ─── Story 8.3: честный прогресс сборки + компактная доставка черновика ──────
+
+import { promises as fsp } from 'node:fs';
+import { join as joinPath } from 'node:path';
+import type { F0FullExtraction } from './types.js';
+
+const ONBOARDING_DIR = joinPath('data', '.onboarding');
+
+function f0Extraction(overrides: Partial<F0FullExtraction> = {}): F0FullExtraction {
+  return {
+    document_type: 'strategy',
+    company: 'Ромашка',
+    objectives: [
+      {
+        title: 'O1',
+        krs: [
+          {
+            formulation: 'Выручка с 10 до 20 млн',
+            base: '10 млн',
+            target: '20 млн',
+            owner: 'Айгерим',
+            deadline: null,
+          },
+        ],
+      },
+    ],
+    hypotheses: [],
+    participants: [{ name: 'Айгерим', role: 'CEO', department: null, contact: '@aigerim' }],
+    unrecognized: [],
+    ...overrides,
+  } as unknown as F0FullExtraction;
+}
+
+function f0DraftResult(extraction: F0FullExtraction = f0Extraction()) {
+  return {
+    extraction,
+    krIssues: [],
+    hypothesisIssues: [],
+    totalKrs: 1,
+    usage: { input_tokens: 10, output_tokens: 10 },
+  };
+}
+
+/** Снести persisted-сессию тестового чата — иначе она протекает в другие тесты/прогоны. */
+async function cleanOnboardingArtifacts(): Promise<void> {
+  await fsp
+    .rm(joinPath(ONBOARDING_DIR, `session-${TEST_TRACKER_CHAT_ID}.json`), { force: true })
+    .catch(() => {});
+}
+
+describe('bot — F0 сборка черновика (Story 8.3, W2+W4)', () => {
+  beforeEach(cleanOnboardingArtifacts);
+  afterEach(cleanOnboardingArtifacts);
+
+  function buildF0Bot(opts: BuildOpts = {}) {
+    return buildBot({
+      extractTextFromDocument: ((async (_buf: Buffer, name?: string) => ({
+        sourceName: name ?? 'doc.md',
+        kind: 'text',
+        text: 'x'.repeat(70_000),
+      })) as unknown) as BotDeps['extractTextFromDocument'],
+      runF0FullDraft: ((async () => f0DraftResult()) as unknown) as BotDeps['runF0FullDraft'],
+      ...opts,
+    });
+  }
+
+  it('W2: оценка честная по размеру пакета; итог редактируется в progress-сообщение, не удаляется', async () => {
+    const { bot, calls } = buildF0Bot();
+    await bot.handleUpdate(commandUpdate('/newclient'));
+    await bot.handleUpdate(documentUpdate('strategy.md'));
+    await bot.handleUpdate(commandUpdate('/draft'));
+
+    const progress = calls.find(
+      (c) => c.method === 'sendMessage' && (c.payload.text as string).includes('Собираю черновик'),
+    );
+    expect(progress).toBeDefined();
+    // 70k знаков — большой пакет: честные 5–12 минут, а не «1-2 минуты».
+    expect(progress!.payload.text).toContain('5–12 минут');
+    expect(progress!.payload.text).not.toContain('1-2 минуты');
+
+    const edits = calls.filter((c) => c.method === 'editMessageText');
+    expect(
+      edits.some((e) => (e.payload.text as string).includes('🆕 Черновик онбординга — Ромашка')),
+    ).toBe(true);
+    expect(calls.some((c) => c.method === 'deleteMessage')).toBe(false);
+  });
+
+  it('W4: доставка компактная — счётчики есть, полных таблиц KR нет', async () => {
+    const { bot, calls } = buildF0Bot();
+    await bot.handleUpdate(commandUpdate('/newclient'));
+    await bot.handleUpdate(documentUpdate('strategy.md'));
+    await bot.handleUpdate(commandUpdate('/draft'));
+
+    const finalEdit = calls.find(
+      (c) => c.method === 'editMessageText' && (c.payload.text as string).includes('🆕 Черновик'),
+    );
+    expect(finalEdit).toBeDefined();
+    const text = finalEdit!.payload.text as string;
+    expect(text).toContain('Извлечено: цели 1 · KR 1');
+    expect(text).toContain('/confirm');
+    expect(text).not.toContain('база: ');
+  });
+
+  it('W2: сбой сборки редактирует progress-сообщение в ошибку (не молчит)', async () => {
+    const { bot, calls } = buildF0Bot({
+      runF0FullDraft: ((async () => {
+        throw new Error('claude exploded');
+      }) as unknown) as BotDeps['runF0FullDraft'],
+    });
+    await bot.handleUpdate(commandUpdate('/newclient'));
+    await bot.handleUpdate(documentUpdate('strategy.md'));
+    await bot.handleUpdate(commandUpdate('/draft'));
+
+    const edits = calls.filter((c) => c.method === 'editMessageText');
+    expect(
+      edits.some((e) => (e.payload.text as string).includes('Не удалось собрать черновик')),
+    ).toBe(true);
+    expect(calls.some((c) => c.method === 'deleteMessage')).toBe(false);
+  });
+
+  it('маленький пакет → оценка «1–2 минуты»', async () => {
+    const { bot, calls } = buildF0Bot({
+      extractTextFromDocument: ((async () => ({
+        sourceName: 'mini.md',
+        kind: 'text',
+        text: 'x'.repeat(5_000),
+      })) as unknown) as BotDeps['extractTextFromDocument'],
+    });
+    await bot.handleUpdate(commandUpdate('/newclient'));
+    await bot.handleUpdate(documentUpdate('mini.md'));
+    await bot.handleUpdate(commandUpdate('/draft'));
+
+    const progress = calls.find(
+      (c) => c.method === 'sendMessage' && (c.payload.text as string).includes('Собираю черновик'),
+    );
+    expect(progress!.payload.text).toContain('1–2 минуты');
   });
 });

@@ -6,6 +6,7 @@ import {
   formatQueueAck,
   formatErrorMessage,
   formatDeliveryReport,
+  formatDeliveryReportCompact,
   formatFullDeliveryReport,
   formatPartialReportFallback,
   formatDeliveryPlainText,
@@ -225,6 +226,54 @@ describe('formatDeliveryReport (discriminated)', () => {
   it('partial:true → fallback', () => {
     const out = formatDeliveryReport(PARTIAL_FIXTURE);
     expect(out).toContain('Автоформатирование не удалось');
+  });
+});
+
+describe('formatDeliveryReportCompact (Story 8.3, W4)', () => {
+  const longReport = (): Extract<DeliveryReadyReport, { partial: false }> => ({
+    ...FULL_FIXTURE,
+    sections: [
+      { title: 'Решения', content: Array.from({ length: 40 }, (_, i) => `Пункт решения номер ${i + 1} с развёрнутым описанием деталей`).join('\n') },
+      { title: 'KR-статусы', content: Array.from({ length: 40 }, (_, i) => `🟢 KR-${i + 1} метрика на треке, комментарий по динамике недели`).join('\n') },
+    ],
+    commitments: Array.from({ length: 12 }, (_, i) => ({
+      who: `Топ ${i + 1}`,
+      what: `обязательство номер ${i + 1}`,
+      deadline: 'до 20.07',
+      quote: '',
+      status: 'open' as const,
+    })),
+  });
+
+  it('короткий отчёт проходит без изменений (полный формат)', () => {
+    const out = formatDeliveryReportCompact(FULL_FIXTURE, 'https://docs.google.com/spreadsheets/d/x/edit');
+    expect(out).toBe(formatDeliveryReport(FULL_FIXTURE));
+    expect(out).not.toContain('сокращён');
+  });
+
+  it('длинный отчёт → компакт: секции усечены, commitments ограничены, есть ссылка', () => {
+    const out = formatDeliveryReportCompact(longReport(), 'https://docs.google.com/spreadsheets/d/x/edit');
+    expect(out.length).toBeLessThan(TELEGRAM_SAFE_MARGIN);
+    expect(out).toContain('сокращён');
+    expect(out).toContain('Таблица клиента');
+    expect(out).toContain('ещё 32 строк'); // 40 - 8 по секции
+    expect(out).toContain('… и ещё 4'); // 12 - 8 commitments
+    expect(out).not.toContain('Пункт решения номер 20');
+    // Header/summary/draft сохранены.
+    expect(out).toContain('📋 Жанель │ Продажи │ Нед\\. 18');
+    expect(out).toContain('Конверсия 28%');
+    expect(out).toContain('📱');
+  });
+
+  it('без sheetsUrl — компакт без ссылки, но с пометкой о сокращении', () => {
+    const out = formatDeliveryReportCompact(longReport());
+    expect(out).toContain('сокращён');
+    expect(out).not.toContain('Таблица клиента');
+  });
+
+  it('partial-отчёт не сжимается (диагностический дамп)', () => {
+    const out = formatDeliveryReportCompact(PARTIAL_FIXTURE, 'https://docs.google.com/spreadsheets/d/x/edit');
+    expect(out).toBe(formatDeliveryReport(PARTIAL_FIXTURE));
   });
 });
 
