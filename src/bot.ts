@@ -1381,6 +1381,7 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
       session.gaps = computeF0Gaps(result.extraction);
       session.gapIndex = 0;
       session.schedule = null;
+      session.retryGapIndex = undefined; // W6: новая очередь — старое ожидание повтора не властно
       await saveF0Session(chatId, session);
       f0Log.info(
         {
