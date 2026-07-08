@@ -479,7 +479,14 @@ export function recordOpsEvent(level: OpsLevel, p: OpsEventPayload): void {
     );
   }
 
-  if (level === 'info' && p.step === 'bot.report.completed' && p.status === 'ok') {
+  // Канонический успех пайплайна → сброс down-watchdog. Считаем и F1-доставку отчёта,
+  // и успешную сборку F0-черновика: иначе в периоды без F1-отчётов (напр. онбординг
+  // новых клиентов) watchdog ложно рапортует «Pipeline down» по протухшему lastSuccessAt.
+  if (
+    level === 'info' &&
+    p.status === 'ok' &&
+    (p.step === 'bot.report.completed' || p.step === 'f0.draft_delivered')
+  ) {
     _updateWatchdogState({ lastSuccessAt: new Date().toISOString() });
   }
 }

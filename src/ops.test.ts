@@ -220,6 +220,29 @@ describe('recordOpsEvent (Story 1.9)', () => {
     expect(after.escalatedToAidarAt).toBeNull();
   });
 
+  it("info: f0.draft_delivered status='ok' → watchdog.lastSuccessAt update (F0 тоже успех)", async () => {
+    setOpsSheetsWriter(vi.fn().mockResolvedValue(undefined));
+    _setWatchdogStateForTest({
+      lastSuccessAt: '2026-05-21T08:00:00.000Z',
+      lastFailureAt: '2026-05-21T10:00:00.000Z',
+      lastFailureReason: 'F0/f0.draft_failed',
+      lastRepeatAlertAt: '2026-05-21T11:00:00.000Z',
+      escalatedToAidarAt: '2026-05-21T11:00:00.000Z',
+    });
+
+    recordOpsEvent('info', {
+      pipeline: 'F0',
+      step: 'f0.draft_delivered',
+      status: 'ok',
+      context: { chatId: 1, sessionId: 'x', draftId: 'd', files: 4 },
+    });
+    await new Promise((r) => setImmediate(r));
+
+    const after = _getWatchdogStateForTest()!;
+    expect(after.lastSuccessAt).not.toBe('2026-05-21T08:00:00.000Z');
+    expect(after.lastRepeatAlertAt).toBeNull();
+  });
+
   it('warn level НЕ обновляет watchdog state', async () => {
     _setWatchdogStateForTest({
       lastSuccessAt: '2026-05-21T08:00:00.000Z',

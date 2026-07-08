@@ -1090,6 +1090,16 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
         },
         'f0 draft delivered',
       );
+      // Story 1.9 fix: успешная сборка F0-черновика — канонический успех пайплайна,
+      // сбрасывает down-watchdog (иначе ложный «Pipeline down», т.к. считался лишь F1).
+      if (sentAll) {
+        recordOpsEvent('info', {
+          pipeline: 'F0',
+          step: 'f0.draft_delivered',
+          status: 'ok',
+          context: { chatId, sessionId: session.id, draftId, files: sourceNames.length },
+        });
+      }
       await askNextF0Gap(ctx, session);
     } catch (err) {
       if (err instanceof F0OnboardingError) {
