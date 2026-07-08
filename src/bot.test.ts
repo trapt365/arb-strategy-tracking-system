@@ -1843,3 +1843,112 @@ describe('bot — меню, клиенты и защита сессии (Story 8
     expect(noSession).toBeDefined();
   });
 });
+
+// ─── Story 8.6: качество диалога дозаполнения — группировка по KR + валидация ──
+
+describe('bot — диалог дозаполнения: группы KR и числовая валидация (Story 8.6)', () => {
+  beforeEach(cleanOnboardingArtifacts);
+  afterEach(cleanOnboardingArtifacts);
+
+  // KR без базы и ответственного → очередь: kr_base(O1.1), kr_owner(O1.1), schedule.
+  function gappyExtraction(): F0FullExtraction {
+    return f0Extraction({
+      objectives: [
+        {
+          title: 'O1',
+          krs: [
+            {
+              formulation: 'Выручка вырастет',
+              base: null,
+              target: '20 млн',
+              owner: null,
+              deadline: null,
+            },
+          ],
+        },
+      ],
+    } as Partial<F0FullExtraction>);
+  }
+
+  function buildFillBot() {
+    return buildBot({
+      extractTextFromDocument: ((async () => ({
+        sourceName: 'strategy.md',
+        kind: 'text',
+        text: 'x'.repeat(5_000),
+      })) as unknown) as BotDeps['extractTextFromDocument'],
+      runF0FullDraft: ((async () => f0DraftResult(gappyExtraction())) as unknown) as BotDeps['runF0FullDraft'],
+    });
+  }
+
+  async function toFilling(bot: ReturnType<typeof buildBot>['bot']): Promise<void> {
+    await bot.handleUpdate(commandUpdate('/newclient'));
+    await bot.handleUpdate(documentUpdate('strategy.md'));
+    await bot.handleUpdate(commandUpdate('/draft'));
+  }
+
+  const texts = (calls: ApiCall[], from = 0): string[] =>
+    calls
+      .slice(from)
+      .filter((c) => c.method === 'sendMessage')
+      .map((c) => c.payload.text as string);
+
+  it('W5: первый вопрос группы несёт заголовок 📍 KR, второй — короткий без заголовка', async () => {
+    const { bot, calls } = buildFillBot();
+    await toFilling(bot);
+
+    const first = texts(calls).find((t) => t.includes('(1/3)'))!;
+    expect(first).toContain('📍 KR O1.1 «Выручка вырастет» — не хватает: база «с X», ответственный.');
+    expect(first).toContain('❓ (1/3) База «с X» для KR O1.1');
+
+    // Числовой ответ на базу принят сразу → второй вопрос той же группы, без 📍.
+    const before = calls.length;
+    await bot.handleUpdate(plainTextUpdate('10 млн'));
+    const second = texts(calls, before).find((t) => t.includes('(2/3)'))!;
+    expect(second).not.toContain('📍');
+    expect(second).toContain('Кто ответственный за KR O1.1');
+  });
+
+  it('W6: нечисловой ответ на базу → один переспрос; повторный ответ принимается как есть', async () => {
+    const { bot, calls } = buildFillBot();
+    await toFilling(bot);
+
+    let before = calls.length;
+    await bot.handleUpdate(plainTextUpdate('нет данных'));
+    const retry = texts(calls, before).find((t) => t.includes('Не вижу числа'));
+    expect(retry).toBeDefined();
+    expect(retry).toContain('/skip');
+    // Очередь не продвинулась — вопрос (2/3) не задан.
+    expect(texts(calls, before).some((t) => t.includes('(2/3)'))).toBe(false);
+
+    // Повтор того же ответа — принимается как есть, очередь идёт дальше.
+    before = calls.length;
+    await bot.handleUpdate(plainTextUpdate('нет данных'));
+    expect(texts(calls, before).some((t) => t.includes('Не вижу числа'))).toBe(false);
+    expect(texts(calls, before).some((t) => t.includes('(2/3)'))).toBe(true);
+  });
+
+  it('W6: валидация не трогает нечисловые поля (ответственный) и снимается после ответа', async () => {
+    const { bot, calls } = buildFillBot();
+    await toFilling(bot);
+
+    await bot.handleUpdate(plainTextUpdate('с 10 до 20 млн')); // база: цифры есть → принято
+    const before = calls.length;
+    await bot.handleUpdate(plainTextUpdate('Айгерим')); // ответственный: текст без цифр — ок
+    expect(texts(calls, before).some((t) => t.includes('Не вижу числа'))).toBe(false);
+    expect(texts(calls, before).some((t) => t.includes('(3/3)'))).toBe(true);
+  });
+
+  it('W6: переспрос переживает рестарт (retryGapIndex в персисте) — повтор после рестарта принят', async () => {
+    const first = buildFillBot();
+    await toFilling(first.bot);
+    await first.bot.handleUpdate(plainTextUpdate('нет данных')); // → переспрос, retryGapIndex=0
+
+    // «Рестарт»: новый инстанс бота восстанавливает сессию с диска.
+    const second = buildFillBot();
+    const before = second.calls.length;
+    await second.bot.handleUpdate(plainTextUpdate('нет данных'));
+    expect(texts(second.calls, before).some((t) => t.includes('Не вижу числа'))).toBe(false);
+    expect(texts(second.calls, before).some((t) => t.includes('(2/3)'))).toBe(true);
+  });
+});

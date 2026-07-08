@@ -25,6 +25,8 @@ export interface F0Gap {
   ref: string;
   /** Текст вопроса трекеру. */
   question: string;
+  /** Story 8.6 (W5): заголовок сущности — только на первом вопросе группы (KR целиком). */
+  header?: string;
 }
 
 /**
@@ -36,10 +38,20 @@ export function computeF0Gaps(extraction: F0FullExtraction): F0Gap[] {
   const gaps: F0Gap[] = [];
 
   // KR: база / цель / ответственный — используем ту же логику инварианта 1.
+  // Story 8.6 (W5): вопросы одного KR идут подряд под общим заголовком сущности —
+  // заголовок кладём на ПЕРВЫЙ вопрос группы, дальше короткие вопросы с ref.
   const krIssues = markBlockingKrIssues(extraction);
+  const GAP_LABELS: Record<'no_base' | 'no_target' | 'no_owner', string> = {
+    no_base: 'база «с X»',
+    no_target: 'цель «до Y»',
+    no_owner: 'ответственный',
+  };
   for (const issue of krIssues) {
     const kr = extraction.objectives[issue.objectiveIndex]?.krs[issue.krIndex];
     const short = kr ? truncate(kr.formulation, 60) : issue.ref;
+    const missing = issue.reasons.map((r) => GAP_LABELS[r]).join(', ');
+    const header = `📍 KR ${issue.ref} «${short}» — не хватает: ${missing}.`;
+    const firstOfKr = gaps.length;
     for (const reason of issue.reasons) {
       if (reason === 'no_base') {
         gaps.push({
@@ -47,7 +59,7 @@ export function computeF0Gaps(extraction: F0FullExtraction): F0Gap[] {
           objectiveIndex: issue.objectiveIndex,
           krIndex: issue.krIndex,
           ref: issue.ref,
-          question: `Базовое значение «с X» для KR ${issue.ref} «${short}»? (текущее значение метрики)`,
+          question: `База «с X» для KR ${issue.ref} — текущее значение метрики?`,
         });
       } else if (reason === 'no_target') {
         gaps.push({
@@ -55,7 +67,7 @@ export function computeF0Gaps(extraction: F0FullExtraction): F0Gap[] {
           objectiveIndex: issue.objectiveIndex,
           krIndex: issue.krIndex,
           ref: issue.ref,
-          question: `Целевое значение «до Y» для KR ${issue.ref} «${short}»?`,
+          question: `Цель «до Y» для KR ${issue.ref}?`,
         });
       } else if (reason === 'no_owner') {
         gaps.push({
@@ -63,10 +75,11 @@ export function computeF0Gaps(extraction: F0FullExtraction): F0Gap[] {
           objectiveIndex: issue.objectiveIndex,
           krIndex: issue.krIndex,
           ref: issue.ref,
-          question: `Кто ответственный за KR ${issue.ref} «${short}»? (имя)`,
+          question: `Кто ответственный за KR ${issue.ref}? (имя)`,
         });
       }
     }
+    if (gaps.length > firstOfKr) gaps[firstOfKr]!.header = header;
   }
 
   // Гипотезы без метрики (инвариант 2).
@@ -106,6 +119,20 @@ export function computeF0Gaps(extraction: F0FullExtraction): F0Gap[] {
 }
 
 // (truncate — общий хелпер из telegram-formatter)
+
+// === Story 8.6 (W6): мягкая валидация числовых ответов ===
+
+/** Пробел ждёт числовое значение (база «с X» / цель «до Y» KR). */
+export function needsNumericAnswer(gap: F0Gap): boolean {
+  return gap.kind === 'kr_base' || gap.kind === 'kr_target';
+}
+
+/**
+ * Ответ похож на числовой — критерий тот же, что у инварианта 1
+ * (markBlockingKrIssues/hasNumeric): есть хотя бы одна цифра.
+ * «70% → 90%», «15 000» проходят; «нет данных» — нет.
+ */
+export const looksNumericAnswer = (value: string): boolean => /\d/.test(value);
 
 /**
  * Применяет ответ трекера к черновику (мутирует extraction). Возвращает true,

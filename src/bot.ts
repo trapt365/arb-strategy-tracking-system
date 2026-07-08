@@ -37,7 +37,13 @@ import {
   deleteF0Session,
   markBlockingKrIssues,
 } from './f0-onboarding.js';
-import { computeF0Gaps, applyF0Answer, type F0Gap } from './f0-fill.js';
+import {
+  computeF0Gaps,
+  applyF0Answer,
+  needsNumericAnswer,
+  looksNumericAnswer,
+  type F0Gap,
+} from './f0-fill.js';
 import { createClientSpreadsheet as defaultCreateClientSpreadsheet } from './f0-sheets.js';
 import {
   buildClientCard,
@@ -247,6 +253,9 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
     schedule: string | null;
     // Story 7.4: id созданной Google Sheets (если уже создана) — retry без дублей.
     spreadsheetId?: string;
+    // Story 8.6 (W6): по этому пробелу уже был переспрос числового формата —
+    // следующий непустой ответ принимается как есть (не блокируем, максимум 1 переспрос).
+    retryGapIndex?: number;
   }
   const f0Sessions = new Map<number, F0Session>();
 
@@ -264,6 +273,7 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
       gapIndex: s.gapIndex,
       schedule: s.schedule,
       ...(s.spreadsheetId !== undefined ? { spreadsheetId: s.spreadsheetId } : {}),
+      ...(s.retryGapIndex !== undefined ? { retryGapIndex: s.retryGapIndex } : {}),
       updatedAt: now().toISOString(),
     });
   }
@@ -289,6 +299,7 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
       gapIndex: persisted.gapIndex,
       schedule: persisted.schedule,
       spreadsheetId: persisted.spreadsheetId,
+      retryGapIndex: persisted.retryGapIndex,
     };
     f0Sessions.set(chatId, restored);
     f0Log.info(
@@ -1444,7 +1455,9 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
     if (session.gapIndex < session.gaps.length) {
       const gap = session.gaps[session.gapIndex]!;
       const pos = `(${session.gapIndex + 1}/${session.gaps.length})`;
-      await ctx.reply(`❓ ${pos} ${gap.question}\n${F0_FILL_HINT}`).catch(() => {});
+      // Story 8.6 (W5): заголовок сущности перед первым вопросом группы (KR целиком).
+      const header = gap.header !== undefined ? `${gap.header}\n` : '';
+      await ctx.reply(`${header}❓ ${pos} ${gap.question}\n${F0_FILL_HINT}`).catch(() => {});
     } else {
       await ctx
         .reply('Все вопросы пройдены. Проверь черновик и заверши онбординг: /confirm.')
@@ -1460,6 +1473,28 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
       return;
     }
     const gap = session.gaps[session.gapIndex]!;
+    // Story 8.6 (W6): мягкая валидация числовых полей (база/цель KR) — один переспрос
+    // с подсказкой формата; повторный ответ принимается как есть (данные бывают «нет данных»).
+    if (
+      needsNumericAnswer(gap) &&
+      text.trim().length > 0 &&
+      !looksNumericAnswer(text) &&
+      session.retryGapIndex !== session.gapIndex
+    ) {
+      session.retryGapIndex = session.gapIndex;
+      await saveF0Session(chatId, session);
+      f0Log.info(
+        { step: 'f0.gap_retry', chatId, sessionId: session.id, kind: gap.kind, ref: gap.ref },
+        'f0 gap numeric retry',
+      );
+      await ctx
+        .reply(
+          '🔁 Не вижу числа в ответе, а тут нужно значение метрики (например «15 000» или «9%»).\n' +
+            'Если так и надо (например «нет данных») — отправь ответ ещё раз, приму как есть. Или пропусти: /skip.',
+        )
+        .catch(() => {});
+      return; // очередь не продвигаем — ждём повтор или новый ответ
+    }
     if (gap.kind === 'schedule') {
       const value = text.trim();
       if (value.length === 0) {
@@ -1476,6 +1511,7 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
         return;
       }
     }
+    session.retryGapIndex = undefined;
     session.gapIndex += 1;
     await saveF0Session(chatId, session);
     f0Log.info(
@@ -1493,6 +1529,7 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
     }
     if (session.gapIndex < session.gaps.length) {
       const gap = session.gaps[session.gapIndex]!;
+      session.retryGapIndex = undefined; // W6: пропуск снимает ожидание повтора
       session.gapIndex += 1;
       await saveF0Session(ctx.chat.id, session);
       f0Log.info(

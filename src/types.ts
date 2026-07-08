@@ -347,6 +347,9 @@ export const F0GapSchema = z.object({
   participantIndex: z.number().int().optional(),
   ref: z.string(),
   question: z.string(),
+  // Story 8.6 (W5): заголовок сущности на первом вопросе группы (KR целиком).
+  // Optional — сессии, персистнутые до 8.6, валидны без него.
+  header: z.string().optional(),
 });
 
 // Персист сессии онбординга — переживает рестарт бота (AC3 Story 7.3).
@@ -362,6 +365,9 @@ export const F0PersistedSessionSchema = z.object({
   schedule: z.string().nullable(),
   // Story 7.4: id созданной Google Sheets — переживает рестарт, гарантирует retry без дублей.
   spreadsheetId: z.string().optional(),
+  // Story 8.6 (W6): индекс пробела, по которому уже был переспрос числового формата —
+  // рестарт посреди переспроса не начинает валидацию заново. Optional (совместимость 7.3).
+  retryGapIndex: z.number().int().nonnegative().optional(),
   updatedAt: z.string().min(1),
 });
 export type F0PersistedSession = z.infer<typeof F0PersistedSessionSchema>;

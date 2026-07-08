@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { computeF0Gaps, applyF0Answer } from './f0-fill.js';
+import {
+  computeF0Gaps,
+  applyF0Answer,
+  needsNumericAnswer,
+  looksNumericAnswer,
+} from './f0-fill.js';
 import type { F0FullExtraction } from './types.js';
 
 function extraction(overrides: Partial<F0FullExtraction> = {}): F0FullExtraction {
@@ -39,6 +44,38 @@ describe('computeF0Gaps — спрашиваем только отсутству
     // Ничего не спрашиваем про заполненный KR1 / гипотезу 1 / участника с контактом.
     expect(gaps.find((g) => g.kind === 'participant_contact')!.ref).toBe('Жанель');
     expect(gaps.find((g) => g.kind === 'hypo_metric')!.ref).toBe('H2');
+  });
+
+  it('8.6 (W5): вопросы одного KR идут подряд, заголовок сущности — только на первом', () => {
+    const ex = extraction({
+      objectives: [
+        {
+          title: 'O1',
+          krs: [
+            // KR1: нет базы, цели и ответственного → 3 вопроса подряд
+            { formulation: 'NPS вырастет', base: null, target: null, owner: null, deadline: null },
+            // KR2: нет только ответственного
+            { formulation: 'EBITDA 15%', base: '9%', target: '15%', owner: null, deadline: '2026' },
+          ],
+        },
+      ],
+    });
+    const gaps = computeF0Gaps(ex);
+    const krGaps = gaps.filter((g) => g.kind.startsWith('kr_'));
+    expect(krGaps.map((g) => `${g.ref}:${g.kind}`)).toEqual([
+      'O1.1:kr_base',
+      'O1.1:kr_target',
+      'O1.1:kr_owner',
+      'O1.2:kr_owner',
+    ]);
+    // Заголовок группы: первый вопрос каждого KR, с формулировкой и списком пробелов.
+    expect(krGaps[0]!.header).toContain('📍 KR O1.1 «NPS вырастет»');
+    expect(krGaps[0]!.header).toContain('не хватает: база «с X», цель «до Y», ответственный');
+    expect(krGaps[1]!.header).toBeUndefined();
+    expect(krGaps[2]!.header).toBeUndefined();
+    expect(krGaps[3]!.header).toContain('📍 KR O1.2 «EBITDA 15%»');
+    // Короткие вопросы несут ref — контекст не теряется при /resume посреди группы.
+    expect(krGaps[1]!.question).toContain('O1.1');
   });
 
   it('always ends with a schedule question even when nothing else is missing', () => {
@@ -93,5 +130,23 @@ describe('applyF0Answer — запись ответа в черновик', () =
     const gap = computeF0Gaps(ex).find((g) => g.kind === 'kr_base')!;
     expect(applyF0Answer(ex, gap, '   ')).toBe(false);
     expect(ex.objectives[0]!.krs[1]!.base).toBeNull();
+  });
+});
+
+describe('8.6 (W6): валидация числовых ответов', () => {
+  it('needsNumericAnswer — только база и цель KR', () => {
+    const gaps = computeF0Gaps(extraction());
+    expect(needsNumericAnswer(gaps.find((g) => g.kind === 'kr_base')!)).toBe(true);
+    expect(needsNumericAnswer(gaps.find((g) => g.kind === 'kr_owner')!)).toBe(false);
+    expect(needsNumericAnswer(gaps.find((g) => g.kind === 'hypo_metric')!)).toBe(false);
+    expect(needsNumericAnswer(gaps.find((g) => g.kind === 'schedule')!)).toBe(false);
+  });
+
+  it('looksNumericAnswer — критерий инварианта 1: есть цифра', () => {
+    expect(looksNumericAnswer('15 000')).toBe(true);
+    expect(looksNumericAnswer('70% → 90%')).toBe(true);
+    expect(looksNumericAnswer('с 9% до 15%')).toBe(true);
+    expect(looksNumericAnswer('нет данных')).toBe(false);
+    expect(looksNumericAnswer('примерно как сейчас')).toBe(false);
   });
 });
