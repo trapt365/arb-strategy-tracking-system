@@ -32,6 +32,24 @@ const ConfigSchema = z.object({
 
   GEONLINE_F0_SHEET_ID: z.string().min(1, 'GEONLINE_F0_SHEET_ID is required'),
 
+  // Story 7.4: F0 онбординг → создание Google Sheets по шаблону v2.0.
+  // Пусто = фича создания таблицы выключена (бот сообщит трекеру и остановится на ready).
+  // fileId эталонного spreadsheet «Стратегический трекинг v2.0» для Drive files.copy.
+  F0_SHEETS_TEMPLATE_ID: z.string().default(''),
+  // Кому выдать доступ writer к созданной таблице (comma-separated e-mail'ы трекера).
+  F0_SHEETS_SHARE_EMAILS: z.string().default(''),
+  // Необязательная папка Drive, куда класть копию (иначе — корень Drive сервис-аккаунта).
+  F0_SHEETS_FOLDER_ID: z.string().default(''),
+
+  // Story 7.4 (fix): OAuth-креды реального пользователя для write-операций Drive/Sheets.
+  // Нужны, т.к. сервис-аккаунт не может владеть файлами в Drive (403 storage quota).
+  // Заданы все три → files.copy/запись идут от имени пользователя (файлы в его квоте).
+  // Пусто → fallback на сервис-аккаунт (работает только с Shared Drive). Получить refresh
+  // token: npx tsx scripts/google-oauth-setup.ts (одноразовый consent).
+  GOOGLE_OAUTH_CLIENT_ID: z.string().default(''),
+  GOOGLE_OAUTH_CLIENT_SECRET: z.string().default(''),
+  GOOGLE_OAUTH_REFRESH_TOKEN: z.string().default(''),
+
   // Telegram bot — Story 1.5: whitelist + tuning
   TELEGRAM_TRACKER_CHAT_IDS: z
     .string()

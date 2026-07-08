@@ -355,6 +355,49 @@ export const F0PersistedSessionSchema = z.object({
   gaps: z.array(F0GapSchema),
   gapIndex: z.number().int().nonnegative(),
   schedule: z.string().nullable(),
+  // Story 7.4: id созданной Google Sheets — переживает рестарт, гарантирует retry без дублей.
+  spreadsheetId: z.string().optional(),
   updatedAt: z.string().min(1),
 });
 export type F0PersistedSession = z.infer<typeof F0PersistedSessionSchema>;
+
+// === Story 7.5: карточка клиента + чеклист готовности к неделе 1 ===
+
+export const ClientCardParticipantSchema = z.object({
+  name: z.string().min(1),
+  role: z.string().nullable(),
+  // OKR-направление — objective.title, чей KR ведёт участник (best-effort матч по owner).
+  okrDirection: z.string().nullable(),
+  telegram: z.string().nullable(),
+});
+export type ClientCardParticipant = z.infer<typeof ClientCardParticipantSchema>;
+
+export const ClientCardSchema = z.object({
+  clientId: z.string().min(1),
+  company: z.string(),
+  // Отрасль не собирается в F0 (инвариант 3 — не выдумываем) → null до ручного заполнения.
+  industry: z.string().nullable(),
+  participants: z.array(ClientCardParticipantSchema),
+  ceo: z.string().nullable(),
+  trackerChatId: z.number().int().nullable(),
+  schedule: z.string().nullable(),
+  spreadsheetId: z.string().nullable(),
+  sheetsUrl: z.string().nullable(),
+  startDate: z.string(), // ISO-дата старта онбординга
+  createdAt: z.string(),
+});
+export type ClientCard = z.infer<typeof ClientCardSchema>;
+
+// === Story 7.6: минимальная мультиклиентность — реестр clientId→sheetId ===
+
+export const ClientRegistryEntrySchema = z.object({
+  sheetId: z.string().min(1),
+  name: z.string(),
+  // Топ-менеджер клиента (для F1 /report) — имя из карточки; опционально.
+  topName: z.string().optional(),
+  createdAt: z.string(),
+});
+export type ClientRegistryEntry = z.infer<typeof ClientRegistryEntrySchema>;
+
+export const ClientRegistrySchema = z.record(z.string(), ClientRegistryEntrySchema);
+export type ClientRegistry = z.infer<typeof ClientRegistrySchema>;

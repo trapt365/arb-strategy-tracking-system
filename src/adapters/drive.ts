@@ -8,7 +8,11 @@ import { pipeline } from 'node:stream/promises';
 import { google } from 'googleapis';
 import mimeTypes from 'mime-types';
 import type { Logger } from '../logger.js';
-import { loadServiceAccountCredentials } from '../utils/google-auth.js';
+import {
+  loadServiceAccountCredentials,
+  isGoogleOAuthConfigured,
+  createGoogleOAuthClient,
+} from '../utils/google-auth.js';
 import {
   TranscriptDownloadError,
   type TranscriptDownloadCode,
@@ -415,6 +419,31 @@ export async function createDriveClient(): Promise<ReturnType<typeof google.driv
 
 export function _resetDriveClientForTest(): void {
   cachedDrive = null;
+}
+
+// Story 7.4: write-scoped Drive client — files.copy (шаблон v2.0) + permissions.create
+// (доступ трекеру). Отдельный клиент/скоуп: путь скачивания (readonly) не трогаем.
+// Если заданы OAuth-креды пользователя — идём от его имени (файлы в его квоте, обход
+// 403 storage quota сервис-аккаунта); иначе fallback на сервис-аккаунт (Shared Drive).
+let cachedDriveWrite: ReturnType<typeof google.drive> | null = null;
+
+export async function createDriveWriteClient(): Promise<ReturnType<typeof google.drive>> {
+  if (cachedDriveWrite) return cachedDriveWrite;
+  if (isGoogleOAuthConfigured()) {
+    cachedDriveWrite = google.drive({ version: 'v3', auth: createGoogleOAuthClient() });
+    return cachedDriveWrite;
+  }
+  const credentials = await loadServiceAccountCredentials();
+  const auth = new google.auth.GoogleAuth({
+    credentials,
+    scopes: ['https://www.googleapis.com/auth/drive'],
+  });
+  cachedDriveWrite = google.drive({ version: 'v3', auth });
+  return cachedDriveWrite;
+}
+
+export function _resetDriveWriteClientForTest(): void {
+  cachedDriveWrite = null;
 }
 
 export async function _readTempForTest(filePath: string): Promise<Buffer> {

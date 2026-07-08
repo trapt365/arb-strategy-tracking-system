@@ -1,6 +1,31 @@
 import { stat, readFile } from 'node:fs/promises';
+import { google, type Auth } from 'googleapis';
 import { config } from '../config.js';
 import { TranscriptConfigError } from '../errors.js';
+
+// Story 7.4 (fix): OAuth2 пользователя для write-операций Drive/Sheets. Сервис-аккаунт
+// не может владеть Drive-файлами (403 quota), поэтому копию/запись делаем от имени
+// реального пользователя. Scopes зашиты в refresh token на этапе consent (см.
+// scripts/google-oauth-setup.ts) — здесь их передавать не нужно.
+
+/** Все три OAuth-переменные заданы → используем OAuth-пользователя вместо сервис-аккаунта. */
+export function isGoogleOAuthConfigured(): boolean {
+  return (
+    config.GOOGLE_OAUTH_CLIENT_ID.trim() !== '' &&
+    config.GOOGLE_OAUTH_CLIENT_SECRET.trim() !== '' &&
+    config.GOOGLE_OAUTH_REFRESH_TOKEN.trim() !== ''
+  );
+}
+
+/** OAuth2-клиент с refresh token (googleapis сам обновляет access token). */
+export function createGoogleOAuthClient(): Auth.OAuth2Client {
+  const client = new google.auth.OAuth2(
+    config.GOOGLE_OAUTH_CLIENT_ID.trim(),
+    config.GOOGLE_OAUTH_CLIENT_SECRET.trim(),
+  );
+  client.setCredentials({ refresh_token: config.GOOGLE_OAUTH_REFRESH_TOKEN.trim() });
+  return client;
+}
 
 export interface ServiceAccountCredentials {
   client_email: string;

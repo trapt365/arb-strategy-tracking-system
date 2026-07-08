@@ -1,9 +1,12 @@
 import { google, type sheets_v4 } from 'googleapis';
 import { ZodError } from 'zod';
-import { config } from '../config.js';
 import { logger as rootLogger, type Logger } from '../logger.js';
 import { withRetry } from '../utils/retry.js';
-import { loadServiceAccountCredentials } from '../utils/google-auth.js';
+import {
+  loadServiceAccountCredentials,
+  isGoogleOAuthConfigured,
+  createGoogleOAuthClient,
+} from '../utils/google-auth.js';
 import { alertOps } from '../ops.js';
 import {
   ClientContextSchema,
@@ -15,6 +18,7 @@ import {
 import { SheetsAdapterError, TranscriptConfigError } from '../errors.js';
 import type { OpsLogRow } from '../ops.js';
 import { assertClientId, ClientIdError } from '../utils/client-id.js';
+import { getClientSheetId } from '../client-registry.js';
 
 export { SheetsAdapterError } from '../errors.js';
 export type { SheetsAdapterCode } from '../errors.js';
@@ -98,9 +102,24 @@ export async function getSheetsClient(): Promise<sheets_v4.Sheets> {
 
 export function _resetSheetsClientForTest(): void {
   cachedSheets = null;
+  cachedSheetsWrite = null;
 }
 
-function resolveSheetId(clientId: string): string {
+// Story 7.4 (fix): write-scoped Sheets client для записи в СОЗДАННУЮ таблицу клиента.
+// Если Drive-копию делает OAuth-пользователь, файл принадлежит ему, и сервис-аккаунт
+// к нему доступа не имеет — поэтому запись данных тоже идёт под OAuth. Без OAuth —
+// fallback на общий сервис-аккаунт-клиент (getSheetsClient).
+let cachedSheetsWrite: sheets_v4.Sheets | null = null;
+
+export async function createSheetsWriteClient(): Promise<sheets_v4.Sheets> {
+  if (!isGoogleOAuthConfigured()) return getSheetsClient();
+  if (cachedSheetsWrite) return cachedSheetsWrite;
+  cachedSheetsWrite = google.sheets({ version: 'v4', auth: createGoogleOAuthClient() });
+  return cachedSheetsWrite;
+}
+
+// Story 7.6: резолв через реестр clientId→sheetId (geonline — fallback на config).
+async function resolveSheetId(clientId: string): Promise<string> {
   try {
     assertClientId(clientId);
   } catch (err) {
@@ -113,10 +132,11 @@ function resolveSheetId(clientId: string): string {
     }
     throw err;
   }
-  if (clientId !== 'geonline') {
+  const sheetId = await getClientSheetId(clientId);
+  if (sheetId === undefined) {
     throw new SheetsAdapterError('auth', { reason: 'unknown_clientId', clientId });
   }
-  return config.GEONLINE_F0_SHEET_ID;
+  return sheetId;
 }
 
 const snakeToCamel = (s: string): string =>
@@ -296,7 +316,7 @@ export async function readClientContext(opts: ReadClientContextOpts): Promise<Cl
     step: 'sheets.read',
     clientId: opts.clientId,
   });
-  const sheetId = resolveSheetId(opts.clientId);
+  const sheetId = await resolveSheetId(opts.clientId);
 
   const startMs = Date.now();
   let status: 'ok' | 'error' = 'error';
@@ -417,26 +437,13 @@ export async function readClientContext(opts: ReadClientContextOpts): Promise<Cl
  * Failures propagate as rejected Promises so callers (ops.ts) can log warnings —
  * we never call `alertOps` from here (would create a recursive loop).
  */
-export async function appendOpsLog(
-  row: OpsLogRow,
-  clientIdForSheet: string = 'geonline',
+const OPS_LOGS_FALLBACK_CLIENT = 'geonline';
+
+async function appendOpsLogToSheetId(
+  sheetId: string,
+  values: (string | number)[][],
 ): Promise<void> {
-  const sheetId = resolveSheetId(clientIdForSheet);
   const sheets = await getSheetsClient();
-  const values: (string | number)[][] = [
-    [
-      row.timestamp,
-      row.pipeline,
-      row.step,
-      row.clientId,
-      row.durationMs === '' ? '' : String(row.durationMs),
-      row.status,
-      row.level,
-      row.message,
-      row.errorCode,
-      row.contextJson,
-    ],
-  ];
   try {
     await withRetry(
       () =>
@@ -454,7 +461,64 @@ export async function appendOpsLog(
       },
     );
   } catch (err) {
-    const mapped = mapGoogleApiError(err, sheetId);
+    throw mapGoogleApiError(err, sheetId);
+  }
+}
+
+export async function appendOpsLog(
+  row: OpsLogRow,
+  clientIdForSheet: string = OPS_LOGS_FALLBACK_CLIENT,
+): Promise<void> {
+  // Резолв целевой таблицы вне fallback: неизвестный clientId — это ошибка вызова,
+  // она должна всплыть, а не молча уйти в geonline.
+  const sheetId = await resolveSheetId(clientIdForSheet);
+  const values: (string | number)[][] = [
+    [
+      row.timestamp,
+      row.pipeline,
+      row.step,
+      row.clientId,
+      row.durationMs === '' ? '' : String(row.durationMs),
+      row.status,
+      row.level,
+      row.message,
+      row.errorCode,
+      row.contextJson,
+    ],
+  ];
+  try {
+    await appendOpsLogToSheetId(sheetId, values);
+  } catch (err) {
+    const mapped = err instanceof SheetsAdapterError ? err : mapGoogleApiError(err, sheetId);
+    // Story 7.6: у клиентской таблицы может не быть листа `_ops_logs` (он гарантированно
+    // есть только в инфра-таблице geonline). Чтобы не терять ops-наблюдаемость, при сбое
+    // записи в таблицу клиента дублируем в geonline.
+    if (clientIdForSheet !== OPS_LOGS_FALLBACK_CLIENT) {
+      rootLogger.warn(
+        { step: 'ops.appendOpsLog.fallback', eventStep: row.step, clientIdForSheet, err: mapped },
+        'ops log append to client sheet failed — falling back to geonline',
+      );
+      try {
+        const fallbackSheetId = await resolveSheetId(OPS_LOGS_FALLBACK_CLIENT);
+        await appendOpsLogToSheetId(fallbackSheetId, values);
+        return;
+      } catch (fallbackErr) {
+        const fallbackMapped =
+          fallbackErr instanceof SheetsAdapterError
+            ? fallbackErr
+            : mapGoogleApiError(fallbackErr, '');
+        rootLogger.warn(
+          {
+            step: 'ops.appendOpsLog.failed',
+            eventStep: row.step,
+            err: fallbackMapped,
+            ops_log_append_failed_total: 1,
+          },
+          'ops log append failed (client sheet + geonline fallback)',
+        );
+        throw fallbackMapped;
+      }
+    }
     rootLogger.warn(
       {
         step: 'ops.appendOpsLog.failed',

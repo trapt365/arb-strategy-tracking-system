@@ -164,3 +164,38 @@ export class F0OnboardingError extends Error {
     this.name = 'F0OnboardingError';
   }
 }
+
+// === Story 7.4: создание Google Sheets клиента по шаблону v2.0 ===
+
+export type F0SheetsCode =
+  | 'template_not_configured' // F0_SHEETS_TEMPLATE_ID пуст — фича выключена
+  | 'copy_failed' // Drive files.copy не удался (таблица ещё не создана — retry безопасен)
+  | 'sheet_missing' // в копии нет ожидаемого листа (_okr/_stakeholder_map)
+  | 'header_missing' // в листе нет ожидаемого заголовка колонки
+  | 'populate_failed' // запись данных не удалась (таблица уже создана — retry без дубля)
+  | 'share_failed' // выдача доступа не удалась (таблица создана и заполнена)
+  | 'auth'
+  | 'rate_limited'
+  | 'network';
+
+export class F0SheetsError extends Error {
+  public readonly code: F0SheetsCode;
+  public readonly context: Record<string, unknown>;
+  /**
+   * spreadsheetId созданной копии, если она уже создана к моменту сбоя.
+   * Позволяет боту повторить операцию без дублирования таблицы (AC3).
+   */
+  public readonly spreadsheetId?: string;
+
+  constructor(
+    code: F0SheetsCode,
+    context: Record<string, unknown> & { spreadsheetId?: string },
+    options?: { cause?: unknown },
+  ) {
+    super(`f0-sheets:${code}`, options as ErrorOptions);
+    this.code = code;
+    this.context = context;
+    this.spreadsheetId = context.spreadsheetId;
+    this.name = 'F0SheetsError';
+  }
+}
