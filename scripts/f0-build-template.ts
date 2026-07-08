@@ -47,8 +47,9 @@ interface SheetSpec {
 // прячет значения меньшинного типа (смесь «9%»/чисел/«нет данных» в статусах — реальный
 // кейс после ручных правок трекера). FILTER/SORT типы не трогают.
 
+// Фолбэк и при отсутствии ключа, и при пустом значении (шаблон до онбординга).
 const metaLookup = (key: string, fallback: string): string =>
-  `IFERROR(VLOOKUP("${key}";'_meta'!A:B;2;0);"${fallback}")`;
+  `IF(IFERROR(VLOOKUP("${key}";'_meta'!A:B;2;0);"")="";"${fallback}";VLOOKUP("${key}";'_meta'!A:B;2;0))`;
 
 /** Колонки листа как массив-литерал: {'_okr'!J2:J\'_okr'!A2:A\…} (порядок панели). */
 const cols = (sheet: string, letters: string[]): string =>
@@ -193,22 +194,24 @@ const TOP_TEMPLATE: SheetSpec = {
     ['Зоны:', `=IFERROR(VLOOKUP($B$1;'_stakeholder_map'!A:F;6;0);"—")`],
     [
       'Последняя встреча:',
-      `=IFERROR(INDEX(SORT(FILTER('📅 Лог встреч'!A2:E;'📅 Лог встреч'!B2:B=$B$1);1;0);1;1);"—")`,
-      `=IFERROR("Итоги: "&INDEX(SORT(FILTER('📅 Лог встреч'!A2:E;'📅 Лог встреч'!B2:B=$B$1);1;0);1;3);"")`,
+      `=IFERROR(INDEX(SORT(FILTER('📅 Лог встреч'!A2:E;('📅 Лог встреч'!B2:B=$B$1)*('📅 Лог встреч'!A2:A<>""));1;0);1;1);"—")`,
+      `=IFERROR("Итоги: "&INDEX(SORT(FILTER('📅 Лог встреч'!A2:E;('📅 Лог встреч'!B2:B=$B$1)*('📅 Лог встреч'!A2:A<>""));1;0);1;3);"")`,
     ],
     [
       'Следующая встреча:',
-      `=IFERROR(INDEX(SORT(FILTER('📅 Лог встреч'!A2:E;'📅 Лог встреч'!B2:B=$B$1);1;0);1;5);"— (повестка не задана)")`,
+      `=IFERROR(INDEX(SORT(FILTER('📅 Лог встреч'!A2:E;('📅 Лог встреч'!B2:B=$B$1)*('📅 Лог встреч'!A2:A<>""));1;0);1;5);"— (повестка не задана)")`,
     ],
     [],
     ['🎯 KR ТОПА (статусы правь в ⚙️ _okr)'],
     ['№', 'Краткое название', 'Key Result', 'Владелец', 'Должность', 'Статус', 'Цель', 'Прогресс', 'Срок', 'OKR-группа', 'Квартал'],
-    [`=IFERROR(FILTER('_okr'!A2:K;'_okr'!D2:D=$B$1);"Нет KR")`],
+    // Гард (A<>"") обязателен: при пустом $B$1 сравнение с "" матчит все пустые строки
+    // листа, spill на тысячи строк упирается в легенду → #REF!.
+    [`=IFERROR(FILTER('_okr'!A2:K;('_okr'!D2:D=$B$1)*('_okr'!A2:A<>""));"Нет KR")`],
     [], [], [], [], [], [], [], [], [], [], [],
     [],
     ['⚡ ИНИЦИАТИВЫ И ГИПОТЕЗЫ ТОПА (ответственный назначается в ⚙️ _hypotheses)'],
     ['Гипотеза/инициатива', 'ЕСЛИ — ТО — ПОТОМУ ЧТО', 'Метрика', 'Департамент', '⚠️ Синтез', 'Связь с OKR', 'Ответственный', 'Срок', 'Статус'],
-    [`=IFERROR(FILTER('_hypotheses'!A2:I;'_hypotheses'!G2:G=$B$1);"Нет — назначь owner в ⚙️ _hypotheses")`],
+    [`=IFERROR(FILTER('_hypotheses'!A2:I;('_hypotheses'!G2:G=$B$1)*('_hypotheses'!A2:A<>""));"Нет — назначь owner в ⚙️ _hypotheses")`],
     [], [], [], [], [], [], [], [], [], [], [],
     [],
     ['📚 ЛЕГЕНДА (кратко): 🟢 по плану · 🟡 риск · 🔴 блок · ✅ готово · 🔄 ритм · ⏸️ пауза · ⚠️ нужно решение · 💭 идея · 🔮 бэклог'],
@@ -269,6 +272,40 @@ const SPECS: SheetSpec[] = [
   ALL_OKR, HYPO_BANK, MEETING_LOG, CONSTRAINTS, METHODOLOGY, TOP_TEMPLATE,
   META, OKR, STAKEHOLDERS, HYPOTHESES, F5_METRICS, OPS_LOGS,
 ];
+
+// === Запись значений сегментами ===
+// Пустые ячейки НЕ пишем вовсе (ни как '', ни как null): записанная пустая СТРОКА — это
+// значение, и она блокирует spill формул массивов (FILTER/SORT дают #REF!). Каждый
+// непрерывный кусок непустых ячеек строки уезжает отдельным ValueRange.
+
+function colA1(n: number): string {
+  let s = '';
+  let x = n;
+  while (x > 0) {
+    s = String.fromCharCode(65 + ((x - 1) % 26)) + s;
+    x = Math.floor((x - 1) / 26);
+  }
+  return s;
+}
+
+function specValueRanges(spec: SheetSpec): sheets_v4.Schema$ValueRange[] {
+  const out: sheets_v4.Schema$ValueRange[] = [];
+  const quoted = `'${spec.title.replace(/'/g, "''")}'`;
+  spec.rows.forEach((row, r) => {
+    let c = 0;
+    while (c < row.length) {
+      if (row[c] === '' || row[c] === undefined) {
+        c++;
+        continue;
+      }
+      let end = c;
+      while (end < row.length && row[end] !== '' && row[end] !== undefined) end++;
+      out.push({ range: `${quoted}!${colA1(c + 1)}${r + 1}`, values: [row.slice(c, end)] });
+      c = end;
+    }
+  });
+  return out;
+}
 
 // === Обвязка против «немых» зависаний WSL→Google (паттерн scripts/add-f5-metrics-tab.ts) ===
 
@@ -423,11 +460,7 @@ async function main(): Promise<void> {
       spreadsheetId,
       requestBody: {
         valueInputOption: 'USER_ENTERED',
-        // Пустая строка-разделитель как [''] — API отклоняет пустые списки в values.
-        data: SPECS.map((s) => ({
-          range: `'${s.title}'!A1`,
-          values: s.rows.map((r) => (r.length > 0 ? r : [''])),
-        })),
+        data: SPECS.flatMap(specValueRanges),
       },
     }),
   );
