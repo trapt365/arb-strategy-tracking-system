@@ -5,6 +5,8 @@ import {
   mapOkrRows,
   mapStakeholderRows,
   mapHypothesisRows,
+  mapMetaRows,
+  uniqueOwners,
   alignRowsToHeader,
   colLetter,
 } from './f0-sheets.js';
@@ -17,9 +19,13 @@ const OKR_HEADER = [
 ];
 const STAKEHOLDER_HEADER = [
   'full_name', 'speaker_name', 'department', 'role',
-  'bsc_category', 'responsibility_areas', 'interests', 'notes',
+  'bsc_category', 'responsibility_areas', 'interests', 'telegram', 'notes',
 ];
-const HYPO_HEADER = ['statement', 'if_then_because', 'metric', 'department', 'synthesized'];
+const HYPO_HEADER = [
+  'statement', 'if_then_because', 'metric', 'department', 'synthesized',
+  'okr_link', 'owner', 'deadline', 'status',
+];
+const META_HEADER = ['key', 'value'];
 
 function extraction(overrides: Partial<F0FullExtraction> = {}): F0FullExtraction {
   return {
@@ -70,7 +76,17 @@ function makeSheets(opts: { titles: string[]; headers: Record<string, string[]>;
         if (opts.failGet) throw opts.failGet;
         return { data: { sheets: opts.titles.map((t, i) => ({ properties: { title: t, sheetId: i } })) } };
       },
-      batchUpdate: async (req: unknown) => { calls.addSheet.push(req); return {}; },
+      // Story 8.1: duplicateSheet возвращает свойства созданного листа (нужно для показа).
+      batchUpdate: async (req: { requestBody?: sheets_v4.Schema$BatchUpdateSpreadsheetRequest }) => {
+        calls.addSheet.push(req);
+        const requests = req.requestBody?.requests ?? [];
+        const replies = requests.map((r, i) =>
+          r.duplicateSheet
+            ? { duplicateSheet: { properties: { sheetId: 100 + i, title: r.duplicateSheet.newSheetName } } }
+            : {},
+        );
+        return { data: { replies } };
+      },
       values: {
         update: async (req: unknown) => { calls.headerUpdate.push(req); return {}; },
         batchGet: async (req: { ranges: string[] }) => {
@@ -113,8 +129,21 @@ function makeDrive(opts: { copyId?: string; failCopy?: unknown; failPerm?: unkno
   return { client: client as unknown as drive_v3.Drive, calls };
 }
 
-const allTitles = ['Панель OKR', 'Банк гипотез', 'Лог встреч', '_okr', '_stakeholder_map', '_hypotheses', '_ops_logs'];
-const allHeaders = { _okr: OKR_HEADER, _stakeholder_map: STAKEHOLDER_HEADER, _hypotheses: HYPO_HEADER };
+// Шаблон v2.0 (story 8.1): формульные панели + скрытый эталон топа + ⚙️-данные с _meta.
+const allTitles = [
+  '📊 Все OKR', '🧪 Банк гипотез', '📅 Лог встреч', '👤 Шаблон топа',
+  '_meta', '_okr', '_stakeholder_map', '_hypotheses', '_f5_metrics', '_ops_logs',
+];
+const allHeaders = {
+  _okr: OKR_HEADER, _stakeholder_map: STAKEHOLDER_HEADER, _hypotheses: HYPO_HEADER, _meta: META_HEADER,
+};
+// Legacy-шаблон 7.4 (до story 8.1): без _meta, без эталона топа, узкие схемы.
+const legacyTitles = ['Панель OKR', 'Банк гипотез', 'Лог встреч', '_okr', '_stakeholder_map', '_hypotheses', '_ops_logs'];
+const legacyHeaders = {
+  _okr: OKR_HEADER,
+  _stakeholder_map: STAKEHOLDER_HEADER.filter((h) => h !== 'telegram'),
+  _hypotheses: HYPO_HEADER.slice(0, 5),
+};
 
 function findRange(req: sheets_v4.Schema$BatchUpdateValuesRequest, prefix: string): string[][] | undefined {
   return req.data?.find((d) => d.range?.startsWith(prefix))?.values as string[][] | undefined;
@@ -137,20 +166,51 @@ describe('mapOkrRows', () => {
 });
 
 describe('mapStakeholderRows', () => {
-  it('department фолбэк на роль/дефис (F1 требует min(1)), контакт → notes', () => {
+  it('department фолбэк на роль/дефис (F1 требует min(1)), контакт → telegram + notes', () => {
     const rows = mapStakeholderRows(extraction());
-    expect(rows[0]).toMatchObject({ full_name: 'Дамир', speaker_name: 'Дамир', department: 'Управление', notes: 'контакт: @damir' });
-    // department = null → фолбэк на роль
-    expect(rows[1]!.department).toBe('РОП');
+    expect(rows[0]).toMatchObject({
+      full_name: 'Дамир', speaker_name: 'Дамир', department: 'Управление',
+      telegram: '@damir', notes: 'контакт: @damir',
+    });
+    // department = null → фолбэк на роль; контакта нет → telegram пуст
+    expect(rows[1]).toMatchObject({ department: 'РОП', telegram: '', notes: '' });
     expect(rows.every((r) => r.department.length > 0)).toBe(true);
   });
 });
 
 describe('mapHypothesisRows', () => {
-  it('маппит гипотезы, synthesized → «да»/пусто', () => {
+  it('маппит гипотезы, synthesized → «да»/пусто; новые колонки 8.1 пустые (инвариант 3)', () => {
     const rows = mapHypothesisRows(extraction());
     expect(rows[0]).toMatchObject({ statement: 'Лидмагниты повышают доходимость', metric: 'доходимость, %', synthesized: '' });
     expect(rows[1]!.synthesized).toBe('да');
+    // F0 не извлекает связь с OKR/ответственного/срок/статус — пишет пусто, трекер дозаполняет
+    expect(rows[0]).toMatchObject({ okr_link: '', owner: '', deadline: '', status: '' });
+  });
+});
+
+describe('mapMetaRows (story 8.1)', () => {
+  it('key/value: company из extraction, остальное из meta-опций', () => {
+    const rows = mapMetaRows(extraction(), { onboardingDate: '2026-07-08', tracker: 'Азиза' });
+    expect(rows).toEqual([
+      { key: 'company', value: 'GeOnline' },
+      { key: 'period', value: '' },
+      { key: 'onboarding_date', value: '2026-07-08' },
+      { key: 'tracker', value: 'Азиза' },
+    ]);
+  });
+
+  it('company null → пусто, meta не передан → все значения пустые', () => {
+    const rows = mapMetaRows(extraction({ company: null }));
+    expect(rows.every((r) => r.value === '')).toBe(true);
+  });
+});
+
+describe('uniqueOwners (story 8.1)', () => {
+  it('уникальные владельцы KR в порядке появления, пустые отбрасываются', () => {
+    const owners = uniqueOwners([
+      { owner: 'Дамир' }, { owner: 'Мақсат' }, { owner: 'Дамир' }, { owner: '  ' }, { owner: '' },
+    ]);
+    expect(owners).toEqual(['Дамир', 'Мақсат']);
   });
 });
 
@@ -186,7 +246,7 @@ describe('createClientSpreadsheet — happy path (AC1/AC2)', () => {
 
     expect(result.spreadsheetId).toBe('new-sheet-id');
     expect(result.spreadsheetUrl).toContain('new-sheet-id');
-    expect(result.counts).toEqual({ okr: 2, stakeholders: 2, hypotheses: 2 });
+    expect(result.counts).toEqual({ okr: 2, stakeholders: 2, hypotheses: 2, personalSheets: 2 });
     expect(result.shared).toEqual(['tracker@example.com']);
 
     // copy из шаблона с нужным именем
@@ -204,8 +264,87 @@ describe('createClientSpreadsheet — happy path (AC1/AC2)', () => {
     expect(okr[0]![3]).toBe('Мақсат'); // колонка owner
     const stake = findRange(upd, '_stakeholder_map!A2')!;
     expect(stake[1]![2]).toBe('РОП'); // department фолбэк
+    expect(stake[0]![7]).toBe('@damir'); // telegram (story 8.1)
     const hypo = findRange(upd, '_hypotheses!A2')!;
     expect(hypo[1]![4]).toBe('да'); // synthesized
+    // _meta заполнен шапкой клиента (story 8.1)
+    const meta = findRange(upd, '_meta!A2')!;
+    expect(meta[0]).toEqual(['company', 'GeOnline']);
+  });
+});
+
+describe('createClientSpreadsheet — персональные листы топов (story 8.1, Fix B)', () => {
+  it('duplicateSheet по уникальным владельцам KR, показ листа, $B$1 = имя', async () => {
+    const sheets = makeSheets({ titles: allTitles, headers: allHeaders });
+    const drive = makeDrive();
+    const result = await createClientSpreadsheet({
+      extraction: extraction(),
+      spreadsheetName: 'x',
+      sheetsClientFactory: async () => sheets.client,
+      driveClientFactory: async () => drive.client,
+    });
+    expect(result.counts.personalSheets).toBe(2);
+
+    // 1-й batchUpdate — duplicateSheet эталона (sheetId эталона = 3 в allTitles)
+    const dupReq = sheets.calls.addSheet[0] as { requestBody: sheets_v4.Schema$BatchUpdateSpreadsheetRequest };
+    expect(dupReq.requestBody.requests).toEqual([
+      { duplicateSheet: { sourceSheetId: 3, newSheetName: '👤 Мақсат' } },
+      { duplicateSheet: { sourceSheetId: 3, newSheetName: '👤 Дамир' } },
+    ]);
+    // 2-й batchUpdate — снятие hidden с созданных листов (копия скрытого эталона скрыта)
+    const showReq = sheets.calls.addSheet[1] as { requestBody: sheets_v4.Schema$BatchUpdateSpreadsheetRequest };
+    expect(showReq.requestBody.requests).toEqual([
+      { updateSheetProperties: { properties: { sheetId: 100, hidden: false }, fields: 'hidden' } },
+      { updateSheetProperties: { properties: { sheetId: 101, hidden: false }, fields: 'hidden' } },
+    ]);
+    // B1 = имя топа — параметр FILTER-формул
+    const b1 = sheets.calls.valuesBatchUpdate[1]!;
+    expect(b1.data).toEqual([
+      { range: "'👤 Мақсат'!B1", values: [['Мақсат']] },
+      { range: "'👤 Дамир'!B1", values: [['Дамир']] },
+    ]);
+  });
+
+  it('идемпотентность: существующий лист «👤 {Имя}» не дублируется при retry', async () => {
+    const sheets = makeSheets({ titles: [...allTitles, '👤 Дамир'], headers: allHeaders });
+    const drive = makeDrive();
+    const result = await createClientSpreadsheet({
+      extraction: extraction(),
+      spreadsheetName: 'x',
+      existingSpreadsheetId: 'existing-id',
+      sheetsClientFactory: async () => sheets.client,
+      driveClientFactory: async () => drive.client,
+    });
+    expect(result.counts.personalSheets).toBe(2);
+    const dupReq = sheets.calls.addSheet[0] as { requestBody: sheets_v4.Schema$BatchUpdateSpreadsheetRequest };
+    expect(dupReq.requestBody.requests).toEqual([
+      { duplicateSheet: { sourceSheetId: 3, newSheetName: '👤 Мақсат' } },
+    ]);
+  });
+
+  it('legacy-шаблон без эталона: личные листы тихо пропускаются (обратная совместимость 7.4)', async () => {
+    const sheets = makeSheets({ titles: legacyTitles, headers: legacyHeaders });
+    const drive = makeDrive();
+    const result = await createClientSpreadsheet({
+      extraction: extraction(),
+      spreadsheetName: 'x',
+      sheetsClientFactory: async () => sheets.client,
+      driveClientFactory: async () => drive.client,
+    });
+    expect(result.counts.personalSheets).toBe(0);
+    // единственный batchUpdate — ensure _meta (в legacy-шаблоне его нет); duplicateSheet нет
+    const dupRequests = sheets.calls.addSheet
+      .flatMap((r) => (r as { requestBody?: sheets_v4.Schema$BatchUpdateSpreadsheetRequest }).requestBody?.requests ?? [])
+      .filter((r) => r.duplicateSheet);
+    expect(dupRequests).toHaveLength(0);
+    expect(sheets.calls.addSheet[0]).toMatchObject({
+      requestBody: { requests: [{ addSheet: { properties: { title: '_meta' } } }] },
+    });
+    // узкая legacy-схема: telegram-колонки нет → alignRowsToHeader её отбрасывает, контакт в notes
+    const upd = sheets.calls.valuesBatchUpdate[0]!;
+    const stake = findRange(upd, '_stakeholder_map!A2')!;
+    expect(stake[0]).toHaveLength(8);
+    expect(stake[0]![7]).toBe('контакт: @damir');
   });
 });
 
@@ -226,7 +365,7 @@ describe('createClientSpreadsheet — идемпотентность (AC3)', () 
 });
 
 describe('createClientSpreadsheet — создаёт _hypotheses если его нет в шаблоне', () => {
-  it('addSheet + запись заголовка', async () => {
+  it('addSheet + запись заголовка (расширенного, story 8.1)', async () => {
     const titles = allTitles.filter((t) => t !== '_hypotheses');
     const sheets = makeSheets({ titles, headers: allHeaders });
     const drive = makeDrive();
@@ -236,9 +375,9 @@ describe('createClientSpreadsheet — создаёт _hypotheses если его
       sheetsClientFactory: async () => sheets.client,
       driveClientFactory: async () => drive.client,
     });
-    expect(sheets.calls.addSheet).toHaveLength(1);
     expect(sheets.calls.addSheet[0]).toMatchObject({ requestBody: { requests: [{ addSheet: { properties: { title: '_hypotheses' } } }] } });
     expect(sheets.calls.headerUpdate).toHaveLength(1);
+    expect(sheets.calls.headerUpdate[0]).toMatchObject({ requestBody: { values: [HYPO_HEADER] } });
   });
 });
 

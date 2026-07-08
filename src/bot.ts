@@ -1322,12 +1322,22 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
     }
     const dateStr = now().toISOString().slice(0, 10);
     const spreadsheetName = `Стратегический трекинг v2.0 — ${company} (${dateStr})`;
+    // Известное ограничение MVP (story 8.1, design §6): повторная запись в существующую
+    // таблицу затирает ручные правки трекера в машинных листах — предупреждаем явно.
+    if (existingSpreadsheetId !== undefined) {
+      await ctx
+        .reply(
+          '♻️ Использую существующую таблицу клиента: данные ⚙️-листов (_okr, _stakeholder_map, _hypotheses) будут перезаписаны данными онбординга — ручные правки в них не сохранятся.',
+        )
+        .catch(() => {});
+    }
     await ctx.reply('📊 Создаю Google Sheets по шаблону v2.0…').catch(() => {});
     try {
       const result = await createClientSpreadsheetFn({
         extraction: session.draft.extraction,
         spreadsheetName,
         existingSpreadsheetId,
+        meta: { onboardingDate: dateStr },
         logger: f0Log,
       });
       session.spreadsheetId = result.spreadsheetId;
@@ -1339,7 +1349,8 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
       const lines = [
         '✅ Таблица клиента создана:',
         result.spreadsheetUrl,
-        `Панель OKR: ${result.counts.okr} · гипотезы: ${result.counts.hypotheses} · участники: ${result.counts.stakeholders}`,
+        `Панель OKR: ${result.counts.okr} · гипотезы: ${result.counts.hypotheses} · участники: ${result.counts.stakeholders}` +
+          (result.counts.personalSheets > 0 ? ` · личные листы топов: ${result.counts.personalSheets}` : ''),
         // Story 7.6: слаг клиента нужен для /report <url> <clientId> — показываем явно.
         `ID клиента: ${clientId}  (для /report <ссылка> ${clientId})`,
       ];
