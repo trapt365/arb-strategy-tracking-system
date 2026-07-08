@@ -122,7 +122,7 @@
 
 ## Прод-демо Ф2 онбординга — баги и фичи (2026-07-08)
 
-Наблюдения из живого прогона онбординга нового клиента в проде (нативный pm2, см. память `project_prod_deploy_native_pm2`). Предварительный бэклог — до формального BMAD-груминга.
+Наблюдения из живого прогона онбординга нового клиента в проде (нативный pm2, см. память `project_prod_deploy_native_pm2`). **GROOMED 2026-07-08 (correct-course):** все открытые пункты секции оформлены в **Epic 8 «Прод-фидбэк онбординга»** (`_bmad-output/planning-artifacts/sprint-change-proposal-2026-07-08-epic8-onboarding-feedback.md` + epics.md + sprint-status.yaml). Маппинг: PROD BUG шаблона → story 8.1 (P0); фича #5 → 8.2; #4 → 8.3; #1 → 8.4; #2+#3 → 8.5.
 
 ### BUG (высокий приоритет)
 
@@ -132,13 +132,7 @@
   - **Fix C (онбординг):** F0 мог бы чистить/наполнять и видимые листы, но их много и они бесбойные — надёжнее чинить шаблон (Fix A/B).
   - Связано с #5 (даже название шаблона = «Geonline»). Orphan для удаления: `1JwqnA0T1GXD0_LvmrvYcf93z70C7Mkk8r089DHwwkjA`. После чистого шаблона — пере-онбордить.
 
-- ~~**[PROD BUG] Сборка F0-черновика падает: `F1PipelineError:claude_api` → `f0.draft_failed`**~~ **RESOLVED 2026-07-08 (`0cb12b2` + `b5d388d`):** оказалось НЕ инфра/сеть (TLS до `api.anthropic.com` здоров). Две причины: (1) F0-экстракция (16k→теперь 32k `max_tokens`, вход ~168k токенов) не влезала в 120с клиентский таймаут SDK → `Request timed out`; фикс — per-call `timeoutMs` (F0=720с) + `shouldRetryClaude` ловит таймаут. (2) выход обрывался на потолке токенов → `claude_response_invalid` (backtick незакрытого фенса); фикс — детект `stop_reason=max_tokens` + подняли потолок. Черновик успешно собран (`49981c76`, 168с). Гипотезы ниже — история диагностики.
-
-- **[PROD BUG] Сборка F0-черновика падает: `F1PipelineError:claude_api` → `f0.draft_failed`** — на «✅ Собрать черновик» бот отвечает «⚠️ Не удалось собрать черновик…». Воспроизвелось и на пакете из 4 транскриптов (`sessionId 9484a033, files:4`), и на 1 объединённом файле сущностей (`sessionId 3952b00a, files:1`) — т.е. не только про размер пакета. Точка: `src/bot.ts:1106` (`f0.draft_failed`), Claude-вызов в `src/f0-onboarding.ts` через общий адаптер (`src/adapters/claude.ts`, ошибка типизируется как `F1PipelineError:claude_api`, `src/errors.ts:116`).
-  - **Гипотеза A (инфра, вероятная):** тот же сетевой сбой WSL→интернет, что и с `sheets.googleapis.com` — крупный TLS-payload (транскрипты стратсессии) дропается (MTU/fragmentation) → `claude_api` fail на `api.anthropic.com`. Проверить: `curl -w %{time_total} https://api.anthropic.com/v1/...` из прод-WSL; попробовать понизить MTU на eth0. Если так — чинит и Sheets, и Claude разом.
-  - **Гипотеза B (лимит токенов):** обрезка/переполнение контекста на большом входе (комментарий в `bot.ts` прямо упоминает «обрезка JSON по лимиту токенов»). Проверить фактический размер промпта vs `CLAUDE_MAX_TOKENS`/context.
-  - **Гипотеза C (модель):** `ANTHROPIC_MODEL` дефолт `claude-sonnet-4-6` (`src/config.ts:11`) — убедиться, что ID валиден для текущего API.
-  - Действие: воспроизвести с логами (`data/pm2/err-0.log`), достать реальный HTTP-статус/тело ошибки Anthropic (сейчас наружу отдаётся только `claude_api`).
+- ~~**[PROD BUG] Сборка F0-черновика падает: `F1PipelineError:claude_api` → `f0.draft_failed`**~~ **RESOLVED 2026-07-08 (`0cb12b2` + `b5d388d`):** оказалось НЕ инфра/сеть (TLS до `api.anthropic.com` здоров). Две причины: (1) F0-экстракция (16k→теперь 32k `max_tokens`, вход ~168k токенов) не влезала в 120с клиентский таймаут SDK → `Request timed out`; фикс — per-call `timeoutMs` (F0=720с) + `shouldRetryClaude` ловит таймаут. (2) выход обрывался на потолке токенов → `claude_response_invalid` (backtick незакрытого фенса); фикс — детект `stop_reason=max_tokens` + подняли потолок. Черновик успешно собран (`49981c76`, 168с). Дубль-запись с гипотезами диагностики удалена 2026-07-08 (correct-course) — история в git (`719549e`).
 
 ### FEATURES
 
