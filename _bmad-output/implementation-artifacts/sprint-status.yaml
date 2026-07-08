@@ -127,11 +127,11 @@ development_status:
 
   # Epic 7: Онбординг клиента через бота (F0) + минимальная мультиклиентность — WP-39 Ф2 (2026-07-07)
   # Лёгкий формат stories (solo MVP): 3 AC, ~5 задач, 1 проход ревью
-  epic-7: in-progress
+  epic-7: done  # все 6 stories done (7.4 live-verified 2026-07-08); retrospective — optional
   7-1-vertikalnyy-srez-okr-dokument-v-chernovik-paneli-okr: done  # 2026-07-07: код + code-review; src/f0-onboarding.ts + src/utils/f0-input.ts + prompts/f0-okr-extraction.md + bot /newclient & message:document; 450/450 vitest, tsc clean; review-фиксы: regex backtracking DoS (bounded quantifiers), byte/size-guard до replace, download withRetry, safeEditMessage, exhaustive error map
   7-2-polnyy-vkhod-docx-pdf-gipotezy-i-uchastniki: done  # 2026-07-07: docx/pdf (mammoth/pdf-parse) + мультифайл-пакет + банк гипотез (инвариант 2) + участники + синтез из решений (SAM); code-review + фиксы; 458/458 vitest, smoke SAM PASS
   7-3-dialog-dozapolneniya-voprosy-tolko-pro-otsutstvuyushchee: done  # 2026-07-07: диалог дозаполнения (вопросы только про отсутствующее, /skip /confirm /resume) + persist/restore сессии (переживает рестарт) + инвариант 1 блокирует /confirm; code-review + фиксы; 469/469 vitest
-  7-4-sozdanie-google-sheets-po-shablonu-v2: backlog
-  7-5-kartochka-klienta-i-cheklist-gotovnosti: backlog
-  7-6-minimalnaya-multiklientnost-i-regress-geonline: backlog
+  7-4-sozdanie-google-sheets-po-shablonu-v2: done  # LIVE smoke PASS 2026-07-08 (scripts/f0-sheets-smoke.ts: реальная copy+запись+шаринг зелёные). Фикс квоты: SA не может владеть Drive-файлами (403) → OAuth-креды пользователя (createDriveWriteClient + createSheetsWriteClient, scripts/google-oauth-setup.ts, 3 GOOGLE_OAUTH_* env). Template: добавлены машинные вкладки _okr/_stakeholder_map. Code-review 2× + фиксы. Исходно: src/f0-sheets.ts (copy шаблона v2.0 → header-driven запись _okr/_stakeholder_map/_hypotheses → шаринг), F0SheetsError+spreadsheetId retry-без-дублей, bot /confirm→createSheetForSession
+  7-5-kartochka-klienta-i-cheklist-gotovnosti: done  # code-review + фиксы; part of Epic 7 live-verified 2026-07-08. # 2026-07-08: src/f0-client-card.ts (buildClientCard/persist/load, clientIdFromCompany транслит, computeReadinessChecklist 🟢/🔴+действие), ClientCard типы, bot finalizeClientCard + /status; industry=null (не в F0, инвариант 3); юниты; tsc чист, vitest зелёный
+  7-6-minimalnaya-multiklientnost-i-regress-geonline: done  # code-review + фиксы (ops-log fallback на geonline, per-entry registry parse, кросс-сессионный reuse); part of Epic 7 live-verified 2026-07-08. # 2026-07-08: src/client-registry.ts (реестр clientId→sheetId, geonline fallback на config БЕЗ правок env), resolveSheetId→async через реестр, /report <url> [clientId] + topName из реестра, ops-лог по row.clientId, онбординг наполняет реестр (upsertClient); юниты + регресс весь vitest зелёный (canary+golden); резолв geonline==GEONLINE_F0_SHEET_ID сохранён
   epic-7-retrospective: optional

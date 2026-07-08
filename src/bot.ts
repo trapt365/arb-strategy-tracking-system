@@ -38,10 +38,20 @@ import {
   markBlockingKrIssues,
 } from './f0-onboarding.js';
 import { computeF0Gaps, applyF0Answer, type F0Gap } from './f0-fill.js';
+import { createClientSpreadsheet as defaultCreateClientSpreadsheet } from './f0-sheets.js';
+import {
+  buildClientCard,
+  persistClientCard,
+  loadClientCard,
+  clientIdFromCompany,
+  computeReadinessChecklist,
+  renderReadinessMessage,
+} from './f0-client-card.js';
+import { upsertClient, getClientTopName, listClientIds, getClientSheetId } from './client-registry.js';
 import type { F0FullExtraction } from './types.js';
 import { extractTextFromDocument as defaultExtractTextFromDocument } from './utils/f0-document.js';
 import { isSupportedF0Document, F0_MAX_FILE_BYTES, F0_MAX_DOC_CHARS } from './utils/f0-input.js';
-import { F0OnboardingError } from './errors.js';
+import { F0OnboardingError, F0SheetsError } from './errors.js';
 import { assertTranscriptDuration } from './utils/transcript-duration-guard.js';
 import { createReportQueue, QueueOverflowError, type ReportQueue } from './utils/report-queue.js';
 import { withRetry } from './utils/retry.js';
@@ -105,6 +115,8 @@ export interface BotDeps {
   queueMaxSize?: number;
   // Story 7.1/7.2: F0 onboarding deps (tests).
   runF0FullDraft?: typeof defaultRunF0FullDraft;
+  // Story 7.4: создание Google Sheets клиента (тесты подменяют, чтобы не ходить в Google API).
+  createClientSpreadsheet?: typeof defaultCreateClientSpreadsheet;
   extractTextFromDocument?: typeof defaultExtractTextFromDocument;
   /** Скачивание файла Telegram по file_path (тесты подменяют, чтобы не ходить в Bot API). */
   downloadTelegramFile?: (filePath: string) => Promise<Buffer>;
@@ -156,6 +168,7 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
   const isAlreadyApproved = deps.isAlreadyApproved ?? defaultIsAlreadyApproved;
   const startScheduler = deps.startScheduler ?? defaultStartScheduler;
   const runF0FullDraftFn = deps.runF0FullDraft ?? defaultRunF0FullDraft;
+  const createClientSpreadsheetFn = deps.createClientSpreadsheet ?? defaultCreateClientSpreadsheet;
   const extractTextFromDocument = deps.extractTextFromDocument ?? defaultExtractTextFromDocument;
   const downloadTelegramFile =
     deps.downloadTelegramFile ??
@@ -220,6 +233,8 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
     gaps: F0Gap[];
     gapIndex: number;
     schedule: string | null;
+    // Story 7.4: id созданной Google Sheets (если уже создана) — retry без дублей.
+    spreadsheetId?: string;
   }
   const f0Sessions = new Map<number, F0Session>();
 
@@ -236,6 +251,7 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
       gaps: s.gaps,
       gapIndex: s.gapIndex,
       schedule: s.schedule,
+      ...(s.spreadsheetId !== undefined ? { spreadsheetId: s.spreadsheetId } : {}),
       updatedAt: now().toISOString(),
     });
   }
@@ -260,6 +276,7 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
       gaps: persisted.gaps,
       gapIndex: persisted.gapIndex,
       schedule: persisted.schedule,
+      spreadsheetId: persisted.spreadsheetId,
     };
     f0Sessions.set(chatId, restored);
     f0Log.info(
@@ -1200,6 +1217,150 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
     }
   });
 
+  // Story 7.4: понятные сообщения по кодам сбоя создания таблицы.
+  function f0SheetsErrorText(err: F0SheetsError): string {
+    switch (err.code) {
+      case 'template_not_configured':
+        return 'ℹ️ Автосоздание Google Sheets ещё не настроено (нет шаблона). Данные онбординга сохранены — таблицу можно создать позже.';
+      case 'auth':
+        return '🔴 Нет доступа к Google (проверь права сервис-аккаунта к шаблону и папке). Данные сохранены — повтори позже: /confirm.';
+      case 'sheet_missing':
+      case 'header_missing':
+        return '🔴 Шаблон не соответствует структуре v2.0 (не найден лист/колонка). Данные сохранены — проверь шаблон и повтори: /confirm.';
+      case 'rate_limited':
+      case 'network':
+        return '⚠️ Google временно недоступен. Данные сохранены — повтори через минуту: /confirm (без дублей таблиц).';
+      default:
+        return `⚠️ Не удалось создать таблицу (${err.code}). Данные сохранены — повтори: /confirm (без дублей таблиц).`;
+    }
+  }
+
+  /**
+   * Story 7.5/7.6: собрать карточку клиента, зарегистрировать в реестре мультиклиентности,
+   * показать чеклист готовности. Вызывается после успешного создания таблицы.
+   */
+  async function finalizeClientCard(
+    ctx: { reply: (t: string) => Promise<unknown> },
+    chatId: number,
+    session: F0Session,
+    spreadsheetId: string,
+    spreadsheetUrl: string,
+  ): Promise<void> {
+    if (session.draft === undefined) return;
+    const extraction = session.draft.extraction;
+    const company = extraction.company ?? 'Клиент';
+    const clientId = clientIdFromCompany(company);
+    const card = buildClientCard({
+      extraction,
+      schedule: session.schedule,
+      trackerChatId: chatId,
+      spreadsheetId,
+      spreadsheetUrl,
+      startDate: now().toISOString(),
+      clientId,
+      now,
+    });
+    await persistClientCard(card);
+    await upsertClient(clientId, {
+      sheetId: spreadsheetId,
+      name: company,
+      ...(card.ceo ? { topName: card.ceo } : {}),
+    });
+    f0Log.info(
+      { step: 'f0.client_registered', chatId, clientId, spreadsheetId },
+      'client card persisted + registered in client registry',
+    );
+    const items = computeReadinessChecklist(card, extraction);
+    await ctx.reply(renderReadinessMessage(card, items)).catch(() => {});
+  }
+
+  /**
+   * Story 7.4: создать/дозаполнить Google Sheets клиента для готовой сессии.
+   * Идемпотентно: id созданной таблицы хранится на сессии, поэтому повторный вызов
+   * (/confirm после сбоя) не создаёт дубль, а перезаписывает данные и доступ.
+   */
+  async function createSheetForSession(
+    ctx: { reply: (t: string) => Promise<unknown> },
+    chatId: number,
+    session: F0Session,
+  ): Promise<void> {
+    if (session.draft === undefined) return;
+    const company = session.draft.extraction.company ?? 'Клиент';
+    const clientId = clientIdFromCompany(company);
+
+    // Story 7.6 (fix): переиспользуем таблицу уже зарегистрированного клиента, чтобы
+    // повторный онбординг той же компании не плодил дубли в Drive. Сессия важнее реестра
+    // (её id — от незавершённого retry). 'geonline' не трогаем — его fallback ведёт на
+    // боевую config-таблицу, перезаписывать её онбордингом нельзя.
+    let existingSpreadsheetId = session.spreadsheetId;
+    if (existingSpreadsheetId === undefined && clientId !== 'geonline') {
+      const registered = await getClientSheetId(clientId);
+      if (registered !== undefined) {
+        existingSpreadsheetId = registered;
+        f0Log.info(
+          { step: 'f0.sheet_reuse', chatId, clientId, spreadsheetId: registered },
+          'reusing registered client spreadsheet (avoid duplicate table)',
+        );
+      }
+    }
+
+    if (config.F0_SHEETS_TEMPLATE_ID.trim() === '' && existingSpreadsheetId === undefined) {
+      await ctx
+        .reply('ℹ️ Данные готовы. Автосоздание Google Sheets не настроено — таблицу можно создать позже.')
+        .catch(() => {});
+      return;
+    }
+    const dateStr = now().toISOString().slice(0, 10);
+    const spreadsheetName = `Стратегический трекинг v2.0 — ${company} (${dateStr})`;
+    await ctx.reply('📊 Создаю Google Sheets по шаблону v2.0…').catch(() => {});
+    try {
+      const result = await createClientSpreadsheetFn({
+        extraction: session.draft.extraction,
+        spreadsheetName,
+        existingSpreadsheetId,
+        logger: f0Log,
+      });
+      session.spreadsheetId = result.spreadsheetId;
+      await saveF0Session(chatId, session);
+      f0Log.info(
+        { step: 'f0.sheet_created', chatId, spreadsheetId: result.spreadsheetId, counts: result.counts },
+        'f0 client spreadsheet created',
+      );
+      const lines = [
+        '✅ Таблица клиента создана:',
+        result.spreadsheetUrl,
+        `Панель OKR: ${result.counts.okr} · гипотезы: ${result.counts.hypotheses} · участники: ${result.counts.stakeholders}`,
+        // Story 7.6: слаг клиента нужен для /report <url> <clientId> — показываем явно.
+        `ID клиента: ${clientId}  (для /report <ссылка> ${clientId})`,
+      ];
+      if (result.shared.length > 0) {
+        lines.push(`Доступ выдан: ${result.shared.join(', ')}`);
+      }
+      await ctx.reply(lines.join('\n')).catch(() => {});
+
+      // Story 7.5/7.6: карточка клиента + регистрация в реестре мультиклиентности.
+      await finalizeClientCard(ctx, chatId, session, result.spreadsheetId, result.spreadsheetUrl);
+    } catch (err) {
+      if (err instanceof F0SheetsError) {
+        // Таблица уже создана — сохраняем id, чтобы повтор не создал дубль.
+        if (err.spreadsheetId !== undefined && session.spreadsheetId === undefined) {
+          session.spreadsheetId = err.spreadsheetId;
+          await saveF0Session(chatId, session);
+        }
+        f0Log.warn(
+          { step: 'f0.sheet_create_failed', chatId, code: err.code, spreadsheetId: err.spreadsheetId },
+          'f0 client spreadsheet creation failed',
+        );
+        await ctx.reply(f0SheetsErrorText(err)).catch(() => {});
+        return;
+      }
+      f0Log.error({ step: 'f0.sheet_create_failed', chatId, err }, 'f0 sheet creation unexpected error');
+      await ctx
+        .reply('⚠️ Непредвиденная ошибка при создании таблицы. Данные сохранены — повтори: /confirm.')
+        .catch(() => {});
+    }
+  }
+
   bot.command('confirm', async (ctx) => {
     const chatId = ctx.chat.id;
     const session = await getOrRestoreF0Session(chatId);
@@ -1232,16 +1393,50 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
     if (session.schedule !== null && session.schedule.length > 0) {
       readyLines.push(`🗓 Расписание встреч: ${session.schedule}`);
     }
-    readyLines.push(
-      'Следующие шаги: карточка клиента и Google Sheets (появятся в ближайших обновлениях бота).',
-    );
     await ctx.reply(readyLines.join('\n')).catch(() => {});
+
+    // Story 7.4: создаём Google Sheets клиента по шаблону v2.0.
+    await createSheetForSession(ctx, chatId, session);
+  });
+
+  // ───────── /status — чеклист готовности клиента к неделе 1 (Story 7.5) ─────────
+  bot.command('status', async (ctx) => {
+    const chatId = ctx.chat.id;
+    const session = await getOrRestoreF0Session(chatId);
+    if (session === undefined || session.draft === undefined) {
+      await ctx.reply('ℹ️ Нет активного онбординга. Начни: /newclient.').catch(() => {});
+      return;
+    }
+    const extraction = session.draft.extraction;
+    const company = extraction.company ?? 'Клиент';
+    const clientId = clientIdFromCompany(company);
+    // Карточка с диска (если создана), иначе — снимок из текущей сессии.
+    const card =
+      (await loadClientCard(clientId)) ??
+      buildClientCard({
+        extraction,
+        schedule: session.schedule,
+        trackerChatId: chatId,
+        spreadsheetId: session.spreadsheetId ?? null,
+        spreadsheetUrl: session.spreadsheetId
+          ? `https://docs.google.com/spreadsheets/d/${session.spreadsheetId}/edit`
+          : null,
+        startDate: now().toISOString(),
+        clientId,
+        now,
+      });
+    const items = computeReadinessChecklist(card, extraction);
+    await ctx.reply(renderReadinessMessage(card, items)).catch(() => {});
   });
 
   // ───────── /report command ─────────
   bot.command('report', async (ctx) => {
     const arg = ctx.match ?? '';
-    const parsed = parseReportUrl(arg);
+    // Story 7.6: /report <url> [clientId] — второй токен выбирает клиента (URL без пробелов).
+    const tokens = arg.trim().split(/\s+/).filter((t) => t.length > 0);
+    const urlArg = tokens[0] ?? '';
+    const clientIdArg = tokens[1];
+    const parsed = parseReportUrl(urlArg);
     if (!parsed.ok) {
       const reason: UrlParseFailure = parsed.reason;
       const text = formatErrorMessage(reason);
@@ -1266,18 +1461,32 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
       return;
     }
 
+    // Story 7.6: резолв клиента из аргумента (иначе DEFAULT_CLIENT_ID для обратной совместимости).
+    let clientId = DEFAULT_CLIENT_ID;
+    if (clientIdArg !== undefined) {
+      const known = await listClientIds();
+      if (!known.includes(clientIdArg)) {
+        await ctx
+          .reply(`ℹ️ Неизвестный клиент «${clientIdArg}». Известные: ${known.join(', ')}.`)
+          .catch(() => {});
+        return;
+      }
+      clientId = clientIdArg;
+    }
+    const topName = (await getClientTopName(clientId)) ?? DEFAULT_TOP_NAME;
+
     try {
-      assertClientId(DEFAULT_CLIENT_ID);
+      assertClientId(clientId);
     } catch (err) {
       log.error(
-        { err, step: 'bot.report.invalid_client_id', clientId: DEFAULT_CLIENT_ID },
+        { err, step: 'bot.report.invalid_client_id', clientId },
         'invalid clientId — refusing to enqueue',
       );
       alertOps({
         pipeline: 'F1',
         step: 'bot.report.invalid_client_id',
         error: err,
-        context: { clientId: DEFAULT_CLIENT_ID },
+        context: { clientId },
       });
       await ctx
         .reply(formatErrorMessage('pipeline_failed'))
@@ -1289,8 +1498,8 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
       id: randomUUID().slice(0, 8),
       chatId: ctx.chat.id,
       url: parsed.url,
-      clientId: DEFAULT_CLIENT_ID,
-      topName: DEFAULT_TOP_NAME,
+      clientId,
+      topName,
       meetingDate: now().toISOString(),
       status: 'queued',
       queuedAt: now().toISOString(),
@@ -1778,6 +1987,7 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
         { command: 'newclient', description: 'Онбординг нового клиента' },
         { command: 'draft', description: 'Собрать черновик онбординга из пакета' },
         { command: 'confirm', description: 'Завершить онбординг клиента' },
+        { command: 'status', description: 'Готовность клиента к неделе 1' },
       ]);
     } catch (err) {
       log.warn({ err }, 'failed to set bot commands — continuing');
@@ -1797,7 +2007,8 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
         await bot.api.sendMessage(opsChatId, text);
       });
       setOpsSheetsWriter(async (row) => {
-        await appendOpsLog(row);
+        // Story 7.6: ops-лог пишется в таблицу своего клиента (реестр), fallback geonline.
+        await appendOpsLog(row, row.clientId || 'geonline');
       });
       _watchdogHandle = await startWatchdog({ aidarMention: config.OPS_AIDAR_MENTION });
       // Story 1.10: cleanup + tar backup scheduler (in-process setInterval; no node-cron).

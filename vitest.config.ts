@@ -18,6 +18,8 @@ export default defineConfig({
       SONIOX_API_KEY: 'test-soniox-key',
       GOOGLE_SERVICE_ACCOUNT_JSON: './data/google-service-account.json',
       GEONLINE_F0_SHEET_ID: 'test-sheet-id',
+      F0_SHEETS_TEMPLATE_ID: 'test-template-id',
+      F0_SHEETS_SHARE_EMAILS: 'tracker@example.com',
       TELEGRAM_TRACKER_CHAT_IDS: '7890',
     },
   },

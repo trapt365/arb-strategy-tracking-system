@@ -36,6 +36,11 @@ vi.mock('../ops.js', () => ({
   alertOps: vi.fn(),
 }));
 
+const { getClientSheetIdMock } = vi.hoisted(() => ({ getClientSheetIdMock: vi.fn() }));
+vi.mock('../client-registry.js', () => ({
+  getClientSheetId: getClientSheetIdMock,
+}));
+
 import {
   readClientContext,
   appendOpsLog,
@@ -80,6 +85,13 @@ beforeEach(() => {
   batchGetMock.mockReset();
   appendMock.mockReset();
   vi.mocked(alertOps).mockReset();
+  getClientSheetIdMock.mockReset();
+  // geonline → config-таблица (fallback); 'pilot' → зарегистрированный клиент; иначе — неизвестен.
+  getClientSheetIdMock.mockImplementation(async (clientId: string) => {
+    if (clientId === 'geonline') return 'geonline-sheet-id';
+    if (clientId === 'pilot') return 'pilot-sheet-id';
+    return undefined;
+  });
   _resetSheetsClientForTest();
 });
 
@@ -430,6 +442,24 @@ describe('appendOpsLog (Story 1.9)', () => {
     expect((err as SheetsAdapterError).code).toBe('auth');
     expect((err as SheetsAdapterError).context.reason).toBe('unknown_clientId');
     expect(appendMock).not.toHaveBeenCalled();
+  });
+
+  // Story 7.6: у таблицы нового клиента может не быть листа `_ops_logs` → падаем на geonline.
+  it('client sheet append fails (missing _ops_logs) → falls back to geonline sheet', async () => {
+    appendMock
+      .mockRejectedValueOnce({ response: { status: 400 } }) // pilot: нет листа _ops_logs
+      .mockResolvedValueOnce({ data: { updates: { updatedRows: 1 } } }); // geonline ok
+    await appendOpsLog(sampleRow, 'pilot');
+    expect(appendMock).toHaveBeenCalledTimes(2);
+    expect(appendMock.mock.calls[0]![0].spreadsheetId).toBe('pilot-sheet-id');
+    expect(appendMock.mock.calls[1]![0].spreadsheetId).toBe('geonline-sheet-id');
+  });
+
+  it('client sheet + geonline fallback both fail → throws mapped error', async () => {
+    appendMock.mockRejectedValue({ response: { status: 400 } });
+    const err = await appendOpsLog(sampleRow, 'pilot').catch((e) => e);
+    expect(err).toBeInstanceOf(SheetsAdapterError);
+    expect(appendMock).toHaveBeenCalledTimes(2);
   });
 
   it('does NOT call alertOps (recursive loop prevention)', async () => {
