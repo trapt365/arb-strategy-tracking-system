@@ -9,6 +9,12 @@ module.exports = {
       name: 'tracking-bot',
       script: 'dist/index.js',
       cwd: __dirname,
+      // WSL-маршрут до api.telegram.org коннектится ~0.5–1 с, а дефолтный
+      // Happy-Eyeballs-таймаут node (autoSelectFamily) — 250 мс: node убивал живую
+      // IPv4-попытку, падал на мёртвый в WSL IPv6 и получал ETIMEDOUT, пока
+      // curl с того же хоста работал. Симптом: бот online, health ok, но 0 TCP
+      // и молчание на команды (2026-07-09). 3 с хватает с запасом.
+      node_args: '--network-family-autoselection-attempt-timeout=3000',
       env: {
         NODE_ENV: 'production',
         TZ: 'Asia/Almaty',
