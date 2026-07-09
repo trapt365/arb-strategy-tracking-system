@@ -782,7 +782,7 @@ describe('bot — approval workflow (Story 1.6)', () => {
     expect((cbqAnswers.at(-1)!.payload as { text?: string }).text).toBe('ℹ️ Отчёт уже недоступен.');
   });
 
-  it('AC#9: post_detail stub responds "Скоро доступно" (post_note is now a real handler — Story 1.7)', async () => {
+  it('AC#9: post_detail responds with spreadsheet URL (Story 9.6)', async () => {
     const appendApprovalMock = vi.fn().mockResolvedValue(undefined);
     const bot_instance = buildBot({ appendApproval: appendApprovalMock });
     const job = await runJobFromBot(bot_instance);
@@ -790,10 +790,11 @@ describe('bot — approval workflow (Story 1.6)', () => {
     await bot_instance.bot.handleUpdate(callbackUpdate(`approve:${job.id}`));
     await bot_instance.bot.handleUpdate(callbackUpdate(`post_detail:${job.id}`));
 
-    const stubAnswers = bot_instance.calls.filter(
-      (c) => c.method === 'answerCallbackQuery' && (c.payload as { text?: string }).text?.includes('Скоро'),
+    // post_detail should reply with the geonline sheet URL (clientId='geonline' → GEONLINE_F0_SHEET_ID='test-sheet-id')
+    const urlMessages = bot_instance.calls.filter(
+      (c) => c.method === 'sendMessage' && (c.payload.text as string).includes('docs.google.com/spreadsheets/d/test-sheet-id'),
     );
-    expect(stubAnswers.length).toBeGreaterThanOrEqual(1);
+    expect(urlMessages.length).toBeGreaterThanOrEqual(1);
   });
 
   it('multi-report edit corruption — ✏️ on B while A is editing resets A.approvalStatus', async () => {
@@ -1133,7 +1134,7 @@ describe('bot — delivery workflow (Story 1.7)', () => {
     expect(popups.length).toBeGreaterThanOrEqual(1);
   });
 
-  it('AC#10: post_detail remains stub → "Скоро доступно 🔜"', async () => {
+  it('AC#10: post_detail with known job responds with spreadsheet URL (Story 9.6)', async () => {
     const bot_instance = buildBot({
       appendApproval: vi.fn().mockResolvedValue(undefined),
     });
@@ -1141,10 +1142,41 @@ describe('bot — delivery workflow (Story 1.7)', () => {
 
     await bot_instance.bot.handleUpdate(callbackUpdate(`post_detail:${job.id}`));
 
-    const stubAnswers = bot_instance.calls.filter(
-      (c) => c.method === 'answerCallbackQuery' && (c.payload as { text?: string }).text?.includes('Скоро'),
+    // geonline clientId → GEONLINE_F0_SHEET_ID = 'test-sheet-id'
+    const urlMessages = bot_instance.calls.filter(
+      (c) => c.method === 'sendMessage' && (c.payload.text as string).includes('docs.google.com/spreadsheets/d/test-sheet-id'),
     );
-    expect(stubAnswers.length).toBeGreaterThanOrEqual(1);
+    expect(urlMessages.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('AC#10b: post_detail with stale jobId → answerCallbackQuery with "недоступен"', async () => {
+    const bot_instance = buildBot({
+      appendApproval: vi.fn().mockResolvedValue(undefined),
+    });
+
+    await bot_instance.bot.handleUpdate(callbackUpdate('post_detail:unknown-stale-id'));
+
+    const popups = bot_instance.calls.filter(
+      (c) => c.method === 'answerCallbackQuery' && (c.payload as { text?: string }).text?.includes('недоступен'),
+    );
+    expect(popups.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('AC#10c: post_detail with job but no registered sheet → reply "Таблица клиента не найдена" (Story 9.6)', async () => {
+    // completedJobs stores object reference → mutating clientId after processJob affects peekJob lookup
+    const bot_instance = buildBot({
+      appendApproval: vi.fn().mockResolvedValue(undefined),
+    });
+    const job = await runJobFromBot(bot_instance);
+    // Force clientId to one with no registry entry and no config fallback
+    job.clientId = 'unknown-no-sheet-9-6';
+
+    await bot_instance.bot.handleUpdate(callbackUpdate(`post_detail:${job.id}`));
+
+    const notFoundReply = bot_instance.calls.filter(
+      (c) => c.method === 'sendMessage' && (c.payload.text as string).includes('Таблица клиента не найдена'),
+    );
+    expect(notFoundReply.length).toBeGreaterThanOrEqual(1);
   });
 
   it('AC#5 (commitment lifecycle): delivery includes lifecycle emojis', async () => {
@@ -1579,6 +1611,54 @@ describe('bot — F0 сборка черновика (Story 8.3, W2+W4)', () => 
       (c) => c.method === 'sendMessage' && (c.payload.text as string).includes('Собираю черновик'),
     );
     expect(progress!.payload.text).toContain('1–2 минуты');
+  });
+
+  it('Story 9.6: /confirm compact KR warning — счётчик в sheets-reply, нет per-KR деталей', async () => {
+    const extractionWithNullKr = f0Extraction({
+      objectives: [
+        {
+          title: 'O1',
+          krs: [
+            {
+              formulation: 'Выручка',
+              base: null,
+              target: null,
+              owner: null,
+              deadline: null,
+            },
+          ],
+        },
+      ],
+    } as unknown as Partial<F0FullExtraction>);
+    const spreadsheetUrl = 'https://docs.google.com/spreadsheets/d/s1/edit';
+    const { bot, calls } = buildF0Bot({
+      runF0FullDraft: ((async () => f0DraftResult(extractionWithNullKr)) as unknown) as BotDeps['runF0FullDraft'],
+      createClientSpreadsheet: ((async () => ({
+        spreadsheetId: 's1',
+        spreadsheetUrl,
+        counts: { okr: 1, hypotheses: 0, stakeholders: 1, personalSheets: 0 },
+        shared: [],
+      })) as unknown) as BotDeps['createClientSpreadsheet'],
+    });
+    await completeProfileMinimum(bot);
+    await bot.handleUpdate(documentUpdate('strategy.md'));
+    await bot.handleUpdate(commandUpdate('/draft'));
+    await bot.handleUpdate(commandUpdate('/confirm'));
+
+    // (а) confirm reply не содержит per-KR деталей
+    const confirmReply = calls.find(
+      (c) => c.method === 'sendMessage' && (c.payload.text as string).includes('✅ Онбординг подтверждён'),
+    );
+    expect(confirmReply).toBeDefined();
+    expect(confirmReply!.payload.text).not.toContain('«');
+    expect(confirmReply!.payload.text).not.toContain('reasons');
+
+    // (б) sheets-reply содержит счётчик KR и URL
+    const sheetsReply = calls.find(
+      (c) => c.method === 'sendMessage' && (c.payload.text as string).includes('⚠️') && (c.payload.text as string).includes('1 KR стоит дозаполнить'),
+    );
+    expect(sheetsReply).toBeDefined();
+    expect(sheetsReply!.payload.text).toContain(spreadsheetUrl);
   });
 });
 

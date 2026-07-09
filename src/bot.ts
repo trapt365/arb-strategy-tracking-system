@@ -3158,6 +3158,7 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
     ctx: { reply: (t: string) => Promise<unknown> },
     chatId: number,
     session: F0Session,
+    krWarnings: number = 0,
   ): Promise<void> {
     if (session.draft === undefined) return;
     const company = session.draft.extraction.company ?? 'Клиент';
@@ -3221,6 +3222,9 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
         // Story 7.6: слаг клиента нужен для /report <url> <clientId> — показываем явно.
         `ID клиента: ${clientId}  (для /report <ссылка> ${clientId})`,
       ];
+      if (krWarnings > 0) {
+        lines.push(`⚠️ ${krWarnings} KR стоит дозаполнить — дозаполни в таблице: ${result.spreadsheetUrl}`);
+      }
       if (result.shared.length > 0) {
         lines.push(`Доступ выдан: ${result.shared.join(', ')}`);
       }
@@ -3273,22 +3277,13 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
       'f0 onboarding confirmed ready',
     );
     const readyLines = ['✅ Онбординг подтверждён — данные готовы.'];
-    if (warnings.length > 0) {
-      readyLines.push(
-        `⚠️ ${warnings.length} KR стоит дозаполнить (база/цель/ответственный) — можно позже в таблице или через /resume:`,
-      );
-      for (const issue of warnings.slice(0, 10)) {
-        readyLines.push(`  – ${issue.ref} «${issue.formulation.slice(0, 50)}»: ${issue.reasons.join(', ')}`);
-      }
-      if (warnings.length > 10) readyLines.push(`  … и ещё ${warnings.length - 10}`);
-    }
     if (session.schedule !== null && session.schedule.length > 0) {
       readyLines.push(`🗓 Расписание встреч: ${session.schedule}`);
     }
     await ctx.reply(readyLines.join('\n')).catch(() => {});
 
     // Story 7.4: создаём Google Sheets клиента по шаблону v2.0.
-    await createSheetForSession(ctx, chatId, session);
+    await createSheetForSession(ctx, chatId, session, warnings.length);
   });
 
   // ───────── /status — чеклист готовности клиента к неделе 1 (Story 7.5) ─────────
@@ -3726,10 +3721,23 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
     log.info({ step: 'bot.post_note.started', jobId }, 'note flow started');
   });
 
-  // Story 1.7: post_detail stub (separate from post_note)
+  // Story 9.6: post_detail — реальная ссылка на таблицу клиента.
   bot.callbackQuery(/^post_detail:(.+)$/, async (ctx) => {
-    await ctx.answerCallbackQuery({ text: 'Скоро доступно 🔜' });
-    log.info({ step: 'bot.post_approve.stub', action: ctx.callbackQuery.data }, 'stub handler');
+    const jobId = ctx.match[1]!;
+    const job = peekJob(jobId);
+    if (!job) {
+      await ctx.answerCallbackQuery({ text: 'ℹ️ Отчёт уже недоступен.' });
+      return;
+    }
+    const sheetId = await getClientSheetId(job.clientId).catch(() => undefined);
+    if (!sheetId || sheetId.length === 0) {
+      await ctx.answerCallbackQuery();
+      await ctx.reply('ℹ️ Таблица клиента не найдена.').catch(() => {});
+      return;
+    }
+    await ctx.answerCallbackQuery();
+    await ctx.reply(`🔗 Таблица клиента:\nhttps://docs.google.com/spreadsheets/d/${sheetId}/edit`).catch(() => {});
+    log.info({ step: 'bot.post_detail.sent', jobId, clientId: job.clientId }, 'post_detail URL sent');
   });
 
   // ─── Story 9.5: голосовые сообщения ──────────────────────────────────────────
