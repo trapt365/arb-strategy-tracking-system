@@ -400,8 +400,8 @@ export function renderProfileQuestion(
   if (q.example !== undefined) lines.push(`Пример: «${q.example}»`);
   lines.push(
     q.type === 'file-ok'
-      ? 'Ответь текстом · 📎 файлом · /skip — пропустить.'
-      : 'Ответь текстом · /skip — пропустить.',
+      ? 'Ответь текстом · 📎 файлом · 🎤 голосом · /skip — пропустить.'
+      : 'Ответь текстом · 🎤 голосом · /skip — пропустить.',
   );
   return lines.join('\n');
 }

@@ -178,7 +178,7 @@ describe('рендер вопроса и счётчики', () => {
     expect(text).toContain('❓ 🔑 (2/4) Чем занимается компания и для кого?');
     expect(text).toContain('Пример: «');
     expect(text).toContain('/skip');
-    expect(text).not.toContain('🎤'); // голос — только в 9.5
+    expect(text).toContain('🎤'); // Story 9.5: голосовой ввод в профиле
   });
 
   it('без заголовка — только вопрос; A3.1 подсказывает 📎', () => {

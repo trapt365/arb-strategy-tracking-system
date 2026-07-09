@@ -408,7 +408,7 @@ export const F0PersistedSessionSchema = z.object({
   chatId: z.number().int(),
   sessionId: z.string().min(1),
   // Story 9.1: 'profile' — диалог профиля клиента до сбора документов.
-  phase: z.enum(['profile', 'collecting', 'filling', 'ready']),
+  phase: z.enum(['profile', 'collecting', 'filling', 'ready', 'questionnaire']),
   // Story 9.1: до сборки черновика (фаза profile/collecting) черновика нет —
   // draftId/extraction optional. Старые файлы (7.3–8.6) содержат оба поля и валидны.
   draftId: z.string().min(1).optional(),
@@ -439,6 +439,17 @@ export const F0PersistedSessionSchema = z.object({
   profileExtended: z.boolean().optional(),
   // Дозаполнение профиля из карточки готового клиента: ответы дописываются в card.json.
   profileCardClientId: z.string().optional(),
+  // Story 9.5: вопросник-фаза — этапы, индексы, накопленные данные.
+  qnStage: z.enum(['obj_collect', 'b2_kr', 'hypo_collect']).optional(),
+  qnObjIdx: z.number().int().nonnegative().optional(),
+  qnKrStep: z.enum(['text', 'owner']).optional(),
+  qnHypoStep: z.enum(['statement', 'metric']).optional(),
+  qnObjectives: z.array(z.string()).optional(),
+  qnKrData: z.array(z.object({ formulation: z.string(), owner: z.string().nullable() })).optional(),
+  qnHypotheses: z.array(z.object({ statement: z.string(), metric: z.string().nullable() })).optional(),
+  qnRetryKrIdx: z.number().int().nonnegative().optional(),
+  // Story 9.5: голосовые ответы — pending transcript, ждём подтверждения трекером.
+  voicePending: z.object({ transcript: z.string() }).optional(),
   updatedAt: z.string().min(1),
 });
 export type F0PersistedSession = z.infer<typeof F0PersistedSessionSchema>;

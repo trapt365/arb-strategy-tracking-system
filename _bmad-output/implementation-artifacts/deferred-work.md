@@ -211,3 +211,21 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-9-4-edinyy-vkhod-prezentacii-v-dokumentakh-robastnyy-xlsx.md`
   summary: Расширение словаря синонимов xlsx не покрыто тестами — нет regression-guard для новых синонимов.
   evidence: Файл `ARB_Solutions_Стратегический_трекер_v1_1_1.xlsx` отсутствует в репозитории; spec Design Notes явно откладывает snapshot-тест до появления файла. Добавить как test fixture когда файл будет доступен.
+
+## Deferred from: code review of story 9.5 (2026-07-09)
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-9-5-voprosnik-s-golosovymi-otvetami.md`
+  summary: Questionnaire session persist-restore round-trip untested — no test exercises disk round-trip for questionnaire-phase state (qnObjectives, qnKrData, qnHypotheses, etc.).
+  evidence: All 9.5 tests use a single bot instance; getOrRestoreF0Session always returns in-memory session, never exercising the Zod parse → restore path. Profile and filling phases have analogous restart tests (bot.test.ts:2350, :1960); questionnaire does not. Silent regression if any qn* field is dropped from saveF0Session serialization.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-9-5-voprosnik-s-golosovymi-otvetami.md`
+  summary: voice_ok pressed with no voicePending (stale button) has no test coverage.
+  evidence: The "ℹ️ Нет ожидающего голосового ответа." branch exists in production code (bot.ts:voice_ok callback) but is exercised by no test. A stale voice_ok button after bot restart would hit this path in production.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-9-5-voprosnik-s-golosovymi-otvetami.md`
+  summary: startF0SessionGuarded progress description has no questionnaire branch — shows "файлов в пакете: 0" when /newclient is issued during active questionnaire phase.
+  evidence: f0SessionAtRisk returns true for questionnaire phase, triggering the progress prompt; the description-building logic has no questionnaire case, so it defaults to a collecting-phase-style summary that is misleading. Rare edge case (user types /newclient while in questionnaire).
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-9-5-voprosnik-s-golosovymi-otvetami.md`
+  summary: Voice duration boundary at exactly 300s not tested — only 301s (rejected) is covered.
+  evidence: Test (c) sends voiceUpdate(301) and verifies rejection. The guard is `voice.duration > 300`, so duration=300 should be accepted. No test verifies this boundary, leaving an off-by-one risk invisible.

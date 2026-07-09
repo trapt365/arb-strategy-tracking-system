@@ -1,5 +1,8 @@
 import { Bot, GrammyError, InlineKeyboard, type Context } from 'grammy';
 import { randomUUID } from 'node:crypto';
+import { writeFile, unlink } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join as pathJoin } from 'node:path';
 import type { UserFromGetMe } from 'grammy/types';
 import { config, parseTrackerChatIds } from './config.js';
 import { logger as rootLogger, type Logger } from './logger.js';
@@ -88,6 +91,15 @@ import {
   type ProfileQuestion,
 } from './f0-profile.js';
 import { extractTextFromDocument as defaultExtractTextFromDocument } from './utils/f0-document.js';
+import { createSonioxClient, type SonioxClient } from './adapters/soniox.js';
+import {
+  QN_B1_3_TEXT,
+  QN_B5_1_TEXT,
+  QN_B5_2_TEXT,
+  qnB2_1Text,
+  qnB2_2Text,
+  buildQnDraft,
+} from './f0-questionnaire.js';
 import {
   isSupportedF0Document,
   isXlsxDocument,
@@ -171,6 +183,8 @@ export interface BotDeps {
   extractTextFromDocument?: typeof defaultExtractTextFromDocument;
   /** Скачивание файла Telegram по file_path (тесты подменяют, чтобы не ходить в Bot API). */
   downloadTelegramFile?: (filePath: string) => Promise<Buffer>;
+  /** Story 9.5: Soniox-клиент для транскрипции голосовых ответов. */
+  sonioxClient?: SonioxClient;
 }
 
 export interface CreatedBot {
@@ -240,6 +254,10 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
       ));
   const now = deps.now ?? ((): Date => new Date());
   const queue = deps.queue ?? createReportQueue({ maxSize: queueMaxSize, logger: log });
+  // Story 9.5: Soniox-клиент для транскрипции голосовых ответов (lazy — не нужен в тестах).
+  const sonioxClientResolved: SonioxClient =
+    deps.sonioxClient ??
+    createSonioxClient({ logger: baseLogger });
 
   // In tests, pass deps.botInfo explicitly to skip getMe(). In production, omit so grammY
   // calls getMe() on start — required for /cmd@username matching in group chats.
@@ -276,7 +294,8 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
     // Story 9.1: profile — обязательный диалог «Профиль клиента» (Часть A) ДО сбора
     // документов; collecting — приём файлов; filling — диалог дозаполнения;
     // ready — онбординг завершён.
-    phase: 'profile' | 'collecting' | 'filling' | 'ready';
+    // Story 9.5: questionnaire — диалог вопросника (B1.3/B2.1/B2.2/B5.1/B5.2).
+    phase: 'profile' | 'collecting' | 'filling' | 'ready' | 'questionnaire';
     // Story 7.2: файлы пакета аккумулируются, черновик собирается по кнопке/команде.
     documents: F0AccumulatedDoc[];
     // Бегущая сумма символов пакета — ранний отказ до превышения бюджета извлечения.
@@ -310,6 +329,17 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
     profileExtended?: boolean;
     // Дозаполнение профиля из карточки готового клиента — ответы дописываются в card.json.
     profileCardClientId?: string;
+    // Story 9.5: вопросник-фаза — этапы, индексы, накопленные данные.
+    qnStage?: 'obj_collect' | 'b2_kr' | 'hypo_collect';
+    qnObjIdx?: number;
+    qnKrStep?: 'text' | 'owner';
+    qnHypoStep?: 'statement' | 'metric';
+    qnObjectives?: string[];
+    qnKrData?: Array<{ formulation: string; owner: string | null }>;
+    qnHypotheses?: Array<{ statement: string; metric: string | null }>;
+    qnRetryKrIdx?: number;
+    // Story 9.5: голосовые ответы — pending transcript, ждём подтверждения трекером.
+    voicePending?: { transcript: string };
   }
   const f0Sessions = new Map<number, F0Session>();
 
@@ -317,7 +347,8 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
   async function saveF0Session(chatId: number, s: F0Session): Promise<void> {
     // Story 9.1: профиль персистится после каждого ответа (механика 7.3) — до черновика.
     // Без черновика и без профиля (старый collecting) персистить по-прежнему нечего.
-    if (s.draft === undefined && s.profile === undefined) return;
+    // Story 9.5: вопросник — профиль всегда есть (9.1 обязателен), страховка на будущее.
+    if (s.draft === undefined && s.profile === undefined && s.phase !== 'questionnaire') return;
     await persistF0Session({
       chatId,
       sessionId: s.id,
@@ -340,6 +371,16 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
       ...(s.profileCardClientId !== undefined
         ? { profileCardClientId: s.profileCardClientId }
         : {}),
+      // Story 9.5: вопросник-поля.
+      ...(s.qnStage !== undefined ? { qnStage: s.qnStage } : {}),
+      ...(s.qnObjIdx !== undefined ? { qnObjIdx: s.qnObjIdx } : {}),
+      ...(s.qnKrStep !== undefined ? { qnKrStep: s.qnKrStep } : {}),
+      ...(s.qnHypoStep !== undefined ? { qnHypoStep: s.qnHypoStep } : {}),
+      ...(s.qnObjectives !== undefined ? { qnObjectives: s.qnObjectives } : {}),
+      ...(s.qnKrData !== undefined ? { qnKrData: s.qnKrData } : {}),
+      ...(s.qnHypotheses !== undefined ? { qnHypotheses: s.qnHypotheses } : {}),
+      ...(s.qnRetryKrIdx !== undefined ? { qnRetryKrIdx: s.qnRetryKrIdx } : {}),
+      ...(s.voicePending !== undefined ? { voicePending: s.voicePending } : {}),
       updatedAt: now().toISOString(),
     });
   }
@@ -377,6 +418,16 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
       profileRetryQIndex: persisted.profileRetryQIndex,
       profileExtended: persisted.profileExtended,
       profileCardClientId: persisted.profileCardClientId,
+      // Story 9.5: вопросник-поля.
+      qnStage: persisted.qnStage,
+      qnObjIdx: persisted.qnObjIdx,
+      qnKrStep: persisted.qnKrStep,
+      qnHypoStep: persisted.qnHypoStep,
+      qnObjectives: persisted.qnObjectives,
+      qnKrData: persisted.qnKrData,
+      qnHypotheses: persisted.qnHypotheses,
+      qnRetryKrIdx: persisted.qnRetryKrIdx,
+      voicePending: persisted.voicePending,
     };
     f0Sessions.set(chatId, restored);
     f0Log.info(
@@ -1527,10 +1578,38 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
 
   bot.callbackQuery('f0_mode_import', async (ctx) => chooseF0Mode(ctx, 'import'));
   bot.callbackQuery('f0_mode_synthesis', async (ctx) => chooseF0Mode(ctx, 'synthesis'));
-  // Story 9.4: stub для вопросника (9.5 заменит handler).
+  // Story 9.5: вопросник — обработчик кнопки «💬 Вопросник (с голосом)».
   bot.callbackQuery('f0_mode_questionnaire', async (ctx) => {
     await ctx.answerCallbackQuery().catch(() => {});
-    await ctx.reply('💬 Вопросник появится в следующем обновлении — пока выбери 📄 Документы или 📥 Excel.').catch(() => {});
+    const chatId = ctx.chat?.id;
+    if (chatId === undefined) return;
+    const session = await getOrRestoreF0Session(chatId);
+    // Как у chooseF0Mode: работает только в collecting (после профиля).
+    if (session?.phase === 'profile') {
+      await ctx
+        .reply('ℹ️ Сначала 🔑-минимум профиля клиента — способ загрузки стратегии предложу после. Продолжить — /resume.')
+        .catch(() => {});
+      return;
+    }
+    if (session === undefined || session.phase !== 'collecting') {
+      await ctx.reply(F0_NO_SESSION_TEXT).catch(() => {});
+      return;
+    }
+    session.phase = 'questionnaire';
+    session.qnStage = 'obj_collect';
+    session.qnObjectives = [];
+    session.qnKrData = [];
+    session.qnHypotheses = [];
+    await saveF0Session(chatId, session);
+    f0Log.info(
+      { step: 'f0.questionnaire_started', chatId, sessionId: session.id },
+      'f0 questionnaire started',
+    );
+    await ctx
+      .reply(QN_B1_3_TEXT, {
+        reply_markup: new InlineKeyboard().text('✅ Готово', 'f0q_obj_done'),
+      })
+      .catch(() => {});
   });
 
   // Story 8.4 (W3): сессия с несохранённым прогрессом — черновик с ответами (filling)
@@ -1541,6 +1620,8 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
     if (session.phase === 'filling') return true;
     // Story 9.1: начатый профиль (есть хотя бы один ответ) — прогресс, не сбрасываем молча.
     if (session.phase === 'profile') return (session.profileQIndex ?? 0) > 0;
+    // Story 9.5: активный вопросник — тоже прогресс.
+    if (session.phase === 'questionnaire') return true;
     // Story 8.5: принятый, но не отработанный xlsx — тоже несохранённый прогресс.
     // Story 9.1: собранный профиль в collecting (до черновика) — тоже прогресс.
     return (
@@ -1550,6 +1631,300 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
         session.profile !== undefined)
     );
   }
+
+  // ─── Story 9.5: вопросник — вспомогательные функции ─────────────────────────
+
+  /** Повтор текущего вопроса вопросника (для /resume). */
+  async function replayCurrentQnQuestion(ctx: Context, session: F0Session): Promise<void> {
+    const stage = session.qnStage ?? 'obj_collect';
+    const objectives = session.qnObjectives ?? [];
+    if (stage === 'obj_collect') {
+      await ctx
+        .reply(QN_B1_3_TEXT, {
+          reply_markup: new InlineKeyboard().text('✅ Готово', 'f0q_obj_done'),
+        })
+        .catch(() => {});
+    } else if (stage === 'b2_kr') {
+      const objIdx = session.qnObjIdx ?? 0;
+      const objTitle = objectives[objIdx] ?? `Направление ${objIdx + 1}`;
+      const krStep = session.qnKrStep ?? 'text';
+      if (krStep === 'text') {
+        await ctx.reply(qnB2_1Text(objTitle)).catch(() => {});
+      } else {
+        // owner
+        const tops = session.profile?.tops ?? [];
+        const ownerKb = new InlineKeyboard();
+        tops.forEach((top, i) => {
+          ownerKb.text(top.name, `f0q_owner:${i}:${top.name}`);
+        });
+        if (tops.length === 0) {
+          await ctx.reply(`Кто отвечает за результат по направлению «${objTitle}»? Введи имя текстом.`).catch(() => {});
+        } else {
+          await ctx.reply(qnB2_2Text(objTitle), { reply_markup: ownerKb }).catch(() => {});
+        }
+      }
+    } else {
+      // hypo_collect
+      const hypoStep = session.qnHypoStep ?? 'statement';
+      const hypoIdx = session.qnHypotheses?.length ?? 0;
+      if (hypoStep === 'statement') {
+        await ctx
+          .reply(QN_B5_1_TEXT, {
+            reply_markup: new InlineKeyboard().text('✅ Готово', 'f0q_hypo_done'),
+          })
+          .catch(() => {});
+      } else {
+        const stmt = (session.qnHypotheses ?? [])[hypoIdx - 1]?.statement ?? `Гипотеза ${hypoIdx}`;
+        await ctx
+          .reply(`Гипотеза: «${stmt.slice(0, 60)}»\n${QN_B5_2_TEXT}`)
+          .catch(() => {});
+      }
+    }
+  }
+
+  /** Основной state machine вопросника — обрабатывает текстовый (или voice→text) ответ. */
+  async function handleQnAnswer(ctx: Context, session: F0Session, text: string): Promise<void> {
+    const chatId = ctx.chat!.id;
+    const trimmed = text.trim();
+    if (trimmed.length === 0) {
+      await ctx.reply('Пустой ответ. Впиши значение или пропусти: /skip.').catch(() => {});
+      return;
+    }
+    const stage = session.qnStage ?? 'obj_collect';
+
+    if (stage === 'obj_collect') {
+      const objectives = session.qnObjectives ?? [];
+      objectives.push(trimmed);
+      session.qnObjectives = objectives;
+      await saveF0Session(chatId, session);
+      f0Log.info(
+        { step: 'f0.qn.obj_added', chatId, sessionId: session.id, count: objectives.length },
+        'f0 qn objective added',
+      );
+      if (objectives.length >= 5) {
+        // Автопереход при 5 направлениях
+        await ctx.reply(`✅ Добавлено: «${trimmed}». Максимум 5 направлений собран.`).catch(() => {});
+        await startQnB2Kr(ctx, session);
+      } else {
+        await ctx
+          .reply(`✅ Добавлено: «${trimmed}» (${objectives.length}). Добавь ещё или нажми ✅ Готово.`, {
+            reply_markup: new InlineKeyboard().text('✅ Готово', 'f0q_obj_done'),
+          })
+          .catch(() => {});
+      }
+      return;
+    }
+
+    if (stage === 'b2_kr') {
+      const krStep = session.qnKrStep ?? 'text';
+      const objectives = session.qnObjectives ?? [];
+      const objIdx = session.qnObjIdx ?? 0;
+      const objTitle = objectives[objIdx] ?? `Направление ${objIdx + 1}`;
+
+      if (krStep === 'text') {
+        // B2.1: формулировка KR — мягкая числовая валидация (W6).
+        if (!looksNumericAnswer(trimmed) && session.qnRetryKrIdx !== objIdx) {
+          session.qnRetryKrIdx = objIdx;
+          await saveF0Session(chatId, session);
+          await ctx
+            .reply(
+              '🔁 Не вижу числа в ответе, а KR «с X до Y» нужна цифра (например «Выручка с 5 до 10 млн к 31.12»).\n' +
+                'Если так и надо — отправь ещё раз, приму как есть. Или пропусти: /skip.',
+            )
+            .catch(() => {});
+          return;
+        }
+        // Принять формулировку KR, перейти к B2.2 (owner).
+        const krData = session.qnKrData ?? [];
+        krData[objIdx] = { formulation: trimmed, owner: null };
+        session.qnKrData = krData;
+        session.qnKrStep = 'owner';
+        session.qnRetryKrIdx = undefined;
+        await saveF0Session(chatId, session);
+        f0Log.info(
+          { step: 'f0.qn.kr_text', chatId, sessionId: session.id, objIdx },
+          'f0 qn kr formulation saved',
+        );
+        // Предложить выбор ответственного
+        const tops = session.profile?.tops ?? [];
+        if (tops.length === 0) {
+          await ctx.reply(`Кто отвечает за результат по направлению «${objTitle}»? Введи имя текстом.`).catch(() => {});
+        } else {
+          const ownerKb = new InlineKeyboard();
+          tops.forEach((top, i) => {
+            ownerKb.text(top.name, `f0q_owner:${i}:${top.name}`);
+          });
+          await ctx.reply(qnB2_2Text(objTitle), { reply_markup: ownerKb }).catch(() => {});
+        }
+        return;
+      }
+
+      if (krStep === 'owner') {
+        // Fallback текстового ввода ответственного (если топов нет).
+        const krData = session.qnKrData ?? [];
+        const existing = krData[objIdx] ?? { formulation: '', owner: null };
+        existing.owner = trimmed;
+        krData[objIdx] = existing;
+        session.qnKrData = krData;
+        await saveF0Session(chatId, session);
+        await advanceQnB2Kr(ctx, session);
+        return;
+      }
+    }
+
+    if (stage === 'hypo_collect') {
+      const hypoStep = session.qnHypoStep ?? 'statement';
+      const hypotheses = session.qnHypotheses ?? [];
+
+      if (hypoStep === 'statement') {
+        hypotheses.push({ statement: trimmed, metric: null });
+        session.qnHypotheses = hypotheses;
+        session.qnHypoStep = 'metric';
+        await saveF0Session(chatId, session);
+        f0Log.info(
+          { step: 'f0.qn.hypo_stmt', chatId, sessionId: session.id, count: hypotheses.length },
+          'f0 qn hypothesis statement saved',
+        );
+        await ctx
+          .reply(`Гипотеза: «${trimmed.slice(0, 60)}»\n${QN_B5_2_TEXT}`)
+          .catch(() => {});
+        return;
+      }
+
+      if (hypoStep === 'metric') {
+        const lastHypo = hypotheses[hypotheses.length - 1];
+        if (lastHypo !== undefined) {
+          lastHypo.metric = trimmed;
+        }
+        session.qnHypotheses = hypotheses;
+        session.qnHypoStep = 'statement';
+        await saveF0Session(chatId, session);
+        f0Log.info(
+          { step: 'f0.qn.hypo_metric', chatId, sessionId: session.id, count: hypotheses.length },
+          'f0 qn hypothesis metric saved',
+        );
+        await ctx
+          .reply(`✅ Гипотеза ${hypotheses.length} сохранена. Добавь ещё или нажми ✅ Готово.`, {
+            reply_markup: new InlineKeyboard().text('✅ Готово', 'f0q_hypo_done'),
+          })
+          .catch(() => {});
+        return;
+      }
+    }
+  }
+
+  /** Переход от сбора направлений к B2.1 первого направления. */
+  async function startQnB2Kr(ctx: Context, session: F0Session): Promise<void> {
+    const chatId = ctx.chat!.id;
+    const objectives = session.qnObjectives ?? [];
+    session.qnStage = 'b2_kr';
+    session.qnObjIdx = 0;
+    session.qnKrStep = 'text';
+    session.qnRetryKrIdx = undefined;
+    await saveF0Session(chatId, session);
+    const objTitle = objectives[0] ?? 'Направление 1';
+    await ctx.reply(qnB2_1Text(objTitle)).catch(() => {});
+  }
+
+  /** Продвинуться к следующему objective или перейти к hypo_collect. */
+  async function advanceQnB2Kr(ctx: Context, session: F0Session): Promise<void> {
+    const chatId = ctx.chat!.id;
+    const objectives = session.qnObjectives ?? [];
+    const nextIdx = (session.qnObjIdx ?? 0) + 1;
+    if (nextIdx < objectives.length) {
+      session.qnObjIdx = nextIdx;
+      session.qnKrStep = 'text';
+      await saveF0Session(chatId, session);
+      const objTitle = objectives[nextIdx] ?? `Направление ${nextIdx + 1}`;
+      await ctx.reply(qnB2_1Text(objTitle)).catch(() => {});
+    } else {
+      // Все KR собраны — переходим к гипотезам.
+      session.qnStage = 'hypo_collect';
+      session.qnHypoStep = 'statement';
+      await saveF0Session(chatId, session);
+      await ctx
+        .reply(`📋 KR по всем направлениям собраны.\n\n${QN_B5_1_TEXT}`, {
+          reply_markup: new InlineKeyboard().text('✅ Готово', 'f0q_hypo_done'),
+        })
+        .catch(() => {});
+    }
+  }
+
+  // ─── Callbacks вопросника ─────────────────────────────────────────────────
+
+  /** f0q_obj_done: трекер нажал «✅ Готово» после сбора направлений. */
+  bot.callbackQuery('f0q_obj_done', async (ctx) => {
+    await ctx.answerCallbackQuery().catch(() => {});
+    const chatId = ctx.chat?.id;
+    if (chatId === undefined) return;
+    const session = await getOrRestoreF0Session(chatId);
+    if (session?.phase !== 'questionnaire' || session.qnStage !== 'obj_collect') {
+      await ctx.answerCallbackQuery({ text: F0_STALE_BUTTON_TEXT }).catch(() => {});
+      return;
+    }
+    const objectives = session.qnObjectives ?? [];
+    if (objectives.length === 0) {
+      await ctx
+        .reply('ℹ️ Нужно хотя бы одно направление. Назови первое направление — добавлю.')
+        .catch(() => {});
+      return;
+    }
+    await startQnB2Kr(ctx, session);
+  });
+
+  /** f0q_owner:{idx}:{name}: трекер выбрал ответственного кнопкой из топов. */
+  bot.callbackQuery(/^f0q_owner:(\d+):(.+)$/, async (ctx) => {
+    await ctx.answerCallbackQuery().catch(() => {});
+    const chatId = ctx.chat?.id;
+    if (chatId === undefined) return;
+    const session = await getOrRestoreF0Session(chatId);
+    if (session?.phase !== 'questionnaire' || session.qnStage !== 'b2_kr' || session.qnKrStep !== 'owner') {
+      return;
+    }
+    const ownerName = ctx.match[2]!;
+    const objIdx = session.qnObjIdx ?? 0;
+    const krData = session.qnKrData ?? [];
+    const existing = krData[objIdx] ?? { formulation: '', owner: null };
+    existing.owner = ownerName;
+    krData[objIdx] = existing;
+    session.qnKrData = krData;
+    await advanceQnB2Kr(ctx, session);
+  });
+
+  /** f0q_hypo_done: трекер нажал «✅ Готово» после сбора гипотез → buildQnDraft → deliverF0Draft. */
+  bot.callbackQuery('f0q_hypo_done', async (ctx) => {
+    await ctx.answerCallbackQuery().catch(() => {});
+    const chatId = ctx.chat?.id;
+    if (chatId === undefined) return;
+    const session = await getOrRestoreF0Session(chatId);
+    if (session?.phase !== 'questionnaire' || session.qnStage !== 'hypo_collect') {
+      await ctx.answerCallbackQuery({ text: F0_STALE_BUTTON_TEXT }).catch(() => {});
+      return;
+    }
+    // Если metric-шаг активен и гипотез > 0, сохраняем metric=null (как /skip).
+    if (session.qnHypoStep === 'metric') {
+      // metric остаётся null — гипотеза уйдёт в 🔴
+      session.qnHypoStep = 'statement';
+    }
+    const result = buildQnDraft(session);
+    const sourceNames = ['вопросник'];
+    session.mode = 'synthesis'; // для логики deliverF0Draft
+    await deliverF0Draft({
+      ctx,
+      chatId,
+      session,
+      result,
+      sourceNames,
+      sendFirst: async (text) => {
+        try {
+          await ctx.reply(text);
+          return true;
+        } catch {
+          return false;
+        }
+      },
+    });
+  });
 
   /** Запуск онбординга с защитой от молчаливого сброса активной сессии (W3). */
   async function startF0SessionGuarded(ctx: Context, trigger: string): Promise<void> {
@@ -1974,6 +2349,13 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
         return;
       }
       await ctx.reply(F0_PROFILE_FIRST_TEXT).catch(() => {});
+      return;
+    }
+    // Story 9.5: в фазе вопросника файлы не принимаются — направляем к голосу/тексту.
+    if (session.phase === 'questionnaire') {
+      await ctx
+        .reply('ℹ️ Идёт вопросник — отвечай текстом или голосом 🎤.')
+        .catch(() => {});
       return;
     }
     // Файлы принимаем только на этапе сбора. После сборки черновика (filling/ready)
@@ -2609,6 +2991,64 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
       await advanceProfileQuestion(ctx, session, q, 'skipped');
       return;
     }
+    // Story 9.5: /skip в диалоге вопросника.
+    if (session?.phase === 'questionnaire') {
+      const stage = session.qnStage ?? 'obj_collect';
+      if (stage === 'obj_collect') {
+        await ctx.reply('ℹ️ Направления (B1.3) — обязательный минимум, пропустить нельзя. Назови хотя бы одно.').catch(() => {});
+        return;
+      }
+      if (stage === 'b2_kr') {
+        const krStep = session.qnKrStep ?? 'text';
+        const objIdx = session.qnObjIdx ?? 0;
+        const chatId = ctx.chat.id;
+        if (krStep === 'text') {
+          // Пропуск KR: owner = null тоже
+          const krData = session.qnKrData ?? [];
+          krData[objIdx] = { formulation: '/skip', owner: null };
+          session.qnKrData = krData;
+          session.qnRetryKrIdx = undefined;
+          await saveF0Session(chatId, session);
+          await advanceQnB2Kr(ctx, session);
+        } else {
+          // Пропуск owner
+          const krData = session.qnKrData ?? [];
+          const existing = krData[objIdx] ?? { formulation: '', owner: null };
+          existing.owner = null;
+          krData[objIdx] = existing;
+          session.qnKrData = krData;
+          await saveF0Session(chatId, session);
+          await advanceQnB2Kr(ctx, session);
+        }
+        return;
+      }
+      if (stage === 'hypo_collect') {
+        const chatId = ctx.chat.id;
+        const hypoStep = session.qnHypoStep ?? 'statement';
+        if (hypoStep === 'metric') {
+          // Пропуск метрики: metric = null → 🔴
+          const hypotheses = session.qnHypotheses ?? [];
+          const lastHypo = hypotheses[hypotheses.length - 1];
+          if (lastHypo !== undefined) lastHypo.metric = null;
+          session.qnHypotheses = hypotheses;
+          session.qnHypoStep = 'statement';
+          await saveF0Session(chatId, session);
+          await ctx
+            .reply('⚠️ Метрика пропущена — гипотеза уйдёт в 🔴. Добавь ещё или нажми ✅ Готово.', {
+              reply_markup: new InlineKeyboard().text('✅ Готово', 'f0q_hypo_done'),
+            })
+            .catch(() => {});
+        } else {
+          await ctx
+            .reply('ℹ️ Гипотез нет или ты на шаге формулировки. Нажми ✅ Готово чтобы завершить.', {
+              reply_markup: new InlineKeyboard().text('✅ Готово', 'f0q_hypo_done'),
+            })
+            .catch(() => {});
+        }
+        return;
+      }
+      return;
+    }
     if (session === undefined || session.phase !== 'filling') {
       await ctx.reply('ℹ️ Сейчас нечего пропускать — активного диалога онбординга нет.').catch(() => {});
       return;
@@ -2636,6 +3076,10 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
       // Story 9.1: возобновление диалога профиля с текущего вопроса (AC2).
       await ctx.reply('↩️ Продолжаем профиль клиента с места остановки.').catch(() => {});
       await askNextProfileQuestion(ctx, session);
+    } else if (session.phase === 'questionnaire') {
+      // Story 9.5: возобновление вопросника.
+      await ctx.reply('↩️ Продолжаем вопросник.').catch(() => {});
+      await replayCurrentQnQuestion(ctx, session);
     } else if (session.phase === 'filling') {
       await ctx.reply('↩️ Продолжаем онбординг с места остановки.').catch(() => {});
       await askNextF0Gap(ctx, session);
@@ -3288,6 +3732,144 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
     log.info({ step: 'bot.post_approve.stub', action: ctx.callbackQuery.data }, 'stub handler');
   });
 
+  // ─── Story 9.5: голосовые сообщения ──────────────────────────────────────────
+
+  /**
+   * Скачать buf → записать tmp .oga → Soniox → транскрипт → удалить tmp.
+   * Используется только в handler голоса; в тестах подменяется через transcribeVoiceBufferFn.
+   */
+  async function transcribeVoiceBuffer(buf: Buffer, chatId: number): Promise<string> {
+    const tmpPath = pathJoin(tmpdir(), `voice-${Date.now()}-${chatId}.oga`);
+    let uploadedFileId: string | undefined;
+    try {
+      await writeFile(tmpPath, buf);
+      uploadedFileId = await sonioxClientResolved.uploadFile(tmpPath);
+      const transcriptionId = await sonioxClientResolved.createTranscription(uploadedFileId);
+      await sonioxClientResolved.pollUntilCompleted(transcriptionId);
+      const transcript = await sonioxClientResolved.fetchTranscript(transcriptionId);
+      return transcript.tokens.map((t) => t.text).join('');
+    } finally {
+      await unlink(tmpPath).catch(() => {});
+      if (uploadedFileId !== undefined) {
+        await sonioxClientResolved.deleteFile(uploadedFileId).catch(() => {});
+      }
+    }
+  }
+
+  /** Voice-confirm inline keyboard (3 кнопки подтверждения). */
+  function buildVoiceConfirmKeyboard(): InlineKeyboard {
+    return new InlineKeyboard()
+      .text('✅ Ок', 'voice_ok')
+      .text('✏️ Править', 'voice_edit')
+      .text('🎤 Заново', 'voice_retry');
+  }
+
+  /** Принятые фазы для голоса в онбординге. */
+  const VOICE_ONBOARDING_PHASES = new Set(['profile', 'questionnaire', 'filling']);
+
+  bot.on('message:voice', async (ctx) => {
+    const chatId = ctx.chat.id;
+    if (!trackerChatIds.has(chatId)) return; // не трекер — игнорируем
+    const session = await getOrRestoreF0Session(chatId);
+    if (session === undefined || !VOICE_ONBOARDING_PHASES.has(session.phase)) {
+      await ctx
+        .reply('🎤 Голосовые сообщения принимаются только в диалоге онбординга.')
+        .catch(() => {});
+      return;
+    }
+    const voice = ctx.message.voice;
+    if (voice.duration > 300) {
+      await ctx.reply('⚠️ Голосовое сообщение слишком длинное — лимит 5 минут (300 сек).').catch(() => {});
+      return;
+    }
+    if (session.processing) {
+      await ctx.reply('⏳ Идёт обработка — подожди немного.').catch(() => {});
+      return;
+    }
+    session.processing = true;
+    let processingMsg: number | undefined;
+    try {
+      const sent = await ctx.reply('🎤 Распознаю…').catch(() => undefined);
+      processingMsg = sent?.message_id;
+      const file = await ctx.getFile();
+      if (file.file_path === undefined) throw new Error('no file_path for voice');
+      const buf = await downloadTelegramFile(file.file_path);
+      const transcript = await transcribeVoiceBuffer(buf, chatId);
+      session.voicePending = { transcript };
+      await saveF0Session(chatId, session);
+      f0Log.info(
+        { step: 'f0.voice_transcribed', chatId, sessionId: session.id, phase: session.phase, len: transcript.length },
+        'voice transcribed',
+      );
+      await ctx
+        .reply(
+          `🎤 Распознано:\n«${transcript}»\n\nПодтвердить?`,
+          { reply_markup: buildVoiceConfirmKeyboard() },
+        )
+        .catch(() => {});
+    } catch (err) {
+      f0Log.error({ step: 'f0.voice_error', chatId, err }, 'voice transcription failed');
+      await ctx.reply('🔴 Не удалось распознать голосовое сообщение. Попробуй ещё раз или введи текстом.').catch(() => {});
+    } finally {
+      session.processing = false;
+      void processingMsg;
+    }
+  });
+
+  /** Dispatch transcript в нужный обработчик по текущей фазе. */
+  async function dispatchVoiceTranscript(ctx: Context, session: F0Session, transcript: string): Promise<void> {
+    if (session.phase === 'profile') {
+      await handleF0ProfileAnswer(ctx, session, transcript);
+    } else if (session.phase === 'questionnaire') {
+      await handleQnAnswer(ctx, session, transcript);
+    } else if (session.phase === 'filling') {
+      await handleF0FillAnswer(ctx, session, transcript);
+    }
+  }
+
+  bot.callbackQuery('voice_ok', async (ctx) => {
+    await ctx.answerCallbackQuery().catch(() => {});
+    const chatId = ctx.chat?.id;
+    if (chatId === undefined) return;
+    const session = await getOrRestoreF0Session(chatId);
+    if (session === undefined || session.voicePending === undefined) {
+      await ctx.reply('ℹ️ Нет ожидающего голосового ответа.').catch(() => {});
+      return;
+    }
+    const { transcript } = session.voicePending;
+    session.voicePending = undefined;
+    await saveF0Session(chatId, session);
+    f0Log.info(
+      { step: 'f0.voice_ok', chatId, phase: session.phase },
+      'voice transcript confirmed',
+    );
+    await dispatchVoiceTranscript(ctx, session, transcript);
+  });
+
+  bot.callbackQuery('voice_edit', async (ctx) => {
+    await ctx.answerCallbackQuery().catch(() => {});
+    const chatId = ctx.chat?.id;
+    if (chatId === undefined) return;
+    const session = await getOrRestoreF0Session(chatId);
+    if (session !== undefined) {
+      session.voicePending = undefined;
+      await saveF0Session(chatId, session);
+    }
+    await ctx.reply('✏️ Введи исправленный текст:').catch(() => {});
+  });
+
+  bot.callbackQuery('voice_retry', async (ctx) => {
+    await ctx.answerCallbackQuery().catch(() => {});
+    const chatId = ctx.chat?.id;
+    if (chatId === undefined) return;
+    const session = await getOrRestoreF0Session(chatId);
+    if (session !== undefined) {
+      session.voicePending = undefined;
+      await saveF0Session(chatId, session);
+    }
+    await ctx.reply('🎤 Пришли голосовое сообщение снова.').catch(() => {});
+  });
+
   // ───────── Edit reply handler ─────────
 
   bot.on('message:text', async (ctx) => {
@@ -3323,12 +3905,14 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
     }
 
     // Story 7.1: текстовый триггер онбординга «новый клиент». Не срабатывает во время
-    // активного диалога дозаполнения или профиля (9.1) — иначе ответ, дословно равный
-    // «новый клиент», случайно сбросил бы сессию. Явный перезапуск — команда /newclient.
+    // активного диалога дозаполнения, профиля (9.1) или вопросника (9.5) — иначе ответ,
+    // дословно равный «новый клиент», случайно сбросил бы сессию.
+    // Явный перезапуск — команда /newclient.
     const f0InMemory = f0Sessions.get(chatId);
     if (
       f0InMemory?.phase !== 'filling' &&
       f0InMemory?.phase !== 'profile' &&
+      f0InMemory?.phase !== 'questionnaire' &&
       /^новый клиент$/iu.test(ctx.message.text.trim())
     ) {
       // Story 8.4 (W3): guarded — пакет collecting с файлами тоже не сбрасываем молча.
@@ -3355,6 +3939,14 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
           await ctx.reply('↩️ Восстановил онбординг после перерыва.').catch(() => {});
         }
         await handleF0ProfileAnswer(ctx, f0, ctx.message.text);
+        return;
+      }
+      // Story 9.5: ответы диалога вопросника (рестарт восстанавливает с диска).
+      if (f0?.phase === 'questionnaire') {
+        if (f0InMemory === undefined) {
+          await ctx.reply('↩️ Восстановил вопросник после перерыва.').catch(() => {});
+        }
+        await handleQnAnswer(ctx, f0, ctx.message.text);
         return;
       }
       // Story 1.8: fallback hint вместо молчания (UX-DR3 «Тишина — враг»).
