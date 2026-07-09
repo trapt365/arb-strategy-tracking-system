@@ -2041,6 +2041,9 @@ describe('bot — импорт готовой стратегии из xlsx (Stor
       })) as unknown) as BotDeps['extractTextFromDocument'],
     });
     await bot.handleUpdate(commandUpdate('/newclient'));
+    // Ревью MED-1: путь зафиксирован ЯВНОЙ кнопкой до файла — отказ импорта обязан
+    // разблокировать и этот случай, а не только автодетект.
+    await bot.handleUpdate(callbackUpdate('f0_mode_import'));
     await bot.handleUpdate(xlsxDocumentUpdate());
 
     const rejected = texts85(calls).find((t) => t.includes('Не смог распознать в Excel'));

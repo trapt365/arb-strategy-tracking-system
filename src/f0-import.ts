@@ -33,6 +33,12 @@ export interface F0ImportResult {
 
 // Заголовок ищем в первых строках листа: выше таблицы обычно шапка/легенда.
 const HEADER_SCAN_ROWS = 30;
+// Потолок материализации листа (ревью MED-3): случайная пробельная ячейка в районе
+// строки ~1M «раздувает» used range, и полная материализация вешает event loop на
+// десятки секунд (бот однопоточный — встал бы и F1-цикл). Реальные стратегии на
+// порядки меньше; хвост за потолком просто не читаем.
+const MAX_SHEET_ROWS = 2000;
+const MAX_SHEET_COLS = 100;
 // Категорий-синонимов должно совпасть не меньше порога, иначе лист не похож на KR-таблицу.
 const GENERIC_MATCH_THRESHOLD = 3;
 // Хвост пустых строк, после которого перестаём искать данные (дыры в таблице легальны).
@@ -95,14 +101,36 @@ const nullable = (s: string): string | null => (s.length === 0 ? null : s);
 
 const normalizeHeader = (s: string): string => s.toLowerCase().replace(/\s+/g, ' ').trim();
 
-/** Лист → матрица строк (строки как отдали, без пропуска пустых). */
-function sheetRows(sheet: XLSX.WorkSheet): string[][] {
-  const raw = XLSX.utils.sheet_to_json<unknown[]>(sheet, {
-    header: 1,
-    defval: null,
-    blankrows: true,
-  });
-  return raw.map((row) => row.map(cellToString));
+/** Ячейка → текст. Процентные ячейки показываем как в таблице («9%», ревью LOW-2), а не 0.09. */
+function cellText(cell: XLSX.CellObject | undefined): string {
+  if (cell === undefined || cell.v == null) return '';
+  const v = cell.v;
+  if (typeof v === 'number' && typeof cell.w === 'string' && cell.w.includes('%')) {
+    return cell.w.trim();
+  }
+  return cellToString(v);
+}
+
+/**
+ * Лист → матрица строк (индексация с начала used range, потолок MAX_SHEET_ROWS/COLS).
+ * limitRows — дешёвый частичный проход для детекта/скана шапки: полную матрицу
+ * материализуем только для листа, из которого реально читаем данные.
+ */
+function sheetRows(sheet: XLSX.WorkSheet, limitRows: number = MAX_SHEET_ROWS): string[][] {
+  const ref = sheet['!ref'];
+  if (ref === undefined) return [];
+  const range = XLSX.utils.decode_range(ref);
+  const rowEnd = Math.min(range.e.r, range.s.r + Math.min(limitRows, MAX_SHEET_ROWS) - 1);
+  const colEnd = Math.min(range.e.c, range.s.c + MAX_SHEET_COLS - 1);
+  const rows: string[][] = [];
+  for (let r = range.s.r; r <= rowEnd; r++) {
+    const row: string[] = [];
+    for (let c = range.s.c; c <= colEnd; c++) {
+      row.push(cellText(sheet[XLSX.utils.encode_cell({ r, c })] as XLSX.CellObject | undefined));
+    }
+    rows.push(row);
+  }
+  return rows;
 }
 
 function matchKrColumn(header: string): KrColumn | null {
@@ -160,6 +188,10 @@ function readKrRows(rows: string[][], header: HeaderMap): ParsedKrRow[] {
   if (formulationCol === undefined) return [];
   const parsed: ParsedKrRow[] = [];
   let emptyStreak = 0;
+  // Ревью MED-2: направление часто заполнено только в первой строке группы
+  // (объединённые ячейки xlsx отдаёт как значение + пустоты) — тянем последнее
+  // непустое вниз, иначе группа KR молча дробится на фиктивные цели.
+  let currentObjective: string | null = null;
   for (let r = header.rowIndex + 1; r < rows.length; r++) {
     const row = rows[r]!;
     const formulation = (row[formulationCol] ?? '').trim();
@@ -171,6 +203,8 @@ function readKrRows(rows: string[][], header: HeaderMap): ParsedKrRow[] {
     emptyStreak = 0;
     const at = (c: number | undefined): string | null =>
       c === undefined ? null : nullable((row[c] ?? '').trim());
+    const objectiveHere = at(col.objective);
+    if (objectiveHere !== null) currentObjective = objectiveHere;
     parsed.push({
       kr: {
         formulation,
@@ -182,7 +216,7 @@ function readKrRows(rows: string[][], header: HeaderMap): ParsedKrRow[] {
         owner: at(col.owner),
         deadline: at(col.deadline),
       },
-      objectiveTitle: at(col.objective),
+      objectiveTitle: currentObjective,
     });
   }
   return parsed;
@@ -344,13 +378,16 @@ export function importStrategyXlsx(buf: Buffer, sourceName: string): F0ImportRes
     throw new F0OnboardingError('document_parse_failed', { sourceName, kind: 'xlsx' }, { cause: err });
   }
   if (wb.SheetNames.length === 0) {
-    throw new F0OnboardingError('empty_document', { sourceName, kind: 'xlsx' });
+    // import_unmappable, а не empty_document: текст ошибки у него про таблицу KR
+    // и предлагает синтез-путь (empty_document говорит про «скан без текстового слоя»).
+    throw new F0OnboardingError('import_unmappable', { sourceName, reason: 'no_sheets' });
   }
 
-  // Формат A: машинный лист _okr или лист со знакомыми машинными заголовками.
+  // Формат A: машинный лист _okr или лист со знакомыми машинными заголовками
+  // (для детекта достаточно первой строки — полностью лист тут не читаем).
   const templateSheetName =
     wb.SheetNames.find((name) => name === '_okr') ??
-    wb.SheetNames.find((name) => isTemplateKrSheet(sheetRows(wb.Sheets[name]!)));
+    wb.SheetNames.find((name) => isTemplateKrSheet(sheetRows(wb.Sheets[name]!, 1)));
   if (templateSheetName !== undefined) {
     const result = importTemplate(wb, templateSheetName, []);
     if (result.extraction.objectives.length > 0) {
@@ -365,13 +402,14 @@ export function importStrategyXlsx(buf: Buffer, sourceName: string): F0ImportRes
   }
 
   // Формат B: лист с максимумом совпавших заголовков-синонимов.
-  let bestSheet: { name: string; rows: string[][]; header: HeaderMap } | null = null;
+  // Скан шапки — только первые HEADER_SCAN_ROWS строк каждого листа; данные целиком
+  // материализуем один раз, для победителя.
+  let bestSheet: { name: string; header: HeaderMap } | null = null;
   for (const name of wb.SheetNames) {
-    const rows = sheetRows(wb.Sheets[name]!);
-    const header = findGenericHeader(rows);
+    const header = findGenericHeader(sheetRows(wb.Sheets[name]!, HEADER_SCAN_ROWS));
     if (header === null || header.columns.formulation === undefined) continue;
     if (header.matchedCount > (bestSheet?.header.matchedCount ?? 0)) {
-      bestSheet = { name, rows, header };
+      bestSheet = { name, header };
     }
   }
   if (bestSheet === null || bestSheet.header.matchedCount < GENERIC_MATCH_THRESHOLD) {
@@ -383,7 +421,7 @@ export function importStrategyXlsx(buf: Buffer, sourceName: string): F0ImportRes
     });
   }
 
-  const parsed = readKrRows(bestSheet.rows, bestSheet.header);
+  const parsed = readKrRows(sheetRows(wb.Sheets[bestSheet.name]!), bestSheet.header);
   if (parsed.length === 0) {
     throw new F0OnboardingError('import_unmappable', {
       sourceName,

@@ -198,6 +198,58 @@ describe('f0-import: формат B (произвольная таблица)', 
     expect(unrecognized).toContain('Протокол');
   });
 
+  it('ревью MED-2: направление тянется вниз по группе (merged/пустые ячейки не дробят objectives)', () => {
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(
+      wb,
+      sheetOf([
+        ['Направление', 'Ключевой результат', 'База', 'Цель', 'Ответственный'],
+        ['Продажи', 'Выручка', '10', '20', 'Айгерим'],
+        ['', 'Конверсия', '9%', '15%', 'Айгерим'], // merged-ячейка направления → пусто
+        ['Сервис', 'Отток', '12%', '5%', 'Бекзат'],
+      ]),
+      'Стратегия',
+    );
+    const result = importStrategyXlsx(toBuffer(wb), 'merged.xlsx');
+    expect(result.extraction.objectives.map((o) => [o.title, o.krs.length])).toEqual([
+      ['Продажи', 2],
+      ['Сервис', 1],
+    ]);
+  });
+
+  it('ревью LOW-2: процентная ячейка отображается как в таблице («9%»), а не 0.09', () => {
+    const wb = XLSX.utils.book_new();
+    const ws = sheetOf([
+      ['Направление', 'Ключевой результат', 'База', 'Цель', 'Ответственный'],
+      ['Продажи', 'Конверсия', 0.09, 0.15, 'Айгерим'],
+    ]);
+    ws['C2']!.z = '0%';
+    ws['D2']!.z = '0%';
+    XLSX.utils.book_append_sheet(wb, ws, 'Стратегия');
+    const kr = importStrategyXlsx(toBuffer(wb), 'pct.xlsx').extraction.objectives[0]!.krs[0]!;
+    expect(kr.base).toBe('9%');
+    expect(kr.target).toBe('15%');
+  });
+
+  // Таймаут теста поднят: медленная часть — генерация фикстуры (XLSX.write обходит
+  // весь раздутый range, ~7 с); сам импорт замеряется отдельно и обязан быть <5 с.
+  it('ревью MED-3: раздутый used range (случайная ячейка у строки ~1M) не вешает импорт', { timeout: 30_000 }, () => {
+    const wb = XLSX.utils.book_new();
+    const ws = sheetOf([
+      ['Направление', 'Ключевой результат', 'База', 'Цель', 'Ответственный'],
+      ['Продажи', 'Выручка', '10', '20', 'Айгерим'],
+    ]);
+    // Типовой артефакт реальных файлов: пробел в далёкой ячейке раздувает !ref.
+    ws['A1048570'] = { t: 's', v: ' ' };
+    ws['!ref'] = 'A1:E1048570';
+    XLSX.utils.book_append_sheet(wb, ws, 'Стратегия');
+    const buf = toBuffer(wb); // write фикстуры сам по себе медленный — не входит в замер
+    const started = Date.now();
+    const result = importStrategyXlsx(buf, 'inflated.xlsx');
+    expect(Date.now() - started).toBeLessThan(5_000); // без потолка — десятки секунд
+    expect(result.extraction.objectives[0]!.krs[0]!.formulation).toBe('Выручка');
+  });
+
   it('без листа, похожего на таблицу KR (порог ≥ 3 колонок) → import_unmappable', () => {
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(

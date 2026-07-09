@@ -922,7 +922,7 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
     empty_document: '⚠️ В файле нет извлекаемого текста (возможно, это скан-картинка без текстового слоя).',
     document_too_large:
       '⚠️ Пакет слишком большой для одного захода. Убери лишние файлы или пришли основной раздел.',
-    document_parse_failed: '⚠️ Не смог разобрать файл. Проверь, что .docx/.pdf не повреждён.',
+    document_parse_failed: '⚠️ Не смог разобрать файл. Проверь, что .docx/.pdf/.xlsx не повреждён.',
     file_too_large: F0_TOO_LARGE_TEXT,
     unsupported_file: F0_UNSUPPORTED_TEXT,
     import_unmappable:
@@ -1021,7 +1021,9 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
       const progress =
         session.phase === 'filling'
           ? `отвечено ${session.gapIndex} из ${session.gaps.length} вопросов`
-          : `файлов в пакете: ${session.documents.length}`;
+          : session.importResult !== undefined
+            ? 'принят Excel для импорта' // Story 8.5 (ревью LOW-1): не «файлов: 0»
+            : `файлов в пакете: ${session.documents.length}`;
       await ctx
         .reply(
           `⚠️ Идёт онбординг${company !== undefined && company !== null ? ` «${company}»` : ''} (${progress}).\n` +
@@ -1292,7 +1294,11 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
           { step: 'f0.import_rejected', chatId, code: err.code, sourceName },
           'f0 xlsx import rejected',
         );
-        // mode не фиксируем: после отказа импорта путь синтеза остаётся открытым.
+        // Отказ импорта не запирает путь (ревью MED-1): mode мог быть зафиксирован
+        // явной кнопкой ДО файла — сбрасываем, чтобы предложенный синтез-путь работал.
+        if (session.importResult === undefined && session.documents.length === 0) {
+          session.mode = undefined;
+        }
         await ctx.reply(F0_REPLY_BY_CODE[err.code]).catch(() => {});
       } else {
         f0Log.error({ err, step: 'f0.import_failed', chatId, sourceName }, 'f0 xlsx import failed');
