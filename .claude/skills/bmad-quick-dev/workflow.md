@@ -1,13 +1,11 @@
----
-main_config: '{project-root}/_bmad/bmm/config.yaml'
----
-
 # Quick Dev New Preview Workflow
 
 **Goal:** Turn user intent into a hardened, reviewable artifact.
 
 **CRITICAL:** If a step says "read fully and follow step-XX", you read and follow step-XX. No exceptions.
 
+Subagents, when the capability is available, are an important part of this workflow. Use them as directed by the workflow steps.
+If you need an explicit user instruction to run them, ask once now for the whole workflow run.
 
 ## READY FOR DEVELOPMENT STANDARD
 
@@ -17,7 +15,8 @@ A specification is "Ready for Development" when:
 - **Logical**: Tasks ordered by dependency.
 - **Testable**: All ACs use Given/When/Then.
 - **Complete**: No placeholders or TBDs.
-
+- **Sufficient**: No known requirement, acceptance, dependency, or implementation gaps remain unresolved.
+- **Coherent**: No unresolved ambiguities or internal contradictions.
 
 ## SCOPE STANDARD
 
@@ -29,6 +28,32 @@ A specification should target a **single user-facing goal** within **900–1600 
 - **900–1600 tokens**: Optimal range for LLM consumption. Below 900 risks ambiguity; above 1600 risks context-rot in implementation agents.
 - **Neither limit is a gate.** Both are proposals with user override.
 
+## Conventions
+
+- Bare paths (e.g. `step-01-clarify-and-route.md`) resolve from the skill root.
+- `{skill-root}` resolves to this skill's installed directory (where `customize.toml` lives).
+- `{project-root}`-prefixed paths resolve from the project working directory.
+- `{skill-name}` resolves to the skill directory's basename.
+
+## On Activation
+
+### Step 1: Execute Prepend Steps
+
+Execute each of these steps in order before proceeding (`_None._` means skip):
+
+{workflow.activation_steps_prepend}
+
+### Step 2: Load Persistent Facts
+
+Treat every entry below as foundational context you carry for the rest of the workflow run. Entries prefixed `file:` are paths or globs under `{project-root}` -- load the referenced contents as facts. All other entries are facts verbatim (`_None._` means none):
+
+{workflow.persistent_facts}
+
+### Step 3: Execute Append Steps
+
+Execute each of these steps in order (`_None._` means skip):
+
+{workflow.activation_steps_append}
 
 ## WORKFLOW ARCHITECTURE
 
@@ -55,25 +80,6 @@ This uses **step-file architecture** for disciplined execution:
 - **ALWAYS** follow the exact instructions in the step file
 - **ALWAYS** halt at checkpoints and wait for human input
 
-
-## INITIALIZATION SEQUENCE
-
-### 1. Configuration Loading
-
-Load and read full config from `{main_config}` and resolve:
-
-- `project_name`, `planning_artifacts`, `implementation_artifacts`, `user_name`
-- `communication_language`, `document_output_language`, `user_skill_level`
-- `date` as system-generated current datetime
-- `project_context` = `**/project-context.md` (load if exists)
-- CLAUDE.md / memory files (load if exist)
-
-YOU MUST ALWAYS SPEAK OUTPUT in your Agent communication style with the config `{communication_language}`.
-
-### 2. Paths
-
-- `wipFile` = `{implementation_artifacts}/spec-wip.md`
-
-### 3. First Step Execution
+## FIRST STEP
 
 Read fully and follow: `./step-01-clarify-and-route.md` to begin the workflow.

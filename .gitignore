@@ -34,3 +34,8 @@ data/clients/
 
 # Story 1.11: canary run outputs (developer artifact for post-mortem)
 data/canary-results/
+.bmad-loop/runs/
+.bmad-loop/cache/
+
+# BMAD personal settings (never commit)
+_bmad/config.user.yaml
