@@ -173,3 +173,25 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-9-3-startovyy-flow-deystvuyushchego-trekera.md`
   summary: Contextual missing_arg hint text contains `/report https://` as a stub URL prefix — may need UX polish to avoid confusing users who copy it literally.
   evidence: Contextual hint: «/report https:// — отчёт по встрече» — the `https://` placeholder is intentional per spec but may be mistaken for a working URL. Deferred: polish in a future UX story (9.7 or later).
+
+## Deferred from: code review of story 9.7 (2026-07-09)
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-9-7-nedelnyy-otchyot-trekera-po-klientu.md`
+  summary: `loadWeekReports` has no direct unit tests — file-reading, week-filtering, schema-skip, and sort logic are only exercised via bot-level integration tests with the function mocked out.
+  evidence: All 4 tests in `bot-weekly-9-7.test.ts` mock `loadWeekReports` via `vi.hoisted`; any bug in the real `fs.readdir` scan, `DATE_DIR_RE` filter, ISO week comparison, or `DeliveryReadyReportSchema.safeParse` skip would ship undetected. A `src/utils/weekly-report.test.ts` with tmpdir fixtures would close this gap.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-9-7-nedelnyy-otchyot-trekera-po-klientu.md`
+  summary: `weekly:` callback keyboard (Таблица URL) is attached to every `splitForTelegram` chunk, producing duplicate buttons if the report is long enough to split.
+  evidence: `splitForTelegram` splits at 4096 chars; a weekly report with many meetings and commitments could exceed this. Pre-existing pattern in other handlers; fix: attach `kb` only to the last chunk.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-9-7-nedelnyy-otchyot-trekera-po-klientu.md`
+  summary: `clientId` in `weekly:` callback is not sanitized for path-traversal before being passed to `loadWeekReports` → `join(rootDir, clientId)`.
+  evidence: Same pattern as `client:`, `client_use:`, `start_client:` callbacks (pre-existing); `clientId` values in callback data originate from bot-generated inline keyboards, so the vector requires an authorized user to craft a raw callback query. Low risk for this internal tool.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-9-7-nedelnyy-otchyot-trekera-po-klientu.md`
+  summary: `getClientName` and `getClientSheetId` in `weekly:` callback have no `.catch()` — a registry I/O error crashes the handler with an unhandled rejection.
+  evidence: Same pattern as `start_client:{id}` handler (9.3); `data/clients/registry.json` I/O errors would leave the Telegram callback query unanswered (spinner). Fix: wrap both awaits in `.catch(() => clientId/undefined)`.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-9-7-nedelnyy-otchyot-trekera-po-klientu.md`
+  summary: Weekly report commitments aggregated without per-meeting context (date/topName not shown per commitment line).
+  evidence: `formatWeeklyReport` lists `• who → what, до deadline` but drops which meeting originated the commitment; with 2+ meetings/week the origin is ambiguous. UX polish for a future iteration.

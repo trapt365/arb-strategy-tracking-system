@@ -97,6 +97,11 @@ import {
 import { F0OnboardingError, F0SheetsError } from './errors.js';
 import { assertTranscriptDuration } from './utils/transcript-duration-guard.js';
 import { createReportQueue, QueueOverflowError, type ReportQueue } from './utils/report-queue.js';
+import {
+  getISOWeekAndYear,
+  loadWeekReports,
+  formatWeeklyReport,
+} from './utils/weekly-report.js';
 import { withRetry } from './utils/retry.js';
 import {
   escapeMarkdownV2,
@@ -1713,6 +1718,7 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
     if (card !== null) {
       kb.row().text('➕ Дозаполнить профиль', `profile_fill:${clientId}`);
     }
+    kb.row().text('📅 Недельный отчёт', `weekly:${clientId}`);
     await ctx
       .reply(
         `✅ Клиент: ${name}.\n📊 /report <ссылка> — отчёт по встрече\n📋 /status — готовность к неделе`,
@@ -1720,6 +1726,35 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
       )
       .catch(() => {});
     log.info({ step: 'bot.start_client.selected', chatId, clientId }, 'start_client selected');
+  });
+
+  // Story 9.7: недельный отчёт трекера по клиенту.
+  bot.callbackQuery(/^weekly:(.+)$/, async (ctx) => {
+    await ctx.answerCallbackQuery().catch(() => {});
+    const clientId = ctx.match[1]!;
+    const name = (await getClientName(clientId)) ?? clientId;
+    const sheetId = await getClientSheetId(clientId);
+    const nowDate = now();
+    const { week, year } = getISOWeekAndYear(nowDate.toISOString().slice(0, 10));
+    const reports = await loadWeekReports(clientId, { now: nowDate }).catch((err: unknown) => {
+      log.warn({ err, clientId }, 'weekly.load_failed');
+      return null;
+    });
+    const text =
+      reports !== null
+        ? formatWeeklyReport(reports, name, week, year)
+        : 'Не удалось загрузить данные за неделю.';
+    const kb = new InlineKeyboard();
+    if (sheetId !== undefined) {
+      kb.url('📁 Таблица', `https://docs.google.com/spreadsheets/d/${sheetId}`);
+    }
+    for (const msg of splitForTelegram(text)) {
+      await ctx.reply(msg, { reply_markup: kb }).catch(() => {});
+    }
+    log.info(
+      { step: 'bot.weekly.sent', clientId, count: reports?.length ?? 0 },
+      'weekly report sent',
+    );
   });
 
   // W10: статус любого клиента из карточки — не только активной сессии.
