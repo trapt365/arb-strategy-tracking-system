@@ -83,16 +83,7 @@ export function computeF0Gaps(extraction: F0FullExtraction): F0Gap[] {
   }
 
   // Гипотезы без метрики (инвариант 2).
-  const hypoIssues = markHypothesesWithoutMetric(extraction);
-  for (const issue of hypoIssues) {
-    const h = extraction.hypotheses[issue.index];
-    gaps.push({
-      kind: 'hypo_metric',
-      hypothesisIndex: issue.index,
-      ref: issue.ref,
-      question: `Метрика проверки гипотезы ${issue.ref} «${truncate(issue.statement, 60)}»? (как измерим)`,
-    });
-  }
+  gaps.push(...computeHypoMetricGaps(extraction));
 
   // Участники без telegram-контакта.
   extraction.participants.forEach((p, i) => {
@@ -116,6 +107,20 @@ export function computeF0Gaps(extraction: F0FullExtraction): F0Gap[] {
   });
 
   return gaps;
+}
+
+/**
+ * Пробелы метрик гипотез (инвариант 2). Отдельный экспорт — Story 8.5 дозаписывает
+ * такие вопросы в хвост очереди после «🧠 Досинтезировать гипотезы» (гипотезы
+ * появляются уже после сборки черновика).
+ */
+export function computeHypoMetricGaps(extraction: F0FullExtraction): F0Gap[] {
+  return markHypothesesWithoutMetric(extraction).map((issue) => ({
+    kind: 'hypo_metric' as const,
+    hypothesisIndex: issue.index,
+    ref: issue.ref,
+    question: `Метрика проверки гипотезы ${issue.ref} «${truncate(issue.statement, 60)}»? (как измерим)`,
+  }));
 }
 
 // (truncate — общий хелпер из telegram-formatter)

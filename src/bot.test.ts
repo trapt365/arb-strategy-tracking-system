@@ -1952,3 +1952,196 @@ describe('bot — диалог дозаполнения: группы KR и чи
     expect(texts(second.calls, before).some((t) => t.includes('(2/3)'))).toBe(true);
   });
 });
+
+// ─── Story 8.5: два пути входа — импорт готового Excel vs синтез из документов ─
+
+import * as XLSX from 'xlsx';
+
+describe('bot — импорт готовой стратегии из xlsx (Story 8.5)', () => {
+  beforeEach(cleanOnboardingArtifacts);
+  afterEach(cleanOnboardingArtifacts);
+
+  /** Произвольная таблица клиента: KR без базы → в диалоге будет вопрос дозаполнения. */
+  function clientXlsxBuffer(): Buffer {
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(
+      wb,
+      XLSX.utils.aoa_to_sheet([
+        ['Направление', 'Ключевой результат', 'База', 'Цель', 'Ответственный', 'Срок'],
+        ['Продажи', 'Выручка от новых клиентов', '', '20 млн', 'Айгерим', 'Q4'],
+      ]),
+      'Стратегия',
+    );
+    return XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' }) as Buffer;
+  }
+
+  function xlsxDocumentUpdate(chatId: number = TEST_TRACKER_CHAT_ID): Update {
+    const upd = documentUpdate('strategy.xlsx', chatId) as unknown as {
+      message: { document: { mime_type: string } };
+    };
+    upd.message.document.mime_type =
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+    return upd as unknown as Update;
+  }
+
+  function buildImportBot(opts: BuildOpts = {}) {
+    // runF0FullDraft-спай: в импорт-пути LLM звать нельзя (кроме явного досинтеза).
+    const runF0Spy = vi.fn(async () => f0DraftResult());
+    const built = buildBot({
+      downloadTelegramFile: async () => clientXlsxBuffer(),
+      runF0FullDraft: (runF0Spy as unknown) as BotDeps['runF0FullDraft'],
+      ...opts,
+    });
+    return { ...built, runF0Spy };
+  }
+
+  const texts85 = (calls: ApiCall[], from = 0): string[] =>
+    calls
+      .slice(from)
+      .filter((c) => c.method === 'sendMessage')
+      .map((c) => c.payload.text as string);
+
+  it('автодетект по .xlsx: импорт без LLM, черновик и диалог дозаполнения как обычно', async () => {
+    const { bot, calls, runF0Spy } = buildImportBot();
+    await bot.handleUpdate(commandUpdate('/newclient'));
+    await bot.handleUpdate(xlsxDocumentUpdate());
+
+    const accepted = texts85(calls).find((t) => t.includes('📥 Импорт «strategy.xlsx»'));
+    expect(accepted).toBeDefined();
+    expect(accepted).toContain('KR 1');
+
+    const before = calls.length;
+    await bot.handleUpdate(commandUpdate('/draft'));
+    const after = texts85(calls, before);
+    // Черновик собран мгновенно: без LLM и без progress-тикера «Собираю черновик».
+    expect(runF0Spy).not.toHaveBeenCalled();
+    expect(after.some((t) => t.includes('Собираю черновик'))).toBe(false);
+    expect(after.some((t) => t.includes('🆕 Черновик онбординга'))).toBe(true);
+    // Неполный KR из Excel → штатный вопрос дозаполнения (инвариант 1 тем же кодом).
+    expect(after.some((t) => t.includes('База «с X» для KR O1.1'))).toBe(true);
+  });
+
+  it('немаппируемый xlsx → честный отказ с предложением синтеза; путь не фиксируется', async () => {
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(
+      wb,
+      XLSX.utils.aoa_to_sheet([
+        ['Имя', 'Телефон'],
+        ['Айгерим', '+7 700'],
+      ]),
+      'Контакты',
+    );
+    const { bot, calls } = buildImportBot({
+      downloadTelegramFile: async () =>
+        XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' }) as Buffer,
+      extractTextFromDocument: ((async () => ({
+        sourceName: 'strategy.md',
+        kind: 'text',
+        text: 'x'.repeat(5_000),
+      })) as unknown) as BotDeps['extractTextFromDocument'],
+    });
+    await bot.handleUpdate(commandUpdate('/newclient'));
+    await bot.handleUpdate(xlsxDocumentUpdate());
+
+    const rejected = texts85(calls).find((t) => t.includes('Не смог распознать в Excel'));
+    expect(rejected).toBeDefined();
+    expect(rejected).toContain('Могу собрать стратегию из документов');
+
+    // После отказа путь синтеза открыт: обычный .md принимается в пакет.
+    const before = calls.length;
+    await bot.handleUpdate(documentUpdate('strategy.md'));
+    expect(texts85(calls, before).some((t) => t.includes('📎 Принят: strategy.md'))).toBe(true);
+  });
+
+  it('пути не смешиваются: документ при импорте отклоняется, xlsx при синтезе — кнопка переключения', async () => {
+    const { bot, calls } = buildImportBot({
+      extractTextFromDocument: ((async () => ({
+        sourceName: 'strategy.md',
+        kind: 'text',
+        text: 'x'.repeat(5_000),
+      })) as unknown) as BotDeps['extractTextFromDocument'],
+    });
+    await bot.handleUpdate(commandUpdate('/newclient'));
+    await bot.handleUpdate(xlsxDocumentUpdate());
+    // mode=import: .md в пакет не идёт.
+    let before = calls.length;
+    await bot.handleUpdate(documentUpdate('strategy.md'));
+    expect(texts85(calls, before).some((t) => t.includes('Идёт импорт из Excel'))).toBe(true);
+
+    // Новый инстанс (импорт-сессия в collecting не персистится): первый файл .md →
+    // mode=synthesis; затем xlsx → предложение переключиться, а не молчаливый сброс.
+    const fresh = buildImportBot({
+      extractTextFromDocument: ((async () => ({
+        sourceName: 'strategy.md',
+        kind: 'text',
+        text: 'x'.repeat(5_000),
+      })) as unknown) as BotDeps['extractTextFromDocument'],
+    });
+    await fresh.bot.handleUpdate(commandUpdate('/newclient'));
+    await fresh.bot.handleUpdate(documentUpdate('strategy.md'));
+    before = fresh.calls.length;
+    await fresh.bot.handleUpdate(xlsxDocumentUpdate());
+    const hint = texts85(fresh.calls, before).find((t) => t.includes('Excel в неё не смешивается'));
+    expect(hint).toBeDefined();
+    expect(hint).toContain('будет отброшен');
+  });
+
+  it('кнопка «🧠 Досинтезировать гипотезы»: единственный LLM-вызов импорта, вопросы в конец очереди', async () => {
+    const synthResult = f0DraftResult(
+      f0Extraction({
+        hypotheses: [
+          {
+            statement: 'Видеозвонки поднимут конверсию',
+            ifThenBecause: null,
+            metric: null,
+            department: null,
+            synthesized: false,
+          },
+        ],
+      } as Partial<F0FullExtraction>),
+    );
+    const runF0Spy = vi.fn(async () => synthResult);
+    const { bot, calls } = buildImportBot({
+      runF0FullDraft: (runF0Spy as unknown) as BotDeps['runF0FullDraft'],
+    });
+    await bot.handleUpdate(commandUpdate('/newclient'));
+    await bot.handleUpdate(xlsxDocumentUpdate());
+    await bot.handleUpdate(commandUpdate('/draft'));
+
+    // Гипотез в файле нет → предложение досинтеза с кнопкой.
+    const offer = calls.find(
+      (c) =>
+        c.method === 'sendMessage' &&
+        (c.payload.text as string).includes('Гипотез в файле не нашёл'),
+    );
+    expect(offer).toBeDefined();
+    expect(JSON.stringify(offer!.payload.reply_markup)).toContain('f0_synth_hypo');
+
+    const before = calls.length;
+    await bot.handleUpdate(callbackUpdate('f0_synth_hypo'));
+    expect(runF0Spy).toHaveBeenCalledTimes(1);
+    const after = texts85(calls, before);
+    expect(after.some((t) => t.includes('Синтезировано гипотез: 1'))).toBe(true);
+    expect(after.some((t) => t.includes('без метрики — 1'))).toBe(true);
+
+    // Вопрос про метрику гипотезы встал в КОНЕЦ очереди (после расписания):
+    // было 3 вопроса (база KR, контакт участника, расписание) → стало 4.
+    let b2 = calls.length;
+    await bot.handleUpdate(plainTextUpdate('15 000')); // база KR
+    expect(texts85(calls, b2).some((t) => t.includes('(2/4)'))).toBe(true);
+    b2 = calls.length;
+    await bot.handleUpdate(plainTextUpdate('@aigerim')); // контакт участника
+    expect(texts85(calls, b2).some((t) => t.includes('(3/4)'))).toBe(true);
+    b2 = calls.length;
+    await bot.handleUpdate(plainTextUpdate('вт 15:00')); // расписание
+    const hypoQ = texts85(calls, b2).find((t) => t.includes('(4/4)'));
+    expect(hypoQ).toBeDefined();
+    expect(hypoQ).toContain('Метрика проверки гипотезы H1');
+
+    // Повторное нажатие — гипотезы уже есть, второй LLM-вызов не делается.
+    const b3 = calls.length;
+    await bot.handleUpdate(callbackUpdate('f0_synth_hypo'));
+    expect(runF0Spy).toHaveBeenCalledTimes(1);
+    expect(texts85(calls, b3).some((t) => t.includes('уже есть в черновике'))).toBe(true);
+  });
+});

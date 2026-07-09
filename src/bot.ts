@@ -36,9 +36,13 @@ import {
   loadF0Session,
   deleteF0Session,
   markBlockingKrIssues,
+  markHypothesesWithoutMetric,
+  type F0FullDraftResult,
 } from './f0-onboarding.js';
+import { importStrategyXlsx, xlsxToText, type F0ImportResult } from './f0-import.js';
 import {
   computeF0Gaps,
+  computeHypoMetricGaps,
   applyF0Answer,
   needsNumericAnswer,
   looksNumericAnswer,
@@ -66,7 +70,12 @@ import {
 } from './client-registry.js';
 import type { F0FullExtraction } from './types.js';
 import { extractTextFromDocument as defaultExtractTextFromDocument } from './utils/f0-document.js';
-import { isSupportedF0Document, F0_MAX_FILE_BYTES, F0_MAX_DOC_CHARS } from './utils/f0-input.js';
+import {
+  isSupportedF0Document,
+  isXlsxDocument,
+  F0_MAX_FILE_BYTES,
+  F0_MAX_DOC_CHARS,
+} from './utils/f0-input.js';
 import { F0OnboardingError, F0SheetsError } from './errors.js';
 import { assertTranscriptDuration } from './utils/transcript-duration-guard.js';
 import { createReportQueue, QueueOverflowError, type ReportQueue } from './utils/report-queue.js';
@@ -256,6 +265,15 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
     // Story 8.6 (W6): по этому пробелу уже был переспрос числового формата —
     // следующий непустой ответ принимается как есть (не блокируем, максимум 1 переспрос).
     retryGapIndex?: number;
+    // Story 8.5: путь онбординга. undefined до первого файла/кнопки; фиксируется
+    // автодетектом по расширению или явной кнопкой; пути в одной сессии не смешиваются.
+    mode?: 'import' | 'synthesis';
+    // Story 8.5: распознанный xlsx (collecting, in-memory) — buildF0Draft берёт его
+    // вместо LLM-вызова. Не персистится: collecting и так живёт только в памяти.
+    importResult?: F0ImportResult & { sourceName: string };
+    // Story 8.5: текстифицированный xlsx для «🧠 Досинтезировать гипотезы» —
+    // персистится с черновиком, кнопка работает и после рестарта.
+    importSourceText?: string;
   }
   const f0Sessions = new Map<number, F0Session>();
 
@@ -274,6 +292,8 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
       schedule: s.schedule,
       ...(s.spreadsheetId !== undefined ? { spreadsheetId: s.spreadsheetId } : {}),
       ...(s.retryGapIndex !== undefined ? { retryGapIndex: s.retryGapIndex } : {}),
+      ...(s.mode !== undefined ? { mode: s.mode } : {}),
+      ...(s.importSourceText !== undefined ? { importSourceText: s.importSourceText } : {}),
       updatedAt: now().toISOString(),
     });
   }
@@ -300,6 +320,8 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
       schedule: persisted.schedule,
       spreadsheetId: persisted.spreadsheetId,
       retryGapIndex: persisted.retryGapIndex,
+      mode: persisted.mode,
+      importSourceText: persisted.importSourceText,
     };
     f0Sessions.set(chatId, restored);
     f0Log.info(
@@ -870,12 +892,15 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
 
   // ───────── /newclient — F0 onboarding (Story 7.1 + 7.2) ─────────
 
+  // Story 8.5: два пути входа — импорт готового Excel (без LLM) или синтез из документов.
+  // Кнопки не обязательны: путь фиксируется и автоматически по расширению первого файла.
   const F0_START_TEXT = [
-    '🆕 Онбординг нового клиента.',
+    '🆕 Онбординг нового клиента. Два пути:',
     '',
-    'Пришли файлы артефактов стратегии (.md / .txt / .docx / .pdf): протокол сессии, OKR-документ, нарратив.',
-    'Можно несколько подряд — собирается один пакет. Когда всё прислал, нажми «Собрать черновик» или отправь /draft.',
+    '📥 Есть готовая стратегия в Excel — пришли один .xlsx, импортирую напрямую (без ИИ-пересборки).',
+    '🧠 Есть документы (.md / .txt / .docx / .pdf): протокол сессии, OKR-документ, нарратив — пришли файлы, соберу стратегию из них. Можно несколько подряд; когда всё прислал — «Собрать черновик» или /draft.',
     '',
+    'Путь можно выбрать кнопкой или просто прислать первый файл — пойму по формату.',
     'Соберу панель OKR, банк гипотез и участников. KR без числовой базы «с X до Y»/ответственного и гипотезы без метрики помечу 🔴.',
   ].join('\n');
   const F0_BUSY_TEXT = '⏳ Уже обрабатываю пакет — дождись черновика.';
@@ -900,9 +925,17 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
     document_parse_failed: '⚠️ Не смог разобрать файл. Проверь, что .docx/.pdf не повреждён.',
     file_too_large: F0_TOO_LARGE_TEXT,
     unsupported_file: F0_UNSUPPORTED_TEXT,
+    import_unmappable:
+      '⚠️ Не смог распознать в Excel таблицу стратегии: нужен лист с колонками KR — результат, база, цель, ответственный (минимум 3 из них).\n' +
+      '🧠 Могу собрать стратегию из документов — пришли .md / .txt / .docx / .pdf.',
   };
 
   const f0BuildKeyboard = new InlineKeyboard().text('✅ Собрать черновик', 'f0_build');
+  // Story 8.5: развилка путей на старте (кнопки опциональны — есть автодетект по файлу).
+  const f0ModeKeyboard = new InlineKeyboard()
+    .text('📥 Есть готовая стратегия (Excel)', 'f0_mode_import')
+    .row()
+    .text('🧠 Собрать из документов', 'f0_mode_synthesis');
 
   async function startF0Session(ctx: Context, trigger: string): Promise<void> {
     const chatId = ctx.chat?.id;
@@ -927,10 +960,43 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
       { step: 'f0.session_started', chatId, sessionId: session.id, trigger },
       'f0 onboarding session started',
     );
-    await ctx.reply(F0_START_TEXT).catch((err) => {
+    await ctx.reply(F0_START_TEXT, { reply_markup: f0ModeKeyboard }).catch((err) => {
       log.warn({ err, chatId }, 'f0.start.reply_failed');
     });
   }
+
+  // Story 8.5: явный выбор пути кнопкой. Работает только в collecting до первого файла —
+  // после автодетекта путь уже зафиксирован, молча переключать накопленное нельзя.
+  async function chooseF0Mode(ctx: Context, mode: 'import' | 'synthesis'): Promise<void> {
+    await ctx.answerCallbackQuery().catch(() => {});
+    const chatId = ctx.chat?.id;
+    if (chatId === undefined) return;
+    const session = await getOrRestoreF0Session(chatId);
+    if (session === undefined || session.phase !== 'collecting') {
+      await ctx.reply(F0_NO_SESSION_TEXT).catch(() => {});
+      return;
+    }
+    if (session.mode !== undefined && session.mode !== mode) {
+      const fixed =
+        session.mode === 'import'
+          ? 'Путь уже определён: импорт Excel. Другой путь — начни заново: /newclient.'
+          : 'Путь уже определён: сборка из документов. Другой путь — начни заново: /newclient.';
+      await ctx.reply(`ℹ️ ${fixed}`).catch(() => {});
+      return;
+    }
+    session.mode = mode;
+    f0Log.info({ step: 'f0.mode_chosen', chatId, sessionId: session.id, mode }, 'f0 mode chosen');
+    await ctx
+      .reply(
+        mode === 'import'
+          ? '📥 Импорт готовой стратегии: пришли один .xlsx-файл.'
+          : '🧠 Сборка из документов: пришли .md / .txt / .docx / .pdf (можно несколько).',
+      )
+      .catch(() => {});
+  }
+
+  bot.callbackQuery('f0_mode_import', async (ctx) => chooseF0Mode(ctx, 'import'));
+  bot.callbackQuery('f0_mode_synthesis', async (ctx) => chooseF0Mode(ctx, 'synthesis'));
 
   // Story 8.4 (W3): сессия с несохранённым прогрессом — черновик с ответами (filling)
   // или собранный, но не отработанный пакет файлов (collecting). Ready не в счёт:
@@ -938,7 +1004,11 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
   function f0SessionAtRisk(session: F0Session | undefined): session is F0Session {
     if (session === undefined) return false;
     if (session.phase === 'filling') return true;
-    return session.phase === 'collecting' && session.documents.length > 0;
+    // Story 8.5: принятый, но не отработанный xlsx — тоже несохранённый прогресс.
+    return (
+      session.phase === 'collecting' &&
+      (session.documents.length > 0 || session.importResult !== undefined)
+    );
   }
 
   /** Запуск онбординга с защитой от молчаливого сброса активной сессии (W3). */
@@ -1125,6 +1195,147 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
   });
 
   // Приём файла в пакет: скачать → извлечь текст → аккумулировать. Черновик НЕ собирается здесь.
+  // ───────── Story 8.5: приём .xlsx — импорт готовой стратегии ─────────
+
+  /**
+   * Один .xlsx → распознавание таблицы стратегии (0 LLM). Успех фиксирует mode=import
+   * и кладёт результат в сессию; черновик собирает buildF0Draft (кнопка/‌/draft) —
+   * та же точка входа, что у синтеза.
+   */
+  async function handleF0XlsxDocument(
+    ctx: Context,
+    session: F0Session,
+    doc: { file_name?: string; mime_type?: string; file_size?: number },
+  ): Promise<void> {
+    const chatId = ctx.chat?.id;
+    if (chatId === undefined) return;
+    const sourceName = doc.file_name ?? 'strategy.xlsx';
+
+    // Явно выбранный синтез (или уже накопленные документы) — не переключаем молча (W3).
+    if (session.mode === 'synthesis') {
+      const dropNote =
+        session.documents.length > 0
+          ? ` Собранный пакет (${session.documents.length} файл(ов)) при переключении будет отброшен.`
+          : '';
+      await ctx
+        .reply(
+          `ℹ️ Идёт сборка из документов — Excel в неё не смешивается.${dropNote}\n` +
+            'Переключиться на импорт готовой стратегии?',
+          {
+            reply_markup: new InlineKeyboard().text(
+              '📥 Переключиться на импорт',
+              `f0_switch_import:${session.id}`,
+            ),
+          },
+        )
+        .catch(() => {});
+      return;
+    }
+    if (session.importResult !== undefined) {
+      await ctx
+        .reply('ℹ️ Excel уже принят — собери черновик (/draft) или начни заново: /newclient.')
+        .catch(() => {});
+      return;
+    }
+    if (doc.file_size !== undefined && doc.file_size > F0_MAX_FILE_BYTES) {
+      await ctx.reply(F0_TOO_LARGE_TEXT).catch(() => {});
+      return;
+    }
+
+    session.processing = true;
+    try {
+      const file = await ctx.getFile();
+      if (file.file_path === undefined) {
+        throw new Error('telegram getFile returned no file_path');
+      }
+      const buf = await downloadTelegramFile(file.file_path);
+      if (buf.length > F0_MAX_FILE_BYTES) {
+        await ctx.reply(F0_TOO_LARGE_TEXT).catch(() => {});
+        return;
+      }
+      const result = importStrategyXlsx(buf, sourceName);
+      // Текстификация — для кнопки «🧠 Досинтезировать гипотезы» (LLM по этому же файлу).
+      // Бюджет как у пакета документов: больше не влезет и в промпт досинтеза.
+      const sourceText = xlsxToText(buf, sourceName);
+      session.mode = 'import';
+      session.importResult = { ...result, sourceName };
+      session.importSourceText = sourceText.length <= F0_MAX_DOC_CHARS ? sourceText : undefined;
+      const totalKrs = result.extraction.objectives.reduce((sum, o) => sum + o.krs.length, 0);
+      f0Log.info(
+        {
+          step: 'f0.import_accepted',
+          chatId,
+          sessionId: session.id,
+          sourceName,
+          format: result.format,
+          sheetName: result.sheetName,
+          mappedColumns: result.mappedColumns,
+          objectives: result.extraction.objectives.length,
+          totalKrs,
+          participants: result.extraction.participants.length,
+          hypotheses: result.extraction.hypotheses.length,
+        },
+        'f0 xlsx import accepted',
+      );
+      await ctx
+        .reply(
+          `📥 Импорт «${sourceName}»: лист «${result.sheetName}» — ` +
+            `целей ${result.extraction.objectives.length}, KR ${totalKrs}, ` +
+            `участников ${result.extraction.participants.length}, гипотез ${result.extraction.hypotheses.length}.\n` +
+            'Собери черновик — дальше обычный онбординг (проверки, дозаполнение, /confirm).',
+          { reply_markup: f0BuildKeyboard },
+        )
+        .catch(() => {});
+    } catch (err) {
+      if (err instanceof F0OnboardingError) {
+        f0Log.info(
+          { step: 'f0.import_rejected', chatId, code: err.code, sourceName },
+          'f0 xlsx import rejected',
+        );
+        // mode не фиксируем: после отказа импорта путь синтеза остаётся открытым.
+        await ctx.reply(F0_REPLY_BY_CODE[err.code]).catch(() => {});
+      } else {
+        f0Log.error({ err, step: 'f0.import_failed', chatId, sourceName }, 'f0 xlsx import failed');
+        alertOps({
+          pipeline: 'F0',
+          step: 'f0.import_failed',
+          error: err,
+          context: { chatId, sourceName, sessionId: session.id },
+        });
+        await ctx.reply('⚠️ Не удалось принять Excel — техническая ошибка. Попробуй ещё раз.').catch(() => {});
+      }
+    } finally {
+      session.processing = false;
+    }
+  }
+
+  // Подтверждённое переключение синтез → импорт: пакет отбрасывается, Excel просим заново
+  // (файл не хранится — Telegram-документ нельзя перечитать без нового сообщения).
+  bot.callbackQuery(/^f0_switch_import:(.+)$/, async (ctx) => {
+    await ctx.answerCallbackQuery().catch(() => {});
+    const chatId = ctx.chat?.id;
+    if (chatId === undefined) return;
+    const session = await getOrRestoreF0Session(chatId);
+    if (session === undefined || session.phase !== 'collecting' || session.id !== ctx.match[1]) {
+      await ctx.reply('ℹ️ Эта кнопка от прошлой сессии. Актуальное состояние: /status.').catch(() => {});
+      return;
+    }
+    if (session.processing) {
+      await ctx.reply(F0_BUSY_TEXT).catch(() => {});
+      return;
+    }
+    session.mode = 'import';
+    session.documents = [];
+    session.documentsChars = 0;
+    f0Log.info(
+      { step: 'f0.mode_switched_to_import', chatId, sessionId: session.id },
+      'f0 switched to import mode',
+    );
+    await ctx
+      .reply('📥 Переключил на импорт: пакет документов отброшен. Пришли .xlsx ещё раз.')
+      .catch(() => {});
+  });
+
   bot.on('message:document', async (ctx) => {
     const chatId = ctx.chat.id;
     const session = await getOrRestoreF0Session(chatId);
@@ -1147,6 +1358,22 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
 
     const doc = ctx.message.document;
     const sourceName = doc.file_name ?? 'document';
+
+    // Story 8.5: .xlsx — путь импорта готовой стратегии (отдельная ветка, без LLM).
+    if (isXlsxDocument(doc.file_name, doc.mime_type)) {
+      await handleF0XlsxDocument(ctx, session, doc);
+      return;
+    }
+    // Путь импорта уже зафиксирован — обычные документы в него не смешиваем (записка §2).
+    if (session.mode === 'import') {
+      await ctx
+        .reply(
+          'ℹ️ Идёт импорт из Excel — документы в этот путь не добавляются. ' +
+            'Пакет документов — начни заново: /newclient → «🧠 Собрать из документов».',
+        )
+        .catch(() => {});
+      return;
+    }
     if (!isSupportedF0Document(doc.file_name, doc.mime_type)) {
       f0Log.info(
         { step: 'f0.unsupported_file', chatId, sourceName, mime: doc.mime_type },
@@ -1190,6 +1417,8 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
 
       session.documents.push({ sourceName: extracted.sourceName, text: extracted.text });
       session.documentsChars = projectedChars;
+      // Story 8.5: автодетект пути по первому файлу — документ → синтез.
+      session.mode ??= 'synthesis';
       f0Log.info(
         {
           step: 'f0.document_accepted',
@@ -1262,6 +1491,151 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
     }
   }
 
+  /**
+   * Общий хвост сборки черновика (синтез и импорт, Story 8.5): персист, саммари,
+   * переход в filling, первый вопрос дозаполнения. sendFirst доставляет первую часть
+   * саммари (LLM-путь редактирует своё progress-сообщение, импорт шлёт новое).
+   */
+  async function deliverF0Draft(opts: {
+    ctx: Context;
+    chatId: number;
+    session: F0Session;
+    result: F0FullDraftResult;
+    sourceNames: string[];
+    sendFirst: (text: string) => Promise<boolean>;
+  }): Promise<void> {
+    const { ctx, chatId, session, result, sourceNames, sendFirst } = opts;
+
+    // Сессию могли отменить (/cancel) или заменить (сброс) за время долгой сборки —
+    // тогда результат не сохраняем, иначе отменённая сессия воскресла бы через persist.
+    if (f0Sessions.get(chatId) !== session) {
+      f0Log.info(
+        { step: 'f0.draft_discarded', chatId, sessionId: session.id },
+        'f0 draft discarded — session cancelled/replaced during build',
+      );
+      await sendFirst('ℹ️ Онбординг был отменён во время сборки — черновик не сохранён. Новый: /newclient.');
+      return;
+    }
+
+    const draftId = randomUUID().slice(0, 8);
+    await persistF0FullDraft({ draftId, chatId, sourceNames, createdAt: now().toISOString(), result });
+
+    // Story 8.3 (W4): компактное саммари вместо полной простыни — полные таблицы
+    // появятся в Google Sheets после /confirm (ссылку пришлёт createSheetForSession).
+    const message = renderF0DraftSummaryMessage({
+      extraction: result.extraction,
+      krIssues: result.krIssues,
+      hypothesisIssues: result.hypothesisIssues,
+      sourceName: sourceNames.join(', '),
+      draftId,
+    });
+    const parts = splitForTelegram(message, TELEGRAM_SAFE_MARGIN, '🆕 Черновик онбординга (продолжение)');
+    let sentAll = await sendFirst(parts[0]!);
+    for (const part of parts.slice(1)) {
+      try {
+        await ctx.reply(part);
+      } catch (sendErr) {
+        sentAll = false;
+        log.error({ err: sendErr, chatId, draftId }, 'f0.draft.send_failed');
+      }
+    }
+    if (!sentAll) {
+      // Часть сообщений не ушла — черновик показан фрагментарно; не выдаём за успех.
+      await ctx
+        .reply('⚠️ Черновик доставлен не полностью (сбой Telegram). Собери снова: /draft.')
+        .catch(() => {});
+    }
+    // Пакет использован — очищаем, чтобы новые файлы не липли к отработанному черновику.
+    session.documents = [];
+    session.documentsChars = 0;
+    session.importResult = undefined; // Story 8.5: xlsx отработан
+    // Story 7.3: переходим в диалог дозаполнения по пробелам черновика.
+    session.phase = 'filling';
+    session.draft = { draftId, sourceNames, extraction: result.extraction };
+    session.gaps = computeF0Gaps(result.extraction);
+    session.gapIndex = 0;
+    session.schedule = null;
+    session.retryGapIndex = undefined; // W6: новая очередь — старое ожидание повтора не властно
+    await saveF0Session(chatId, session);
+    f0Log.info(
+      {
+        step: 'f0.draft_sent',
+        chatId,
+        sessionId: session.id,
+        draftId,
+        mode: session.mode,
+        files: sourceNames.length,
+        delivered: sentAll,
+        blockingKrs: result.krIssues.length,
+        hypothesesWithoutMetric: result.hypothesisIssues.length,
+        totalKrs: result.totalKrs,
+        gaps: session.gaps.length,
+      },
+      'f0 draft delivered',
+    );
+    // Story 1.9 fix: успешная сборка F0-черновика — канонический успех пайплайна,
+    // сбрасывает down-watchdog (иначе ложный «Pipeline down», т.к. считался лишь F1).
+    if (sentAll) {
+      recordOpsEvent('info', {
+        pipeline: 'F0',
+        step: 'f0.draft_delivered',
+        status: 'ok',
+        context: { chatId, sessionId: session.id, draftId, files: sourceNames.length },
+      });
+    }
+    // Story 8.5 (ответ Тимура на в.4 записки): импорт без гипотез — предлагаем досинтез
+    // LLM-ом из этого же файла; новые вопросы встанут в конец диалога.
+    if (
+      session.mode === 'import' &&
+      result.extraction.hypotheses.length === 0 &&
+      session.importSourceText !== undefined
+    ) {
+      await ctx
+        .reply(
+          '🧪 Гипотез в файле не нашёл. Могу синтезировать их из этого же Excel (ИИ, обычно 1–2 минуты) — вопросы по ним добавятся в конец диалога.',
+          { reply_markup: new InlineKeyboard().text('🧠 Досинтезировать гипотезы', 'f0_synth_hypo') },
+        )
+        .catch(() => {});
+    }
+    await askNextF0Gap(ctx, session);
+  }
+
+  // Story 8.5: сборка черновика из принятого xlsx — extraction уже распознан при приёме,
+  // LLM и progress-тикер не нужны (импорт мгновенный).
+  async function buildF0DraftFromImport(ctx: Context, chatId: number, session: F0Session): Promise<void> {
+    const imported = session.importResult;
+    if (imported === undefined) return;
+    session.processing = true;
+    try {
+      const extraction = imported.extraction;
+      const result: F0FullDraftResult = {
+        extraction,
+        krIssues: markBlockingKrIssues(extraction),
+        hypothesisIssues: markHypothesesWithoutMetric(extraction),
+        totalKrs: extraction.objectives.reduce((sum, o) => sum + o.krs.length, 0),
+        usage: { input_tokens: 0, output_tokens: 0 }, // импорт без LLM
+      };
+      await deliverF0Draft({
+        ctx,
+        chatId,
+        session,
+        result,
+        sourceNames: [imported.sourceName],
+        sendFirst: async (text) => {
+          try {
+            await ctx.reply(text);
+            return true;
+          } catch (err) {
+            log.error({ err, chatId }, 'f0.import_draft.send_failed');
+            return false;
+          }
+        },
+      });
+    } finally {
+      session.processing = false;
+    }
+  }
+
   // Сборка черновика из пакета: конкатенация файлов → полное извлечение (OKR + гипотезы + участники).
   async function buildF0Draft(ctx: Context): Promise<void> {
     const chatId = ctx.chat?.id;
@@ -1273,6 +1647,15 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
     }
     if (session.processing) {
       await ctx.reply(F0_BUSY_TEXT).catch(() => {});
+      return;
+    }
+    // Story 8.5: путь импорта — черновик из принятого xlsx, без LLM.
+    if (session.mode === 'import') {
+      if (session.importResult === undefined) {
+        await ctx.reply('ℹ️ Excel ещё не принят — пришли .xlsx-файл готовой стратегии.').catch(() => {});
+        return;
+      }
+      await buildF0DraftFromImport(ctx, chatId, session);
       return;
     }
     if (session.documents.length === 0) {
@@ -1333,82 +1716,9 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
         sourceName: sourceNames.join(', '),
       });
 
-      // Сессию могли отменить (/cancel) или заменить (сброс) за время долгой сборки —
-      // тогда результат не сохраняем, иначе отменённая сессия воскресла бы через persist.
-      if (f0Sessions.get(chatId) !== session) {
-        f0Log.info(
-          { step: 'f0.draft_discarded', chatId, sessionId: session.id },
-          'f0 draft discarded — session cancelled/replaced during build',
-        );
-        await finishProgress('ℹ️ Онбординг был отменён во время сборки — черновик не сохранён. Новый: /newclient.');
-        return;
-      }
-
-      const draftId = randomUUID().slice(0, 8);
-      await persistF0FullDraft({ draftId, chatId, sourceNames, createdAt: now().toISOString(), result });
-
-      // Story 8.3 (W4): компактное саммари вместо полной простыни — полные таблицы
-      // появятся в Google Sheets после /confirm (ссылку пришлёт createSheetForSession).
-      const message = renderF0DraftSummaryMessage({
-        extraction: result.extraction,
-        krIssues: result.krIssues,
-        hypothesisIssues: result.hypothesisIssues,
-        sourceName: sourceNames.join(', '),
-        draftId,
-      });
-      const parts = splitForTelegram(message, TELEGRAM_SAFE_MARGIN, '🆕 Черновик онбординга (продолжение)');
-      let sentAll = await finishProgress(parts[0]!);
-      for (const part of parts.slice(1)) {
-        try {
-          await ctx.reply(part);
-        } catch (sendErr) {
-          sentAll = false;
-          log.error({ err: sendErr, chatId, draftId }, 'f0.draft.send_failed');
-        }
-      }
-      if (!sentAll) {
-        // Часть сообщений не ушла — черновик показан фрагментарно; не выдаём за успех.
-        await ctx
-          .reply('⚠️ Черновик доставлен не полностью (сбой Telegram). Собери снова: /draft.')
-          .catch(() => {});
-      }
-      // Пакет использован — очищаем, чтобы новые файлы не липли к отработанному черновику.
-      session.documents = [];
-      session.documentsChars = 0;
-      // Story 7.3: переходим в диалог дозаполнения по пробелам черновика.
-      session.phase = 'filling';
-      session.draft = { draftId, sourceNames, extraction: result.extraction };
-      session.gaps = computeF0Gaps(result.extraction);
-      session.gapIndex = 0;
-      session.schedule = null;
-      session.retryGapIndex = undefined; // W6: новая очередь — старое ожидание повтора не властно
-      await saveF0Session(chatId, session);
-      f0Log.info(
-        {
-          step: 'f0.draft_sent',
-          chatId,
-          sessionId: session.id,
-          draftId,
-          files: sourceNames.length,
-          delivered: sentAll,
-          blockingKrs: result.krIssues.length,
-          hypothesesWithoutMetric: result.hypothesisIssues.length,
-          totalKrs: result.totalKrs,
-          gaps: session.gaps.length,
-        },
-        'f0 draft delivered',
-      );
-      // Story 1.9 fix: успешная сборка F0-черновика — канонический успех пайплайна,
-      // сбрасывает down-watchdog (иначе ложный «Pipeline down», т.к. считался лишь F1).
-      if (sentAll) {
-        recordOpsEvent('info', {
-          pipeline: 'F0',
-          step: 'f0.draft_delivered',
-          status: 'ok',
-          context: { chatId, sessionId: session.id, draftId, files: sourceNames.length },
-        });
-      }
-      await askNextF0Gap(ctx, session);
+      // Общий хвост (персист, саммари, filling) вынесен в deliverF0Draft — Story 8.5
+      // использует его и для импорта. finished/clearInterval гасит sendFirst-обёртка.
+      await deliverF0Draft({ ctx, chatId, session, result, sourceNames, sendFirst: finishProgress });
     } catch (err) {
       if (err instanceof F0OnboardingError) {
         f0Log.info(
@@ -1445,6 +1755,111 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
   bot.callbackQuery('f0_build', async (ctx) => {
     await ctx.answerCallbackQuery().catch(() => {});
     await buildF0Draft(ctx);
+  });
+
+  // Story 8.5 (ответ Тимура на в.4 записки): досинтез гипотез LLM-ом из того же xlsx.
+  // Единственный LLM-вызов импорт-пути, и только по явной кнопке. Новые вопросы
+  // (метрики гипотез) встают в конец очереди — текущий прогресс диалога не трогаем.
+  bot.callbackQuery('f0_synth_hypo', async (ctx) => {
+    await ctx.answerCallbackQuery().catch(() => {});
+    const chatId = ctx.chat?.id;
+    if (chatId === undefined) return;
+    const session = await getOrRestoreF0Session(chatId);
+    if (session === undefined || session.phase !== 'filling' || session.draft === undefined) {
+      await ctx.reply('ℹ️ Эта кнопка от прошлого онбординга. Актуальное состояние: /status.').catch(() => {});
+      return;
+    }
+    if (session.processing) {
+      await ctx.reply(F0_BUSY_TEXT).catch(() => {});
+      return;
+    }
+    if (session.draft.extraction.hypotheses.length > 0) {
+      await ctx.reply('ℹ️ Гипотезы уже есть в черновике — повторный досинтез не нужен.').catch(() => {});
+      return;
+    }
+    const sourceText = session.importSourceText;
+    if (sourceText === undefined) {
+      await ctx
+        .reply('ℹ️ Текст Excel не сохранился — добавь гипотезы в лист таблицы после /confirm.')
+        .catch(() => {});
+      return;
+    }
+
+    session.processing = true;
+    try {
+      await ctx.reply('🧠 Синтезирую гипотезы из Excel — обычно 1–2 минуты…').catch(() => {});
+      const result = await runF0FullDraftFn({
+        documentText: sourceText,
+        sourceName: session.draft.sourceNames.join(', '),
+      });
+      // Сессию могли отменить/заменить за время LLM-вызова — результат не примешиваем.
+      if (f0Sessions.get(chatId) !== session || session.draft === undefined) {
+        f0Log.info(
+          { step: 'f0.synth_hypo_discarded', chatId, sessionId: session.id },
+          'f0 hypothesis synthesis discarded — session replaced',
+        );
+        return;
+      }
+      // Прошли через LLM → требуют подтверждения трекером (⚠️), как synthesized в синтезе.
+      const hypotheses = result.extraction.hypotheses.map((h) => ({ ...h, synthesized: true }));
+      if (hypotheses.length === 0) {
+        await ctx
+          .reply('🧪 Гипотез из файла извлечь не удалось — добавь их в лист таблицы после /confirm.')
+          .catch(() => {});
+        return;
+      }
+      session.draft.extraction.hypotheses = hypotheses;
+      const oldGapCount = session.gaps.length;
+      const dialogWasDone = session.gapIndex >= oldGapCount;
+      const newGaps = computeHypoMetricGaps(session.draft.extraction);
+      session.gaps.push(...newGaps);
+      await saveF0Session(chatId, session);
+      f0Log.info(
+        {
+          step: 'f0.synth_hypo_done',
+          chatId,
+          sessionId: session.id,
+          hypotheses: hypotheses.length,
+          withoutMetric: newGaps.length,
+        },
+        'f0 hypotheses synthesized after import',
+      );
+      const metricNote =
+        newGaps.length > 0 ? `, без метрики — ${newGaps.length} (спрошу в диалоге)` : '';
+      await ctx
+        .reply(
+          `🧪 Синтезировано гипотез: ${hypotheses.length}${metricNote}. ` +
+            'Они помечены ⚠️ — подтверди формулировки с клиентом.',
+        )
+        .catch(() => {});
+      // Диалог уже дошёл до конца — задаём первый из добавленных вопросов сразу.
+      if (dialogWasDone && newGaps.length > 0) {
+        await askNextF0Gap(ctx, session);
+      }
+    } catch (err) {
+      if (err instanceof F0OnboardingError) {
+        f0Log.info(
+          { step: 'f0.synth_hypo_rejected', chatId, code: err.code },
+          'f0 hypothesis synthesis rejected',
+        );
+      } else {
+        f0Log.error({ err, step: 'f0.synth_hypo_failed', chatId }, 'f0 hypothesis synthesis failed');
+        alertOps({
+          pipeline: 'F0',
+          step: 'f0.synth_hypo_failed',
+          error: err,
+          context: { chatId, sessionId: session.id },
+        });
+      }
+      await ctx
+        .reply(
+          '⚠️ Не удалось синтезировать гипотезы из этого файла. Онбординг не пострадал — ' +
+            'гипотезы можно добавить в лист таблицы после /confirm.',
+        )
+        .catch(() => {});
+    } finally {
+      session.processing = false;
+    }
   });
 
   // ───────── Story 7.3: диалог дозаполнения ─────────

@@ -147,7 +147,9 @@ export type F0OnboardingCode =
   | 'empty_document'
   | 'document_too_large'
   | 'document_parse_failed'
-  | 'not_okr_document';
+  | 'not_okr_document'
+  // Story 8.5: импорт xlsx — ни один лист не распознан как таблица KR (или 0 строк данных).
+  | 'import_unmappable';
 
 export class F0OnboardingError extends Error {
   public readonly code: F0OnboardingCode;

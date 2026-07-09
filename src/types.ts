@@ -368,6 +368,12 @@ export const F0PersistedSessionSchema = z.object({
   // Story 8.6 (W6): индекс пробела, по которому уже был переспрос числового формата —
   // рестарт посреди переспроса не начинает валидацию заново. Optional (совместимость 7.3).
   retryGapIndex: z.number().int().nonnegative().optional(),
+  // Story 8.5: путь онбординга (import — один xlsx без LLM; synthesis — документы через
+  // LLM). Optional — сессии до 8.5 валидны без него (трактуются как synthesis).
+  mode: z.enum(['import', 'synthesis']).optional(),
+  // Story 8.5: текстифицированный xlsx для кнопки «🧠 Досинтезировать гипотезы» —
+  // переживает рестарт, чтобы кнопка работала и после перезапуска бота.
+  importSourceText: z.string().optional(),
   updatedAt: z.string().min(1),
 });
 export type F0PersistedSession = z.infer<typeof F0PersistedSessionSchema>;

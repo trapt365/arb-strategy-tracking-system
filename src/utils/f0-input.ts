@@ -37,6 +37,15 @@ const LONG_MD_LINK_RE = /\[([^\]\n]{0,200})\]\(([^)\s\n]{120,8000})\)/g;
 /** Голые служебные URL (vscode-remote, file://) — контента не несут. */
 const NOISE_URL_RE = /(?:vscode-remote|vscode|file):\/\/[^\s)\]]+/g;
 
+// Story 8.5: .xlsx — отдельный путь (импорт готовой стратегии, f0-import.ts),
+// не входит в F0_SUPPORTED_EXTENSIONS (те — про извлечение текста для синтеза).
+const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+
+export function isXlsxDocument(fileName?: string, mimeType?: string): boolean {
+  const name = (fileName ?? '').toLowerCase();
+  return name.endsWith('.xlsx') || mimeType === XLSX_MIME;
+}
+
 export function isSupportedF0Document(fileName?: string, mimeType?: string): boolean {
   const name = (fileName ?? '').toLowerCase();
   if (F0_SUPPORTED_EXTENSIONS.some((ext) => name.endsWith(ext))) return true;
