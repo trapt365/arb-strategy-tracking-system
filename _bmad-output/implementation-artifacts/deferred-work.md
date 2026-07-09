@@ -155,3 +155,21 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-9-2-grounding-profil-edinstvennyy-istochnik-imyon.md`
   summary: Duplicate profileParticipants ternary in two bot.ts runF0FullDraftFn call sites — minor maintenance concern.
   evidence: Lines ~2274-2276 and ~2354-2356 contain identical conditional; a future change to profile-tops-context logic must be applied to both call sites.
+
+## Deferred from: code review of story 9.3 (2026-07-09)
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-9-3-startovyy-flow-deystvuyushchego-trekera.md`
+  summary: `start_client:{id}` callback wiring not integration-tested at bot level — a bot.test.ts spy test could verify that `setActiveClient` is called with the correct chatId and clientId.
+  evidence: bot-start-9-3.test.ts test (4) covers the happy path via a separate test file with vi.hoisted mocks; the main bot.test.ts has no corresponding test for start_client flow; regression in the callback registration order would be silent.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-9-3-startovyy-flow-deystvuyushchego-trekera.md`
+  summary: `/start` and `/help` handlers share near-identical logic (loadRegistry + buildStartMenuKeyboard + formatShortWelcome) — maintenance concern if handlers diverge.
+  evidence: Both handlers are ~15 LOC with identical try/catch structure; a shared `sendStartMenu(ctx)` helper would reduce drift risk; deferred since 9.3 spec explicitly states identical behavior is required.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-9-3-startovyy-flow-deystvuyushchego-trekera.md`
+  summary: `buildStartMenuKeyboard` not directly unit-tested — only covered transitively via /start and /help bot handler tests.
+  evidence: Pure function with conditional branching (clients.length > 0 vs 0) is straightforward to test in isolation; deferred as transitively covered and low risk.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-9-3-startovyy-flow-deystvuyushchego-trekera.md`
+  summary: Contextual missing_arg hint text contains `/report https://` as a stub URL prefix — may need UX polish to avoid confusing users who copy it literally.
+  evidence: Contextual hint: «/report https:// — отчёт по встрече» — the `https://` placeholder is intentional per spec but may be mistaken for a working URL. Deferred: polish in a future UX story (9.7 or later).

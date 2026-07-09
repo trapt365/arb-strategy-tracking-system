@@ -12,6 +12,7 @@ import {
   formatDeliveryPlainText,
   formatTopMessagePlainText,
   formatWelcomeMessage,
+  formatShortWelcome,
   formatHelpHint,
   formatOpsAlert,
   formatWatchdogRepeat,
@@ -422,6 +423,36 @@ describe('formatWelcomeMessage (Story 1.8)', () => {
   it('plain text — НЕ содержит MarkdownV2-escape backslashes', () => {
     // Welcome is plain text — we do not pre-escape; reserved chars appear literally.
     const out = formatWelcomeMessage('Азиза');
+    expect(out).not.toContain('\\');
+  });
+});
+
+describe('formatShortWelcome (Story 9.3)', () => {
+  it('с именем → "Привет, {Name}!" + AI-трекинг бот', () => {
+    const out = formatShortWelcome('Азиза');
+    expect(out).toContain('Привет, Азиза!');
+    expect(out).toContain('AI-трекинг бот');
+  });
+
+  it('без имени → "Привет!" без запятой', () => {
+    const out = formatShortWelcome(undefined);
+    expect(out).toContain('Привет!');
+    expect(out).not.toContain('Привет, ');
+  });
+
+  it('пустая строка → "Привет!" без запятой (graceful)', () => {
+    const out = formatShortWelcome('');
+    expect(out).toContain('Привет!');
+    expect(out).not.toContain('Привет, !');
+  });
+
+  it('не длиннее 3 строк', () => {
+    const out = formatShortWelcome('Азиза');
+    expect(out.split('\n').length).toBeLessThanOrEqual(3);
+  });
+
+  it('plain text — не содержит MarkdownV2-escape backslashes', () => {
+    const out = formatShortWelcome('Азиза');
     expect(out).not.toContain('\\');
   });
 });

@@ -326,6 +326,20 @@ export function formatWelcomeMessage(firstName?: string): string {
 }
 
 /**
+ * Story 9.3: short welcome for /start and /help when registry has clients.
+ * 3 lines, plain text — no parse_mode.
+ */
+export function formatShortWelcome(firstName?: string): string {
+  const trimmed = firstName?.trim();
+  const greeting = trimmed && trimmed.length > 0 ? `Привет, ${trimmed}!` : 'Привет!';
+  return [
+    `👋 ${greeting} Я — AI-трекинг бот практики.`,
+    'Веду онбординг стратегий и отчёты по встречам с топами.',
+    'Выбери клиента или онбордируй нового.',
+  ].join('\n');
+}
+
+/**
  * Story 1.8: short fallback hint for unknown commands / free-form text (UX-DR3).
  * Plain text — no parse_mode.
  */

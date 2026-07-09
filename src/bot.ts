@@ -106,6 +106,7 @@ import {
   formatHelpHint,
   formatProgressStep,
   formatQueueAck,
+  formatShortWelcome,
   formatWelcomeMessage,
   splitForTelegram,
   TELEGRAM_SAFE_MARGIN,
@@ -903,7 +904,17 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
   // ───────── /start and /help (Story 1.8; меню — Story 8.4) ─────────
 
   // Story 8.4 (W1): стартовое меню — онбординг и клиенты доступны без запоминания команд.
-  function buildMainMenuKeyboard(): InlineKeyboard {
+  // Story 9.3: если есть зарегистрированные клиенты — кнопки для каждого + «Онбординг» + «Что умеет бот».
+  //            Пустой реестр → прежние 3 кнопки (Что умеет бот / Онбординг / Клиенты).
+  function buildStartMenuKeyboard(clients: { id: string; name: string }[]): InlineKeyboard {
+    if (clients.length > 0) {
+      const kb = new InlineKeyboard();
+      for (const client of clients) {
+        kb.text(client.name, `start_client:${client.id}`).row();
+      }
+      kb.text('🆕 Онбординг нового клиента', 'menu:new').row().text('ℹ️ Что умеет бот', 'menu:help');
+      return kb;
+    }
     return new InlineKeyboard()
       .text('ℹ️ Что умеет бот', 'menu:help')
       .row()
@@ -914,9 +925,11 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
 
   bot.command('start', async (ctx) => {
     const firstName = ctx.from?.first_name?.trim() || undefined;
-    const welcomeText = formatWelcomeMessage(firstName);
     try {
-      await ctx.reply(welcomeText, { reply_markup: buildMainMenuKeyboard() });
+      const registry = await loadRegistry();
+      const clients = Object.keys(registry).map((id) => ({ id, name: registry[id]?.name ?? id }));
+      const welcomeText = formatShortWelcome(firstName);
+      await ctx.reply(welcomeText, { reply_markup: buildStartMenuKeyboard(clients) });
     } catch (err) {
       log.warn({ err, chatId: ctx.chat.id }, 'bot.start.reply_failed');
       return;
@@ -929,9 +942,11 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
 
   bot.command('help', async (ctx) => {
     const firstName = ctx.from?.first_name?.trim() || undefined;
-    const welcomeText = formatWelcomeMessage(firstName);
     try {
-      await ctx.reply(welcomeText);
+      const registry = await loadRegistry();
+      const clients = Object.keys(registry).map((id) => ({ id, name: registry[id]?.name ?? id }));
+      const welcomeText = formatShortWelcome(firstName);
+      await ctx.reply(welcomeText, { reply_markup: buildStartMenuKeyboard(clients) });
     } catch (err) {
       log.warn({ err, chatId: ctx.chat.id }, 'bot.help.reply_failed');
       return;
@@ -1679,6 +1694,32 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
       kb.text('Geonline (встроенный пилот)', 'client:geonline').row();
     }
     await ctx.reply('👥 Клиенты — выбери:', { reply_markup: kb }).catch(() => {});
+  });
+
+  // Story 9.3: прямая активация клиента из /start меню без показа client card.
+  bot.callbackQuery(/^start_client:(.+)$/, async (ctx) => {
+    await ctx.answerCallbackQuery().catch(() => {});
+    const chatId = ctx.chat?.id;
+    if (chatId === undefined) return;
+    const clientId = ctx.match[1]!;
+    setActiveClient(chatId, clientId).catch(() => {});
+    const name = (await getClientName(clientId)) ?? clientId;
+    const sheetId = await getClientSheetId(clientId);
+    const card = await loadClientCard(clientId);
+    const kb = new InlineKeyboard();
+    if (sheetId !== undefined) {
+      kb.url('📁 Таблица', `https://docs.google.com/spreadsheets/d/${sheetId}`);
+    }
+    if (card !== null) {
+      kb.row().text('➕ Дозаполнить профиль', `profile_fill:${clientId}`);
+    }
+    await ctx
+      .reply(
+        `✅ Клиент: ${name}.\n📊 /report <ссылка> — отчёт по встрече\n📋 /status — готовность к неделе`,
+        { reply_markup: kb },
+      )
+      .catch(() => {});
+    log.info({ step: 'bot.start_client.selected', chatId, clientId }, 'start_client selected');
   });
 
   // W10: статус любого клиента из карточки — не только активной сессии.
@@ -2825,8 +2866,19 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
     const parsed = parseReportUrl(urlArg);
     if (!parsed.ok) {
       const reason: UrlParseFailure = parsed.reason;
-      const text = formatErrorMessage(reason);
       log.info({ chatId: ctx.chat.id, reason }, 'bot.report.invalid_input');
+      // Story 9.3: для missing_arg при активном клиенте — контекстная подсказка с именем.
+      if (reason === 'missing_arg') {
+        const active = await getActiveClient(ctx.chat.id);
+        if (active !== undefined) {
+          const activeName = (await getClientName(active)) ?? active;
+          await ctx
+            .reply(`Активный клиент: ${activeName}. /report https:// — отчёт по встрече · /help для меню.`)
+            .catch(() => {});
+          return;
+        }
+      }
+      const text = formatErrorMessage(reason);
       await ctx.reply(text).catch(() => {});
       return;
     }
@@ -3264,12 +3316,25 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
         return;
       }
       // Story 1.8: fallback hint вместо молчания (UX-DR3 «Тишина — враг»).
+      // Story 9.3: при активном клиенте — контекстная подсказка с именем.
       // Сюда падают: свободный текст без reply и неизвестные команды
       // (Telegram доставляет их как обычный message:text без bot_command match).
-      try {
-        await ctx.reply(formatHelpHint());
-      } catch (err) {
-        log.warn({ err, chatId }, 'bot.fallback.reply_failed');
+      {
+        const activeClientId = await getActiveClient(chatId);
+        if (activeClientId !== undefined) {
+          const activeName = (await getClientName(activeClientId)) ?? activeClientId;
+          await ctx
+            .reply(`Активный клиент: ${activeName}. /report <ссылка> для отчёта · /help для меню.`)
+            .catch((err: unknown) => {
+              log.warn({ err, chatId }, 'bot.fallback.active.reply_failed');
+            });
+        } else {
+          try {
+            await ctx.reply(formatHelpHint());
+          } catch (err) {
+            log.warn({ err, chatId }, 'bot.fallback.reply_failed');
+          }
+        }
       }
       log.info(
         { step: 'bot.fallback.hint', chatId, textLen: ctx.message.text.length },

@@ -1187,18 +1187,12 @@ describe('bot — onboarding /start (Story 1.8)', () => {
     const payload = reply!.payload as { text: string; parse_mode?: string };
     expect(payload.text).toContain('Привет, Азиза!');
     expect(payload.text).toContain('AI-трекинг бот');
-    expect(payload.text).toContain('/report');
-    expect(payload.text).toContain('/help');
-    expect(payload.text).toContain('🔍 Найти');
-    expect(payload.text).toContain('📋 Повестка');
-    // Story 8.2 (W1): /status реализован — в welcome он команда, а не пункт «Скоро».
-    expect(payload.text).toContain('/status');
-    expect(payload.text).toContain('/newclient');
+    // Story 9.3: полная справка переехала за «Что умеет бот»; short welcome — только 3 строки.
     expect(payload.parse_mode).toBeUndefined();
     expect(queue.size()).toBe(0);
   });
 
-  it('AC#2: /help → та же welcome-инструкция (single source of truth)', async () => {
+  it('AC#2: /help → та же short welcome (single source of truth)', async () => {
     const { bot, calls } = buildBot();
     await bot.handleUpdate(helpUpdate(TEST_TRACKER_CHAT_ID, 'Азиза'));
 
@@ -1207,8 +1201,8 @@ describe('bot — onboarding /start (Story 1.8)', () => {
     );
     expect(reply).toBeDefined();
     const payload = reply!.payload as { text: string; parse_mode?: string };
-    expect(payload.text).toContain('/report');
-    expect(payload.text).toContain('/help');
+    // Story 9.3: /help показывает то же short welcome + keyboard, не длинную инструкцию.
+    expect(payload.text).toContain('AI-трекинг бот');
     expect(payload.parse_mode).toBeUndefined();
   });
 
@@ -1649,14 +1643,20 @@ describe('bot — меню, клиенты и защита сессии (Story 8
     return (markup?.inline_keyboard ?? []).flat().map((b) => b.callback_data ?? '');
   }
 
-  it('W1: /start приходит с меню — 3 inline-кнопки', async () => {
+  it('W1: /start приходит с меню — кнопки клиента + Онбординг + Что умеет бот (Story 9.3)', async () => {
     const { bot, calls } = buildBot();
     await bot.handleUpdate(startUpdate(TEST_TRACKER_CHAT_ID, 'Азиза'));
     const welcome = calls.find(
       (c) => c.method === 'sendMessage' && (c.payload.text as string).includes('Привет'),
     );
     expect(welcome).toBeDefined();
-    expect(menuButtons(welcome!)).toEqual(['menu:help', 'menu:new', 'menu:clients']);
+    // Story 9.3: реестр содержит клиента — кнопка start_client + Онбординг + Что умеет бот.
+    const buttons = menuButtons(welcome!);
+    expect(buttons).toContain(`start_client:${TEST_CLIENT_ID}`);
+    expect(buttons).toContain('menu:new');
+    expect(buttons).toContain('menu:help');
+    // geonline-fallback НЕ в start-меню
+    expect(buttons).not.toContain('menu:clients');
   });
 
   it('menu:clients → список клиентов реестра с кнопками client:{id} + встроенный geonline', async () => {
