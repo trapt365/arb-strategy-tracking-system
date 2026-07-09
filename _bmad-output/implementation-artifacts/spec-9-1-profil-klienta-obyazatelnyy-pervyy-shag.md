@@ -2,7 +2,7 @@
 title: 'Story 9.1: [CR-3] Профиль клиента — обязательный первый шаг онбординга'
 type: 'feature'
 created: '2026-07-09'
-status: 'in-review'
+status: 'done'
 baseline_revision: 'e59cd0b7d0e92590506b7c73d6de5b384aa4d629'
 review_loop_iteration: 0
 followup_review_recommended: false
