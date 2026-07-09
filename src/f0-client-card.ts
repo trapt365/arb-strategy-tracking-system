@@ -2,7 +2,13 @@ import { promises as fs } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { logger as rootLogger, type Logger } from './logger.js';
 import { markBlockingKrIssues } from './f0-onboarding.js';
-import { ClientCardSchema, type ClientCard, type F0FullExtraction } from './types.js';
+import {
+  ClientCardSchema,
+  type ClientCard,
+  type ClientProfile,
+  type F0FullExtraction,
+} from './types.js';
+import { renderProfileCardLines } from './f0-profile.js';
 
 // Story 7.5 (WP-39 Ф2): карточка клиента + чеклист готовности к неделе 1.
 // Собирает карточку из данных онбординга (7.1–7.4), кладёт в data/{clientId}/card.json,
@@ -59,6 +65,8 @@ export interface BuildClientCardArgs {
   spreadsheetUrl: string | null;
   startDate: string; // ISO
   clientId?: string; // явный slug (иначе из company)
+  // Story 9.1: профиль клиента (Часть A) — переносится в карточку как есть.
+  profile?: ClientProfile;
   now?: () => Date;
 }
 
@@ -87,6 +95,8 @@ export function buildClientCard(args: BuildClientCardArgs): ClientCard {
     sheetsUrl: args.spreadsheetUrl,
     startDate: args.startDate,
     createdAt: nowFn().toISOString(),
+    // Story 9.1: профиль — как собран в диалоге; отсутствует у сессий до 9.1.
+    ...(args.profile !== undefined ? { profile: args.profile } : {}),
   };
 }
 
@@ -193,6 +203,8 @@ export function renderClientCardMessage(card: ClientCard): string {
     `Участники: ${card.participants.length}${names.length > 0 ? ` — ${names}` : ''}` +
       (card.participants.length > 6 ? ' …' : ''),
   );
+  // Story 9.1: компактный профиль (суть, топы, DM, счётчик расширенной части).
+  if (card.profile !== undefined) lines.push(...renderProfileCardLines(card.profile));
   lines.push(`Расписание: ${card.schedule ?? '—'}`);
   lines.push(`Старт: ${card.startDate.slice(0, 10)}`);
   lines.push('');

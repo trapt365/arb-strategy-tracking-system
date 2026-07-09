@@ -10,8 +10,9 @@ import {
   loadClientCard,
   computeReadinessChecklist,
   renderReadinessMessage,
+  renderClientCardMessage,
 } from './f0-client-card.js';
-import type { F0FullExtraction } from './types.js';
+import type { ClientProfile, F0FullExtraction } from './types.js';
 
 function extraction(overrides: Partial<F0FullExtraction> = {}): F0FullExtraction {
   return {
@@ -134,5 +135,56 @@ describe('renderReadinessMessage', () => {
     const msg = renderReadinessMessage(c, computeReadinessChecklist(c, extraction()));
     expect(msg).toContain('🟢');
     expect(msg).toContain('docs.google.com');
+  });
+});
+
+// ─── Story 9.1: профиль клиента в карточке ──────────────────────────────────
+
+const profileFixture: ClientProfile = {
+  companyName: 'Ромашка',
+  businessSummary: 'Продаём ромашки бизнесу',
+  history: 'Основана в 2018',
+  tops: [
+    { name: 'Дамир', title: 'CEO', authority: 'все решения', area: 'всё' },
+    { name: 'Мақсат', title: 'CMO', authority: null, area: 'маркетинг' },
+  ],
+  decisionMaker: 'Дамир',
+};
+
+describe('профиль клиента в карточке (Story 9.1)', () => {
+  it('buildClientCard переносит profile как есть; без профиля поле отсутствует', () => {
+    const withProfile = card({ profile: profileFixture });
+    expect(withProfile.profile).toEqual(profileFixture);
+    expect(card().profile).toBeUndefined(); // сессии до 9.1 — без профиля
+  });
+
+  it('renderClientCardMessage показывает профиль компактно (≤15 строк)', () => {
+    const msg = renderClientCardMessage(card({ profile: profileFixture }));
+    expect(msg).toContain('Суть: Продаём ромашки бизнесу');
+    expect(msg).toContain('Дамир (CEO)');
+    expect(msg).toContain('DM: Дамир');
+    expect(msg).toContain('расширенный 1/14'); // заполнена только history
+    expect(msg.split('\n').length).toBeLessThanOrEqual(15);
+  });
+
+  it('карточка без профиля рендерится как раньше (регресс 8.4)', () => {
+    const msg = renderClientCardMessage(card());
+    expect(msg).not.toContain('Суть:');
+    expect(msg).not.toContain('Профиль:');
+    expect(msg).toContain('👤 Ромашка (romashka)');
+  });
+
+  it('roundtrip карточки с профилем; старый card.json без profile читается', async () => {
+    const dir = join(tmpdir(), `card-${randomUUID()}`);
+    await persistClientCard(card({ profile: profileFixture }), { rootDir: dir });
+    const loaded = await loadClientCard('romashka', { rootDir: dir });
+    expect(loaded?.profile?.decisionMaker).toBe('Дамир');
+
+    // Старый формат (до 9.1): без поля profile — валиден без миграции.
+    const dir2 = join(tmpdir(), `card-${randomUUID()}`);
+    await persistClientCard(card(), { rootDir: dir2 });
+    const legacy = await loadClientCard('romashka', { rootDir: dir2 });
+    expect(legacy).not.toBeNull();
+    expect(legacy!.profile).toBeUndefined();
   });
 });

@@ -352,14 +352,68 @@ export const F0GapSchema = z.object({
   header: z.string().optional(),
 });
 
+// === Story 9.1: профиль клиента — обязательный первый шаг онбординга (Часть A) ===
+
+// Топ-менеджер из A3.2: «имя — должность, полномочия, зона: …». Всё, кроме имени,
+// может не разложиться из свободного ответа (инвариант 3: не выдумываем) → nullable.
+export const ClientTopSchema = z.object({
+  name: z.string().min(1),
+  title: z.string().nullable(), // должность
+  authority: z.string().nullable(), // полномочия
+  area: z.string().nullable(), // зона ответственности
+});
+export type ClientTop = z.infer<typeof ClientTopSchema>;
+
+// Финансовая «Точка А» (A2) + желаемая цифра (A4.5). Все поля optional —
+// неотвеченные вопросы остаются незаполненными (инвариант 3).
+export const ClientProfileFinancialsSchema = z.object({
+  start: z
+    .object({
+      revenue: z.string().optional(), // A2.1
+      profitability: z.string().optional(), // A2.2
+      unitEconomics: z.string().optional(), // A2.3
+      debts: z.string().optional(), // A2.4
+    })
+    .optional(),
+  target: z.string().optional(), // A4.5
+});
+
+// Запрос и ожидания (A4).
+export const ClientProfileRequestSchema = z.object({
+  problem: z.string().optional(), // A4.1
+  trigger: z.string().optional(), // A4.2
+  tried: z.string().optional(), // A4.3
+  resultImage: z.string().optional(), // A4.4
+  priorities: z.array(z.string()).optional(), // A4.6 — ранжирование 1-2-3
+});
+
+// Профиль клиента по Части A вопросника v1.0. ВСЁ optional (паттерн 8.5/8.6):
+// старые card.json / session-*.json читаются без миграции.
+export const ClientProfileSchema = z.object({
+  companyName: z.string().optional(), // A1.1 🔑
+  businessSummary: z.string().optional(), // A1.2 🔑
+  history: z.string().optional(), // A1.3
+  owners: z.string().optional(), // A1.4
+  financials: ClientProfileFinancialsSchema.optional(), // A2.1–A2.4 + A4.5
+  headcount: z.string().optional(), // A2.5
+  orgStructure: z.string().optional(), // A3.1 (текст или референс 📎 на файл)
+  request: ClientProfileRequestSchema.optional(), // A4
+  tops: z.array(ClientTopSchema).optional(), // A3.2 🔑
+  decisionMaker: z.string().optional(), // A3.3 🔑
+});
+export type ClientProfile = z.infer<typeof ClientProfileSchema>;
+
 // Персист сессии онбординга — переживает рестарт бота (AC3 Story 7.3).
 export const F0PersistedSessionSchema = z.object({
   chatId: z.number().int(),
   sessionId: z.string().min(1),
-  phase: z.enum(['collecting', 'filling', 'ready']),
-  draftId: z.string().min(1),
+  // Story 9.1: 'profile' — диалог профиля клиента до сбора документов.
+  phase: z.enum(['profile', 'collecting', 'filling', 'ready']),
+  // Story 9.1: до сборки черновика (фаза profile/collecting) черновика нет —
+  // draftId/extraction optional. Старые файлы (7.3–8.6) содержат оба поля и валидны.
+  draftId: z.string().min(1).optional(),
   sourceNames: z.array(z.string()),
-  extraction: F0FullExtractionSchema,
+  extraction: F0FullExtractionSchema.optional(),
   gaps: z.array(F0GapSchema),
   gapIndex: z.number().int().nonnegative(),
   schedule: z.string().nullable(),
@@ -374,6 +428,17 @@ export const F0PersistedSessionSchema = z.object({
   // Story 8.5: текстифицированный xlsx для кнопки «🧠 Досинтезировать гипотезы» —
   // переживает рестарт, чтобы кнопка работала и после перезапуска бота.
   importSourceText: z.string().optional(),
+  // Story 9.1: профиль клиента (Часть A) + позиция диалога профиля. Всё optional —
+  // сессии до 9.1 валидны без них; persist после каждого ответа переживает рестарт.
+  profile: ClientProfileSchema.optional(),
+  profileQIndex: z.number().int().nonnegative().optional(),
+  // Индекс вопроса, по которому уже был переспрос (числовой формат 8.6 / формат топа) —
+  // рестарт посреди переспроса не начинает валидацию заново.
+  profileRetryQIndex: z.number().int().nonnegative().optional(),
+  // Трекер выбрал «➕ Расширенный профиль» (иначе после минимума — экран выбора).
+  profileExtended: z.boolean().optional(),
+  // Дозаполнение профиля из карточки готового клиента: ответы дописываются в card.json.
+  profileCardClientId: z.string().optional(),
   updatedAt: z.string().min(1),
 });
 export type F0PersistedSession = z.infer<typeof F0PersistedSessionSchema>;
@@ -402,6 +467,8 @@ export const ClientCardSchema = z.object({
   sheetsUrl: z.string().nullable(),
   startDate: z.string(), // ISO-дата старта онбординга
   createdAt: z.string(),
+  // Story 9.1: профиль клиента (Часть A). Optional — карточки до 9.1 читаются без миграции.
+  profile: ClientProfileSchema.optional(),
 });
 export type ClientCard = z.infer<typeof ClientCardSchema>;
 

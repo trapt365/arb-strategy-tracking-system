@@ -1481,6 +1481,21 @@ async function cleanOnboardingArtifacts(): Promise<void> {
     .catch(() => {});
 }
 
+/**
+ * Story 9.1: /newclient начинается с обязательного профиля клиента — до 🔑-минимума
+ * документы стратегии не принимаются. Хелпер проходит минимум и жмёт «Дальше»,
+ * выводя сессию в существующий flow сбора (collecting).
+ */
+async function completeProfileMinimum(bot: ReturnType<typeof buildBot>['bot']): Promise<void> {
+  await bot.handleUpdate(commandUpdate('/newclient'));
+  await bot.handleUpdate(plainTextUpdate('Ромашка')); // A1.1 название
+  await bot.handleUpdate(plainTextUpdate('Продаём ромашки бизнесу')); // A1.2 суть
+  await bot.handleUpdate(plainTextUpdate('Айгерим — CEO, все решения, зона: всё')); // A3.2 топ
+  await bot.handleUpdate(callbackUpdate('f0p_top_done'));
+  await bot.handleUpdate(callbackUpdate('f0p_dm:0')); // A3.3 decision maker
+  await bot.handleUpdate(callbackUpdate('f0p_go')); // «Дальше» → существующий flow сбора
+}
+
 describe('bot — F0 сборка черновика (Story 8.3, W2+W4)', () => {
   beforeEach(cleanOnboardingArtifacts);
   afterEach(cleanOnboardingArtifacts);
@@ -1499,7 +1514,7 @@ describe('bot — F0 сборка черновика (Story 8.3, W2+W4)', () => 
 
   it('W2: оценка честная по размеру пакета; итог редактируется в progress-сообщение, не удаляется', async () => {
     const { bot, calls } = buildF0Bot();
-    await bot.handleUpdate(commandUpdate('/newclient'));
+    await completeProfileMinimum(bot);
     await bot.handleUpdate(documentUpdate('strategy.md'));
     await bot.handleUpdate(commandUpdate('/draft'));
 
@@ -1520,7 +1535,7 @@ describe('bot — F0 сборка черновика (Story 8.3, W2+W4)', () => 
 
   it('W4: доставка компактная — счётчики есть, полных таблиц KR нет', async () => {
     const { bot, calls } = buildF0Bot();
-    await bot.handleUpdate(commandUpdate('/newclient'));
+    await completeProfileMinimum(bot);
     await bot.handleUpdate(documentUpdate('strategy.md'));
     await bot.handleUpdate(commandUpdate('/draft'));
 
@@ -1540,7 +1555,7 @@ describe('bot — F0 сборка черновика (Story 8.3, W2+W4)', () => 
         throw new Error('claude exploded');
       }) as unknown) as BotDeps['runF0FullDraft'],
     });
-    await bot.handleUpdate(commandUpdate('/newclient'));
+    await completeProfileMinimum(bot);
     await bot.handleUpdate(documentUpdate('strategy.md'));
     await bot.handleUpdate(commandUpdate('/draft'));
 
@@ -1559,7 +1574,7 @@ describe('bot — F0 сборка черновика (Story 8.3, W2+W4)', () => 
         text: 'x'.repeat(5_000),
       })) as unknown) as BotDeps['extractTextFromDocument'],
     });
-    await bot.handleUpdate(commandUpdate('/newclient'));
+    await completeProfileMinimum(bot);
     await bot.handleUpdate(documentUpdate('mini.md'));
     await bot.handleUpdate(commandUpdate('/draft'));
 
@@ -1748,7 +1763,7 @@ describe('bot — меню, клиенты и защита сессии (Story 8
       })) as unknown) as BotDeps['extractTextFromDocument'],
       runF0FullDraft: ((async () => f0DraftResult()) as unknown) as BotDeps['runF0FullDraft'],
     });
-    await bot.handleUpdate(commandUpdate('/newclient'));
+    await completeProfileMinimum(bot);
     await bot.handleUpdate(documentUpdate('strategy.md'));
     await bot.handleUpdate(commandUpdate('/draft')); // → phase filling
 
@@ -1780,7 +1795,7 @@ describe('bot — меню, клиенты и защита сессии (Story 8
       })) as unknown) as BotDeps['extractTextFromDocument'],
       runF0FullDraft: ((async () => f0DraftResult()) as unknown) as BotDeps['runF0FullDraft'],
     });
-    await bot.handleUpdate(commandUpdate('/newclient'));
+    await completeProfileMinimum(bot);
     await bot.handleUpdate(documentUpdate('strategy.md'));
     await bot.handleUpdate(commandUpdate('/draft'));
     await bot.handleUpdate(commandUpdate('/newclient')); // guard
@@ -1815,7 +1830,7 @@ describe('bot — меню, клиенты и защита сессии (Story 8
       })) as unknown) as BotDeps['extractTextFromDocument'],
       runF0FullDraft: ((async () => f0DraftResult()) as unknown) as BotDeps['runF0FullDraft'],
     });
-    await bot.handleUpdate(commandUpdate('/newclient'));
+    await completeProfileMinimum(bot);
     await bot.handleUpdate(documentUpdate('strategy.md'));
     await bot.handleUpdate(commandUpdate('/draft'));
 
@@ -1882,7 +1897,7 @@ describe('bot — диалог дозаполнения: группы KR и чи
   }
 
   async function toFilling(bot: ReturnType<typeof buildBot>['bot']): Promise<void> {
-    await bot.handleUpdate(commandUpdate('/newclient'));
+    await completeProfileMinimum(bot);
     await bot.handleUpdate(documentUpdate('strategy.md'));
     await bot.handleUpdate(commandUpdate('/draft'));
   }
@@ -2003,7 +2018,7 @@ describe('bot — импорт готовой стратегии из xlsx (Stor
 
   it('автодетект по .xlsx: импорт без LLM, черновик и диалог дозаполнения как обычно', async () => {
     const { bot, calls, runF0Spy } = buildImportBot();
-    await bot.handleUpdate(commandUpdate('/newclient'));
+    await completeProfileMinimum(bot);
     await bot.handleUpdate(xlsxDocumentUpdate());
 
     const accepted = texts85(calls).find((t) => t.includes('📥 Импорт «strategy.xlsx»'));
@@ -2040,7 +2055,7 @@ describe('bot — импорт готовой стратегии из xlsx (Stor
         text: 'x'.repeat(5_000),
       })) as unknown) as BotDeps['extractTextFromDocument'],
     });
-    await bot.handleUpdate(commandUpdate('/newclient'));
+    await completeProfileMinimum(bot);
     // Ревью MED-1: путь зафиксирован ЯВНОЙ кнопкой до файла — отказ импорта обязан
     // разблокировать и этот случай, а не только автодетект.
     await bot.handleUpdate(callbackUpdate('f0_mode_import'));
@@ -2064,15 +2079,17 @@ describe('bot — импорт готовой стратегии из xlsx (Stor
         text: 'x'.repeat(5_000),
       })) as unknown) as BotDeps['extractTextFromDocument'],
     });
-    await bot.handleUpdate(commandUpdate('/newclient'));
+    await completeProfileMinimum(bot);
     await bot.handleUpdate(xlsxDocumentUpdate());
     // mode=import: .md в пакет не идёт.
     let before = calls.length;
     await bot.handleUpdate(documentUpdate('strategy.md'));
     expect(texts85(calls, before).some((t) => t.includes('Идёт импорт из Excel'))).toBe(true);
 
-    // Новый инстанс (импорт-сессия в collecting не персистится): первый файл .md →
-    // mode=synthesis; затем xlsx → предложение переключиться, а не молчаливый сброс.
+    // Новый инстанс: первый файл .md → mode=synthesis; затем xlsx → предложение
+    // переключиться, а не молчаливый сброс. Story 9.1: collecting с профилем теперь
+    // персистится — чистим, чтобы /newclient не упёрся в reset-guard прошлой сессии.
+    await cleanOnboardingArtifacts();
     const fresh = buildImportBot({
       extractTextFromDocument: ((async () => ({
         sourceName: 'strategy.md',
@@ -2080,7 +2097,7 @@ describe('bot — импорт готовой стратегии из xlsx (Stor
         text: 'x'.repeat(5_000),
       })) as unknown) as BotDeps['extractTextFromDocument'],
     });
-    await fresh.bot.handleUpdate(commandUpdate('/newclient'));
+    await completeProfileMinimum(fresh.bot);
     await fresh.bot.handleUpdate(documentUpdate('strategy.md'));
     before = fresh.calls.length;
     await fresh.bot.handleUpdate(xlsxDocumentUpdate());
@@ -2107,7 +2124,7 @@ describe('bot — импорт готовой стратегии из xlsx (Stor
     const { bot, calls } = buildImportBot({
       runF0FullDraft: (runF0Spy as unknown) as BotDeps['runF0FullDraft'],
     });
-    await bot.handleUpdate(commandUpdate('/newclient'));
+    await completeProfileMinimum(bot);
     await bot.handleUpdate(xlsxDocumentUpdate());
     await bot.handleUpdate(commandUpdate('/draft'));
 
@@ -2146,5 +2163,302 @@ describe('bot — импорт готовой стратегии из xlsx (Stor
     await bot.handleUpdate(callbackUpdate('f0_synth_hypo'));
     expect(runF0Spy).toHaveBeenCalledTimes(1);
     expect(texts85(calls, b3).some((t) => t.includes('уже есть в черновике'))).toBe(true);
+  });
+});
+
+// ─── Story 9.1: профиль клиента — обязательный первый шаг онбординга ──────────
+
+describe('bot — профиль клиента: обязательный первый шаг (Story 9.1)', () => {
+  beforeEach(cleanOnboardingArtifacts);
+  afterEach(cleanOnboardingArtifacts);
+
+  function buildProfileBot(opts: BuildOpts = {}) {
+    return buildBot({
+      extractTextFromDocument: ((async () => ({
+        sourceName: 'strategy.md',
+        kind: 'text',
+        text: 'x'.repeat(5_000),
+      })) as unknown) as BotDeps['extractTextFromDocument'],
+      runF0FullDraft: ((async () => f0DraftResult()) as unknown) as BotDeps['runF0FullDraft'],
+      ...opts,
+    });
+  }
+
+  const texts91 = (calls: ApiCall[], from = 0): string[] =>
+    calls
+      .slice(from)
+      .filter((c) => c.method === 'sendMessage')
+      .map((c) => c.payload.text as string);
+
+  it('AC1: /newclient начинает с A1.1; документы и способ онбординга недоступны до минимума', async () => {
+    const { bot, calls } = buildProfileBot();
+    await bot.handleUpdate(commandUpdate('/newclient'));
+
+    const all = texts91(calls);
+    expect(all.some((t) => t.includes('Как называется компания?'))).toBe(true);
+    expect(all.some((t) => t.includes('🔑 (1/4)'))).toBe(true);
+    // Экран способов (существующий F0_START_TEXT) не показан до минимума.
+    expect(all.some((t) => t.includes('Два пути'))).toBe(false);
+
+    // Документ стратегии до минимума — отклоняется, в пакет не попадает.
+    const before = calls.length;
+    await bot.handleUpdate(documentUpdate('strategy.md'));
+    const after = texts91(calls, before);
+    expect(after.some((t) => t.includes('Сначала профиль клиента'))).toBe(true);
+    expect(after.some((t) => t.includes('📎 Принят'))).toBe(false);
+
+    // /draft до минимума тоже недоступен.
+    const b2 = calls.length;
+    await bot.handleUpdate(commandUpdate('/draft'));
+    expect(texts91(calls, b2).some((t) => t.includes('Сначала профиль клиента'))).toBe(true);
+  });
+
+  it('AC1: /skip на 🔑-вопросе → пояснение «минимум обязателен» + повтор вопроса', async () => {
+    const { bot, calls } = buildProfileBot();
+    await bot.handleUpdate(commandUpdate('/newclient'));
+
+    const before = calls.length;
+    await bot.handleUpdate(commandUpdate('/skip'));
+    const after = texts91(calls, before);
+    expect(after.some((t) => t.includes('обязательный минимум'))).toBe(true);
+    // Тот же вопрос задан повторно — сессия не заблокирована.
+    expect(after.some((t) => t.includes('Как называется компания?'))).toBe(true);
+  });
+
+  it('AC1: после A3.3 — «➕ Расширенный профиль / Дальше»; «Дальше» → существующий flow сбора', async () => {
+    const { bot, calls } = buildProfileBot();
+    await bot.handleUpdate(commandUpdate('/newclient'));
+    await bot.handleUpdate(plainTextUpdate('Ромашка'));
+    await bot.handleUpdate(plainTextUpdate('Продаём ромашки бизнесу'));
+    await bot.handleUpdate(plainTextUpdate('Айгерим — CEO, все решения, зона: всё'));
+    // После топа — кнопки цикла A3.2.
+    const topMsg = calls.find(
+      (c) => c.method === 'sendMessage' && (c.payload.text as string).includes('Топ добавлен'),
+    )!;
+    const topButtons = JSON.stringify(topMsg.payload.reply_markup);
+    expect(topButtons).toContain('f0p_top_more');
+    expect(topButtons).toContain('f0p_top_done');
+
+    await bot.handleUpdate(callbackUpdate('f0p_top_done'));
+    // A3.3 — кнопки decision maker из введённых топов. Матчим по формулировке вопроса:
+    // интро профиля тоже содержит «decision maker», но без клавиатуры.
+    const dmMsg = calls.find(
+      (c) =>
+        c.method === 'sendMessage' &&
+        (c.payload.text as string).includes('Кто принимает финальные решения'),
+    )!;
+    expect(JSON.stringify(dmMsg.payload.reply_markup)).toContain('f0p_dm:0');
+
+    await bot.handleUpdate(callbackUpdate('f0p_dm:0'));
+    const offer = calls.find(
+      (c) =>
+        c.method === 'sendMessage' &&
+        (c.payload.text as string).includes('Минимум для таблицы собран'),
+    )!;
+    const offerButtons = JSON.stringify(offer.payload.reply_markup);
+    expect(offerButtons).toContain('f0p_ext');
+    expect(offerButtons).toContain('f0p_go');
+
+    const before = calls.length;
+    await bot.handleUpdate(callbackUpdate('f0p_go'));
+    // Существующий flow сбора: F0_START_TEXT + кнопки выбора пути (без изменений).
+    const start = calls.slice(before).find(
+      (c) => c.method === 'sendMessage' && (c.payload.text as string).includes('Два пути'),
+    );
+    expect(start).toBeDefined();
+    expect(JSON.stringify(start!.payload.reply_markup)).toContain('f0_mode_import');
+  });
+
+  it('топы A3.2: не разложился на поля → один переспрос, повтор сохраняется как есть', async () => {
+    const { bot, calls } = buildProfileBot();
+    await bot.handleUpdate(commandUpdate('/newclient'));
+    await bot.handleUpdate(plainTextUpdate('Ромашка'));
+    await bot.handleUpdate(plainTextUpdate('Продаём ромашки бизнесу'));
+
+    let before = calls.length;
+    await bot.handleUpdate(plainTextUpdate('Просто Дамир'));
+    expect(texts91(calls, before).some((t) => t.includes('Не разобрал'))).toBe(true);
+
+    before = calls.length;
+    await bot.handleUpdate(plainTextUpdate('Просто Дамир'));
+    const added = texts91(calls, before).find((t) => t.includes('Топ добавлен'));
+    expect(added).toBeDefined();
+    expect(added).toContain('Просто Дамир'); // name = ответ, остальное null
+  });
+
+  it('AC2: рестарт бота посреди профиля — следующий ответ продолжает с того же вопроса', async () => {
+    const first = buildProfileBot();
+    await first.bot.handleUpdate(commandUpdate('/newclient'));
+    await first.bot.handleUpdate(plainTextUpdate('Ромашка')); // A1.1 отвечен
+
+    // «Рестарт»: новый инстанс восстанавливает сессию с диска.
+    const second = buildProfileBot();
+    const before = second.calls.length;
+    await second.bot.handleUpdate(plainTextUpdate('Продаём ромашки бизнесу')); // ответ на A1.2
+    const after = texts91(second.calls, before);
+    expect(after.some((t) => t.includes('Восстановил онбординг'))).toBe(true);
+    // Ответ применился к A1.2 → следующий вопрос — топы A3.2 (3/4), прежние ответы целы.
+    expect(after.some((t) => t.includes('(3/4)') && t.includes('топов'))).toBe(true);
+
+    const b2 = second.calls.length;
+    await second.bot.handleUpdate(commandUpdate('/status'));
+    const status = texts91(second.calls, b2).find((t) => t.includes('Профиль клиента'));
+    expect(status).toBeDefined();
+    expect(status).toContain('Ромашка');
+  });
+
+  it('расширенный: /skip и «не знаю» пропускают вопрос без заполнения поля', async () => {
+    const { bot, calls } = buildProfileBot();
+    await bot.handleUpdate(commandUpdate('/newclient'));
+    await bot.handleUpdate(plainTextUpdate('Ромашка'));
+    await bot.handleUpdate(plainTextUpdate('Продаём ромашки бизнесу'));
+    await bot.handleUpdate(plainTextUpdate('Айгерим — CEO, все решения, зона: всё'));
+    await bot.handleUpdate(callbackUpdate('f0p_top_done'));
+    await bot.handleUpdate(callbackUpdate('f0p_dm:0'));
+
+    let before = calls.length;
+    await bot.handleUpdate(callbackUpdate('f0p_ext'));
+    // Первый расширенный вопрос — A1.3 история, прогресс отдельный (1/14).
+    expect(texts91(calls, before).some((t) => t.includes('(1/14)'))).toBe(true);
+
+    before = calls.length;
+    await bot.handleUpdate(commandUpdate('/skip'));
+    expect(texts91(calls, before).some((t) => t.includes('(2/14)'))).toBe(true);
+
+    before = calls.length;
+    await bot.handleUpdate(plainTextUpdate('не знаю'));
+    expect(texts91(calls, before).some((t) => t.includes('(3/14)'))).toBe(true);
+
+    // До A3.1 (оргструктура файлом): пропускаем A2.1–A2.5.
+    for (let i = 0; i < 5; i++) await bot.handleUpdate(commandUpdate('/skip'));
+    before = calls.length;
+    await bot.handleUpdate(documentUpdate('orgchart.pdf'));
+    const after = texts91(calls, before);
+    // Референс (имя файла) сохранён, содержимое не парсится; диалог идёт дальше (A4.1).
+    expect(after.some((t) => t.includes('Сохранил референс оргструктуры: orgchart.pdf'))).toBe(true);
+    expect(after.some((t) => t.includes('(9/14)'))).toBe(true);
+  });
+
+  it('числовые A2: один переспрос, повтор принимается (мягкая валидация 8.6)', async () => {
+    const { bot, calls } = buildProfileBot();
+    await bot.handleUpdate(commandUpdate('/newclient'));
+    await bot.handleUpdate(plainTextUpdate('Ромашка'));
+    await bot.handleUpdate(plainTextUpdate('Продаём ромашки бизнесу'));
+    await bot.handleUpdate(plainTextUpdate('Айгерим — CEO, все решения, зона: всё'));
+    await bot.handleUpdate(callbackUpdate('f0p_top_done'));
+    await bot.handleUpdate(callbackUpdate('f0p_dm:0'));
+    await bot.handleUpdate(callbackUpdate('f0p_ext'));
+    await bot.handleUpdate(commandUpdate('/skip')); // A1.3
+    await bot.handleUpdate(commandUpdate('/skip')); // A1.4 → A2.1 выручка (3/14)
+
+    let before = calls.length;
+    await bot.handleUpdate(plainTextUpdate('точно не скажу'));
+    expect(texts91(calls, before).some((t) => t.includes('Не вижу числа'))).toBe(true);
+    expect(texts91(calls, before).some((t) => t.includes('(4/14)'))).toBe(false);
+
+    before = calls.length;
+    await bot.handleUpdate(plainTextUpdate('точно не скажу'));
+    expect(texts91(calls, before).some((t) => t.includes('(4/14)'))).toBe(true);
+  });
+
+  it('AC4: persisted-сессия формата до 9.1 (filling) восстанавливается без миграции', async () => {
+    // Файл сессии в формате 7.3–8.6: draftId/extraction обязательны, profile-полей нет.
+    await fsp.mkdir(ONBOARDING_DIR, { recursive: true });
+    await fsp.writeFile(
+      joinPath(ONBOARDING_DIR, `session-${TEST_TRACKER_CHAT_ID}.json`),
+      JSON.stringify({
+        chatId: TEST_TRACKER_CHAT_ID,
+        sessionId: 'old-8x',
+        phase: 'filling',
+        draftId: 'draft-old',
+        sourceNames: ['strategy.md'],
+        extraction: f0Extraction(),
+        gaps: [
+          { kind: 'schedule', ref: 'расписание', question: 'Расписание трекшн-встреч?' },
+        ],
+        gapIndex: 0,
+        schedule: null,
+        updatedAt: '2026-07-01T00:00:00.000Z',
+      }),
+      'utf8',
+    );
+    const { bot, calls } = buildProfileBot();
+    await bot.handleUpdate(plainTextUpdate('вт 15:00'));
+    const all = texts91(calls);
+    expect(all.some((t) => t.includes('Восстановил онбординг'))).toBe(true);
+    // Поведение прежней фазы не изменилось: ответ принят, диалог дошёл до /confirm.
+    expect(all.some((t) => t.includes('/confirm'))).toBe(true);
+  });
+});
+
+describe('bot — «➕ Дозаполнить профиль» из карточки клиента (Story 9.1)', () => {
+  const cardClientId = 'romashka-x-test';
+  const cardDir = joinPath('data', cardClientId);
+
+  beforeEach(async () => {
+    await cleanOnboardingArtifacts();
+    await fsp.rm(cardDir, { recursive: true, force: true }).catch(() => {});
+    await fsp.mkdir(cardDir, { recursive: true });
+    await fsp.writeFile(
+      joinPath(cardDir, 'card.json'),
+      JSON.stringify({
+        clientId: cardClientId,
+        company: 'Ромашка',
+        industry: null,
+        participants: [{ name: 'Айгерим', role: 'CEO', okrDirection: null, telegram: null }],
+        ceo: 'Айгерим',
+        trackerChatId: TEST_TRACKER_CHAT_ID,
+        schedule: 'вт 15:00',
+        spreadsheetId: 'sheet-RX',
+        sheetsUrl: 'https://docs.google.com/spreadsheets/d/sheet-RX/edit',
+        startDate: '2026-07-01T00:00:00.000Z',
+        createdAt: '2026-07-01T00:00:00.000Z',
+        profile: {
+          companyName: 'Ромашка',
+          businessSummary: 'Продаём ромашки бизнесу',
+          tops: [{ name: 'Айгерим', title: 'CEO', authority: null, area: null }],
+          decisionMaker: 'Айгерим',
+        },
+      }),
+      'utf8',
+    );
+  });
+
+  afterEach(async () => {
+    await cleanOnboardingArtifacts();
+    await fsp.rm(cardDir, { recursive: true, force: true }).catch(() => {});
+  });
+
+  it('AC3: карточка показывает профиль и кнопку дозаполнения; ответы дописываются в card.json', async () => {
+    const { bot, calls } = buildBot();
+    await bot.handleUpdate(callbackUpdate(`client:${cardClientId}`));
+    const cardMsg = calls.find(
+      (c) => c.method === 'sendMessage' && (c.payload.text as string).includes('👤 Ромашка'),
+    )!;
+    // Профиль в карточке: суть, топы/DM, счётчик расширенной части.
+    expect(cardMsg.payload.text).toContain('Суть: Продаём ромашки бизнесу');
+    expect(cardMsg.payload.text).toContain('DM: Айгерим');
+    expect(cardMsg.payload.text).toContain('расширенный 0/14');
+    expect(JSON.stringify(cardMsg.payload.reply_markup)).toContain(
+      `profile_fill:${cardClientId}`,
+    );
+
+    // Кнопка запускает расширенные вопросы (минимум уже есть — не переспрашивается).
+    let before = calls.length;
+    await bot.handleUpdate(callbackUpdate(`profile_fill:${cardClientId}`));
+    const after = calls
+      .slice(before)
+      .filter((c) => c.method === 'sendMessage')
+      .map((c) => c.payload.text as string);
+    expect(after.some((t) => t.includes('Дозаполняем профиль «Ромашка»'))).toBe(true);
+    expect(after.some((t) => t.includes('(1/14)'))).toBe(true);
+    expect(after.some((t) => t.includes('Как называется компания?'))).toBe(false);
+
+    // Ответ на A1.3 дописывается в card.json.
+    await bot.handleUpdate(plainTextUpdate('Основана в 2019, выросли ×3'));
+    const raw = JSON.parse(await fsp.readFile(joinPath(cardDir, 'card.json'), 'utf8')) as {
+      profile?: { history?: string };
+    };
+    expect(raw.profile?.history).toBe('Основана в 2019, выросли ×3');
   });
 });

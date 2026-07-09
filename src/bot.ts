@@ -68,7 +68,24 @@ import {
   getActiveClient,
   setActiveClient,
 } from './client-registry.js';
-import type { F0FullExtraction } from './types.js';
+import type { ClientProfile, F0FullExtraction } from './types.js';
+import {
+  PROFILE_MIN_COUNT,
+  PROFILE_EXT_COUNT,
+  PROFILE_TOTAL_COUNT,
+  PROFILE_PRIORITY_OPTIONS,
+  PROFILE_PRIORITY_PICKS,
+  nextProfileQuestion,
+  applyProfileAnswer,
+  isQuestionAnswered,
+  parseTopAnswer,
+  topFromRawAnswer,
+  renderProfileQuestion,
+  renderProfileStatusMessage,
+  renderTopShort,
+  countExtendedFilled,
+  type ProfileQuestion,
+} from './f0-profile.js';
 import { extractTextFromDocument as defaultExtractTextFromDocument } from './utils/f0-document.js';
 import {
   isSupportedF0Document,
@@ -249,8 +266,10 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
   interface F0Session {
     id: string;
     processing: boolean;
-    // collecting — приём файлов; filling — диалог дозаполнения; ready — онбординг завершён.
-    phase: 'collecting' | 'filling' | 'ready';
+    // Story 9.1: profile — обязательный диалог «Профиль клиента» (Часть A) ДО сбора
+    // документов; collecting — приём файлов; filling — диалог дозаполнения;
+    // ready — онбординг завершён.
+    phase: 'profile' | 'collecting' | 'filling' | 'ready';
     // Story 7.2: файлы пакета аккумулируются, черновик собирается по кнопке/команде.
     documents: F0AccumulatedDoc[];
     // Бегущая сумма символов пакета — ранний отказ до превышения бюджета извлечения.
@@ -274,19 +293,32 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
     // Story 8.5: текстифицированный xlsx для «🧠 Досинтезировать гипотезы» —
     // персистится с черновиком, кнопка работает и после рестарта.
     importSourceText?: string;
+    // Story 9.1: профиль клиента (Часть A) + позиция диалога профиля.
+    profile?: ClientProfile;
+    profileQIndex?: number;
+    // Переспрос по текущему вопросу уже был (числовой формат / формат топа) —
+    // следующий непустой ответ принимается как есть (максимум 1 переспрос, 8.6).
+    profileRetryQIndex?: number;
+    // Трекер выбрал «➕ Расширенный профиль» (иначе после минимума — экран выбора).
+    profileExtended?: boolean;
+    // Дозаполнение профиля из карточки готового клиента — ответы дописываются в card.json.
+    profileCardClientId?: string;
   }
   const f0Sessions = new Map<number, F0Session>();
 
   // Story 7.3: снимок сессии на диск (warn-only) — переживает рестарт бота.
   async function saveF0Session(chatId: number, s: F0Session): Promise<void> {
-    if (s.draft === undefined) return; // до сборки черновика персистить нечего
+    // Story 9.1: профиль персистится после каждого ответа (механика 7.3) — до черновика.
+    // Без черновика и без профиля (старый collecting) персистить по-прежнему нечего.
+    if (s.draft === undefined && s.profile === undefined) return;
     await persistF0Session({
       chatId,
       sessionId: s.id,
       phase: s.phase,
-      draftId: s.draft.draftId,
-      sourceNames: s.draft.sourceNames,
-      extraction: s.draft.extraction,
+      sourceNames: s.draft?.sourceNames ?? [],
+      ...(s.draft !== undefined
+        ? { draftId: s.draft.draftId, extraction: s.draft.extraction }
+        : {}),
       gaps: s.gaps,
       gapIndex: s.gapIndex,
       schedule: s.schedule,
@@ -294,6 +326,13 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
       ...(s.retryGapIndex !== undefined ? { retryGapIndex: s.retryGapIndex } : {}),
       ...(s.mode !== undefined ? { mode: s.mode } : {}),
       ...(s.importSourceText !== undefined ? { importSourceText: s.importSourceText } : {}),
+      ...(s.profile !== undefined ? { profile: s.profile } : {}),
+      ...(s.profileQIndex !== undefined ? { profileQIndex: s.profileQIndex } : {}),
+      ...(s.profileRetryQIndex !== undefined ? { profileRetryQIndex: s.profileRetryQIndex } : {}),
+      ...(s.profileExtended !== undefined ? { profileExtended: s.profileExtended } : {}),
+      ...(s.profileCardClientId !== undefined
+        ? { profileCardClientId: s.profileCardClientId }
+        : {}),
       updatedAt: now().toISOString(),
     });
   }
@@ -310,11 +349,15 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
       phase: persisted.phase,
       documents: [],
       documentsChars: 0,
-      draft: {
-        draftId: persisted.draftId,
-        sourceNames: persisted.sourceNames,
-        extraction: persisted.extraction,
-      },
+      // Story 9.1: у сессии фазы profile/collecting черновика ещё нет.
+      draft:
+        persisted.draftId !== undefined && persisted.extraction !== undefined
+          ? {
+              draftId: persisted.draftId,
+              sourceNames: persisted.sourceNames,
+              extraction: persisted.extraction,
+            }
+          : undefined,
       gaps: persisted.gaps,
       gapIndex: persisted.gapIndex,
       schedule: persisted.schedule,
@@ -322,6 +365,11 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
       retryGapIndex: persisted.retryGapIndex,
       mode: persisted.mode,
       importSourceText: persisted.importSourceText,
+      profile: persisted.profile,
+      profileQIndex: persisted.profileQIndex,
+      profileRetryQIndex: persisted.profileRetryQIndex,
+      profileExtended: persisted.profileExtended,
+      profileCardClientId: persisted.profileCardClientId,
     };
     f0Sessions.set(chatId, restored);
     f0Log.info(
@@ -937,6 +985,462 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
     .row()
     .text('🧠 Собрать из документов', 'f0_mode_synthesis');
 
+  // ───────── Story 9.1: диалог «Профиль клиента» (Часть A) — первый шаг ─────────
+
+  const F0_PROFILE_INTRO = [
+    '🆕 Онбординг нового клиента. Первый шаг — профиль клиента:',
+    '🔑-минимум из 4 вопросов (название, суть бизнеса, топы, decision maker).',
+    'Способ загрузки стратегии и расширенный профиль предложу после минимума.',
+  ].join('\n');
+  const F0_PROFILE_KEY_REQUIRED_TEXT =
+    '🔑 Этот вопрос — обязательный минимум профиля: без него онбординг стратегии не начнётся, пропустить нельзя.';
+  const F0_PROFILE_FIRST_TEXT =
+    'ℹ️ Сначала профиль клиента — документы стратегии приму после 🔑-минимума. Продолжить вопросы — /resume.';
+  const F0_PROFILE_TOP_FORMAT_HINT = '«Имя — должность, полномочия, зона: …»';
+  const F0_PROFILE_STALE_TEXT =
+    'ℹ️ Эта кнопка от прошлого диалога профиля. Актуальное состояние — /status, продолжить — /resume.';
+
+  const f0ProfileTopsKeyboard = new InlineKeyboard()
+    .text('➕ Добавить ещё', 'f0p_top_more')
+    .text('✅ Готово', 'f0p_top_done');
+  const f0ProfileOfferKeyboard = new InlineKeyboard()
+    .text('➕ Расширенный профиль', 'f0p_ext')
+    .text('Дальше', 'f0p_go');
+
+  function currentProfileQuestion(session: F0Session): ProfileQuestion | undefined {
+    return nextProfileQuestion(session.profileQIndex ?? 0);
+  }
+
+  /** Минимум собран, но выбор «расширенный / дальше» ещё не сделан. */
+  function profileOfferPending(session: F0Session): boolean {
+    return (
+      (session.profileQIndex ?? 0) >= PROFILE_MIN_COUNT &&
+      session.profileExtended !== true &&
+      session.profileCardClientId === undefined
+    );
+  }
+
+  /** Кнопки decision maker (A3.3) — только из введённых топов A3.2. */
+  function profileDmKeyboard(session: F0Session): InlineKeyboard | undefined {
+    const tops = session.profile?.tops ?? [];
+    if (tops.length === 0) return undefined;
+    const kb = new InlineKeyboard();
+    tops.slice(0, 10).forEach((top, i) => {
+      kb.text(top.name, `f0p_dm:${i}`).row();
+    });
+    return kb;
+  }
+
+  /** Кнопки приоритетов A4.6 — ещё не выбранные варианты. */
+  function profilePrioKeyboard(session: F0Session): InlineKeyboard | undefined {
+    const picked = session.profile?.request?.priorities ?? [];
+    const kb = new InlineKeyboard();
+    let any = false;
+    PROFILE_PRIORITY_OPTIONS.forEach((opt, i) => {
+      if (picked.includes(opt)) return;
+      kb.text(opt, `f0p_prio:${i}`).row();
+      any = true;
+    });
+    return any ? kb : undefined;
+  }
+
+  /** Экран после 🔑-минимума: расширенный профиль или сразу к стратегии. */
+  async function sendProfileOffer(ctx: Context, _session: F0Session): Promise<void> {
+    await ctx
+      .reply(
+        '🔑 Минимум для таблицы собран. ➕ Заполнить расширенный профиль (лучше контекст отчётов и гипотез) — или продолжить?',
+        { reply_markup: f0ProfileOfferKeyboard },
+      )
+      .catch(() => {});
+  }
+
+  /** Дозаполнение из карточки: ответы дописываются в card.json (warn-only). */
+  async function writeProfileToCard(session: F0Session): Promise<void> {
+    const clientId = session.profileCardClientId;
+    if (clientId === undefined || session.profile === undefined) return;
+    const card = await loadClientCard(clientId);
+    if (card === null) {
+      f0Log.warn(
+        { step: 'f0.profile_card_missing', clientId },
+        'client card disappeared during profile fill — answers kept in session only',
+      );
+      return;
+    }
+    await persistClientCard({ ...card, profile: session.profile });
+  }
+
+  /** Профиль завершён: дозаполнение → карточка; онбординг → существующий flow сбора. */
+  async function finishProfileDialog(ctx: Context, session: F0Session): Promise<void> {
+    const chatId = ctx.chat?.id;
+    if (chatId === undefined) return;
+    if (session.profileCardClientId !== undefined) {
+      await writeProfileToCard(session);
+      const ext = countExtendedFilled(session.profile ?? {});
+      f0Sessions.delete(chatId);
+      await deleteF0Session(chatId);
+      f0Log.info(
+        {
+          step: 'f0.profile_card_filled',
+          chatId,
+          clientId: session.profileCardClientId,
+          extendedFilled: ext.filled,
+        },
+        'client profile filled from card',
+      );
+      await ctx
+        .reply(
+          `✅ Профиль дозаполнен (расширенная часть: ${ext.filled}/${ext.total}) — записал в карточку клиента.`,
+        )
+        .catch(() => {});
+      return;
+    }
+    await startStrategyCollection(ctx, session);
+  }
+
+  /**
+   * Переход из профиля в СУЩЕСТВУЮЩИЙ flow сбора стратегии (Story 9.1: без изменений
+   * экрана — F0_START_TEXT + f0ModeKeyboard; замена экрана — Story 9.4).
+   */
+  async function startStrategyCollection(ctx: Context, session: F0Session): Promise<void> {
+    const chatId = ctx.chat?.id;
+    if (chatId === undefined) return;
+    session.phase = 'collecting';
+    session.profileRetryQIndex = undefined;
+    await saveF0Session(chatId, session);
+    f0Log.info(
+      {
+        step: 'f0.profile_completed',
+        chatId,
+        sessionId: session.id,
+        extended: session.profileExtended === true,
+        tops: session.profile?.tops?.length ?? 0,
+      },
+      'f0 client profile completed — strategy collection started',
+    );
+    await ctx.reply(F0_START_TEXT, { reply_markup: f0ModeKeyboard }).catch((err) => {
+      log.warn({ err, chatId }, 'f0.start.reply_failed');
+    });
+  }
+
+  /** Задать текущий вопрос профиля (или экран выбора / финал). */
+  async function askNextProfileQuestion(ctx: Context, session: F0Session): Promise<void> {
+    const chatId = ctx.chat?.id;
+    if (chatId === undefined) return;
+    const profile = session.profile ?? {};
+    // Дозаполнение из карточки: уже отвеченные вопросы не переспрашиваем.
+    if (session.profileCardClientId !== undefined) {
+      let qi = session.profileQIndex ?? 0;
+      while (qi < PROFILE_TOTAL_COUNT && isQuestionAnswered(profile, nextProfileQuestion(qi)!)) {
+        qi += 1;
+      }
+      if (qi !== session.profileQIndex) {
+        session.profileQIndex = qi;
+        await saveF0Session(chatId, session);
+      }
+    }
+    if (profileOfferPending(session)) {
+      await sendProfileOffer(ctx, session);
+      return;
+    }
+    const qIndex = session.profileQIndex ?? 0;
+    const q = nextProfileQuestion(qIndex);
+    if (q === undefined) {
+      await finishProfileDialog(ctx, session);
+      return;
+    }
+    const inExt = qIndex >= PROFILE_MIN_COUNT;
+    const index = inExt ? qIndex - PROFILE_MIN_COUNT + 1 : qIndex + 1;
+    const total = inExt ? PROFILE_EXT_COUNT : PROFILE_MIN_COUNT;
+    const prev = qIndex > 0 ? nextProfileQuestion(qIndex - 1) : undefined;
+    const withHeader = prev === undefined || prev.block !== q.block || qIndex === PROFILE_MIN_COUNT;
+    const text = renderProfileQuestion(q, { index, total, withHeader });
+    let keyboard: InlineKeyboard | undefined;
+    if (q.id === 'a3_3') keyboard = profileDmKeyboard(session);
+    else if (q.id === 'a4_6') keyboard = profilePrioKeyboard(session);
+    else if (q.id === 'a3_2' && (profile.tops ?? []).length > 0) keyboard = f0ProfileTopsKeyboard;
+    await ctx
+      .reply(text, keyboard !== undefined ? { reply_markup: keyboard } : undefined)
+      .catch(() => {});
+  }
+
+  /** Продвинуть очередь профиля на следующий вопрос (persist после каждого шага). */
+  async function advanceProfileQuestion(
+    ctx: Context,
+    session: F0Session,
+    q: ProfileQuestion,
+    outcome: 'answered' | 'skipped',
+  ): Promise<void> {
+    const chatId = ctx.chat!.id;
+    session.profileRetryQIndex = undefined;
+    session.profileQIndex = (session.profileQIndex ?? 0) + 1;
+    await saveF0Session(chatId, session);
+    if (session.profileCardClientId !== undefined) await writeProfileToCard(session);
+    f0Log.info(
+      { step: `f0.profile_${outcome}`, chatId, sessionId: session.id, questionId: q.id },
+      `f0 profile question ${outcome}`,
+    );
+    await askNextProfileQuestion(ctx, session);
+  }
+
+  /** Текстовый ответ трекера на вопрос профиля. */
+  async function handleF0ProfileAnswer(
+    ctx: Context,
+    session: F0Session,
+    rawText: string,
+  ): Promise<void> {
+    const chatId = ctx.chat!.id;
+    session.profile ??= {};
+    const profile = session.profile;
+    if (profileOfferPending(session)) {
+      await sendProfileOffer(ctx, session); // выбор — кнопкой, текст не интерпретируем
+      return;
+    }
+    const qIndex = session.profileQIndex ?? 0;
+    const q = nextProfileQuestion(qIndex);
+    if (q === undefined) {
+      await finishProfileDialog(ctx, session);
+      return;
+    }
+    const text = rawText.trim();
+    if (text.length === 0) {
+      await ctx.reply('Пустой ответ. Впиши значение или пропусти: /skip.').catch(() => {});
+      return;
+    }
+    // «не знаю» на расширенном вопросе = /skip (матрица I/O): поле не заполняется,
+    // незнание — тоже данные. На 🔑 принимается как обычный ответ не может — 🔑 без
+    // содержимого бессмыслен, но и не блокируем: трекер отвечает за формулировку.
+    if (!q.key && /^не\s+знаю\W*$/iu.test(text)) {
+      await advanceProfileQuestion(ctx, session, q, 'skipped');
+      return;
+    }
+    // Мягкая числовая валидация 8.6 (A2.1, A2.2, A2.5): один переспрос, повтор принимается.
+    if (
+      q.type === 'number' &&
+      !looksNumericAnswer(text) &&
+      session.profileRetryQIndex !== qIndex
+    ) {
+      session.profileRetryQIndex = qIndex;
+      await saveF0Session(chatId, session);
+      f0Log.info(
+        { step: 'f0.profile_retry', chatId, sessionId: session.id, questionId: q.id },
+        'f0 profile numeric retry',
+      );
+      await ctx
+        .reply(
+          '🔁 Не вижу числа в ответе, а тут нужно значение (например «120 млн» или «12%»).\n' +
+            'Если так и надо — отправь ответ ещё раз, приму как есть. Или пропусти: /skip.',
+        )
+        .catch(() => {});
+      return;
+    }
+    // Топы A3.2: по одному сообщению; не разложился на поля → один переспрос,
+    // затем сохранить как есть (name = ответ, остальное null).
+    if (q.type === 'tops') {
+      let top = parseTopAnswer(text);
+      if (top === null && session.profileRetryQIndex !== qIndex) {
+        session.profileRetryQIndex = qIndex;
+        await saveF0Session(chatId, session);
+        f0Log.info(
+          { step: 'f0.profile_retry', chatId, sessionId: session.id, questionId: q.id },
+          'f0 profile top format retry',
+        );
+        await ctx
+          .reply(
+            `🔁 Не разобрал ответ на поля. Формат: ${F0_PROFILE_TOP_FORMAT_HINT}.\n` +
+              'Пришли в этом формате — или отправь тот же ответ ещё раз, сохраню как есть.',
+          )
+          .catch(() => {});
+        return;
+      }
+      if (top === null) top = topFromRawAnswer(text);
+      profile.tops = [...(profile.tops ?? []), top];
+      session.profileRetryQIndex = undefined;
+      await saveF0Session(chatId, session);
+      f0Log.info(
+        {
+          step: 'f0.profile_top_added',
+          chatId,
+          sessionId: session.id,
+          tops: profile.tops.length,
+        },
+        'f0 profile top added',
+      );
+      await ctx
+        .reply(`✅ Топ добавлен: ${renderTopShort(top)} (всего: ${profile.tops.length}).`, {
+          reply_markup: f0ProfileTopsKeyboard,
+        })
+        .catch(() => {});
+      return; // очередь стоит — ждём следующего топа или «✅ Готово»
+    }
+    const written = applyProfileAnswer(profile, q, text);
+    if (!written) {
+      await ctx.reply('Пустой ответ. Впиши значение или пропусти: /skip.').catch(() => {});
+      return;
+    }
+    await advanceProfileQuestion(ctx, session, q, 'answered');
+  }
+
+  /** Общая валидация callback-кнопок профиля: сессия в фазе profile + нужный вопрос. */
+  async function getProfileSessionForCallback(
+    ctx: Context,
+    expectQuestionId?: string,
+  ): Promise<F0Session | undefined> {
+    await ctx.answerCallbackQuery().catch(() => {});
+    const chatId = ctx.chat?.id;
+    if (chatId === undefined) return undefined;
+    const session = await getOrRestoreF0Session(chatId);
+    if (session === undefined || session.phase !== 'profile') {
+      await ctx.reply(F0_PROFILE_STALE_TEXT).catch(() => {});
+      return undefined;
+    }
+    if (expectQuestionId !== undefined) {
+      const q = currentProfileQuestion(session);
+      if (q?.id !== expectQuestionId || profileOfferPending(session)) {
+        await ctx.reply(F0_PROFILE_STALE_TEXT).catch(() => {});
+        return undefined;
+      }
+    }
+    return session;
+  }
+
+  bot.callbackQuery('f0p_top_more', async (ctx) => {
+    const session = await getProfileSessionForCallback(ctx, 'a3_2');
+    if (session === undefined) return;
+    await ctx
+      .reply(`Пришли следующего топа сообщением: ${F0_PROFILE_TOP_FORMAT_HINT}.`)
+      .catch(() => {});
+  });
+
+  bot.callbackQuery('f0p_top_done', async (ctx) => {
+    const session = await getProfileSessionForCallback(ctx, 'a3_2');
+    if (session === undefined) return;
+    const q = currentProfileQuestion(session)!;
+    if ((session.profile?.tops ?? []).length === 0) {
+      await ctx
+        .reply('🔑 Нужен хотя бы один топ — пришли сообщением: ' + F0_PROFILE_TOP_FORMAT_HINT + '.')
+        .catch(() => {});
+      return;
+    }
+    await advanceProfileQuestion(ctx, session, q, 'answered');
+  });
+
+  bot.callbackQuery(/^f0p_dm:(\d+)$/, async (ctx) => {
+    const session = await getProfileSessionForCallback(ctx, 'a3_3');
+    if (session === undefined) return;
+    const q = currentProfileQuestion(session)!;
+    const top = session.profile?.tops?.[Number(ctx.match[1])];
+    if (top === undefined) {
+      await ctx.reply(F0_PROFILE_STALE_TEXT).catch(() => {});
+      return;
+    }
+    session.profile ??= {};
+    session.profile.decisionMaker = top.name;
+    await ctx.reply(`✅ Decision maker: ${top.name}.`).catch(() => {});
+    await advanceProfileQuestion(ctx, session, q, 'answered');
+  });
+
+  bot.callbackQuery(/^f0p_prio:(\d+)$/, async (ctx) => {
+    const session = await getProfileSessionForCallback(ctx, 'a4_6');
+    if (session === undefined) return;
+    const q = currentProfileQuestion(session)!;
+    const option = PROFILE_PRIORITY_OPTIONS[Number(ctx.match[1])];
+    if (option === undefined) return;
+    session.profile ??= {};
+    const request = { ...(session.profile.request ?? {}) };
+    const picked = [...(request.priorities ?? [])];
+    if (picked.includes(option)) return; // повторный тап — молча игнорируем
+    picked.push(option);
+    request.priorities = picked;
+    session.profile.request = request;
+    await saveF0Session(ctx.chat!.id, session);
+    if (picked.length >= PROFILE_PRIORITY_PICKS) {
+      await ctx
+        .reply(`✅ Приоритеты: ${picked.map((p, i) => `${i + 1}. ${p}`).join(' · ')}.`)
+        .catch(() => {});
+      await advanceProfileQuestion(ctx, session, q, 'answered');
+      return;
+    }
+    const kb = profilePrioKeyboard(session);
+    await ctx
+      .reply(
+        `Выбрано: ${picked.map((p, i) => `${i + 1}. ${p}`).join(' · ')}. Выбери ещё ${PROFILE_PRIORITY_PICKS - picked.length}.`,
+        kb !== undefined ? { reply_markup: kb } : undefined,
+      )
+      .catch(() => {});
+  });
+
+  // Экран выбора после 🔑-минимума: расширенный профиль или сразу к стратегии.
+  bot.callbackQuery('f0p_ext', async (ctx) => {
+    const session = await getProfileSessionForCallback(ctx);
+    if (session === undefined) return;
+    if (!profileOfferPending(session)) {
+      await ctx.reply(F0_PROFILE_STALE_TEXT).catch(() => {});
+      return;
+    }
+    session.profileExtended = true;
+    await saveF0Session(ctx.chat!.id, session);
+    f0Log.info(
+      { step: 'f0.profile_extended_started', chatId: ctx.chat!.id, sessionId: session.id },
+      'f0 extended profile started',
+    );
+    await askNextProfileQuestion(ctx, session);
+  });
+
+  bot.callbackQuery('f0p_go', async (ctx) => {
+    const session = await getProfileSessionForCallback(ctx);
+    if (session === undefined) return;
+    if (!profileOfferPending(session)) {
+      await ctx.reply(F0_PROFILE_STALE_TEXT).catch(() => {});
+      return;
+    }
+    await startStrategyCollection(ctx, session);
+  });
+
+  // Story 9.1: «➕ Дозаполнить профиль» на карточке готового клиента — расширенные
+  // вопросы тем же механизмом персиста; ответы дописываются в card.json.
+  bot.callbackQuery(/^profile_fill:(.+)$/, async (ctx) => {
+    await ctx.answerCallbackQuery().catch(() => {});
+    const chatId = ctx.chat?.id;
+    if (chatId === undefined) return;
+    const clientId = ctx.match[1]!;
+    const existing = await getOrRestoreF0Session(chatId);
+    if (existing?.phase === 'profile' || f0SessionAtRisk(existing)) {
+      await ctx
+        .reply('⚠️ Идёт другой онбординг/диалог. Заверши его (/resume) или отмени (/cancel), потом дозаполняй профиль.')
+        .catch(() => {});
+      return;
+    }
+    const card = await loadClientCard(clientId);
+    if (card === null) {
+      await ctx.reply(`ℹ️ Карточка клиента «${clientId}» не найдена.`).catch(() => {});
+      return;
+    }
+    const session: F0Session = {
+      id: randomUUID().slice(0, 8),
+      processing: false,
+      phase: 'profile',
+      documents: [],
+      documentsChars: 0,
+      gaps: [],
+      gapIndex: 0,
+      schedule: null,
+      profile: { ...(card.profile ?? {}) },
+      profileQIndex: PROFILE_MIN_COUNT, // только расширенные вопросы
+      profileExtended: true,
+      profileCardClientId: clientId,
+    };
+    f0Sessions.set(chatId, session);
+    await saveF0Session(chatId, session);
+    f0Log.info(
+      { step: 'f0.profile_card_fill_started', chatId, sessionId: session.id, clientId },
+      'f0 profile fill from client card started',
+    );
+    await ctx
+      .reply(`➕ Дозаполняем профиль «${card.company}» — расширенные вопросы. Ответы пишутся в карточку.`)
+      .catch(() => {});
+    await askNextProfileQuestion(ctx, session);
+  });
+
   async function startF0Session(ctx: Context, trigger: string): Promise<void> {
     const chatId = ctx.chat?.id;
     if (chatId === undefined) return;
@@ -944,25 +1448,31 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
       await ctx.reply(F0_BUSY_TEXT).catch(() => {});
       return;
     }
+    // Story 9.1: онбординг начинается с обязательного профиля клиента (Часть A),
+    // существующий flow сбора (F0_START_TEXT + f0ModeKeyboard) — после 🔑-минимума.
     const session: F0Session = {
       id: randomUUID().slice(0, 8),
       processing: false,
-      phase: 'collecting',
+      phase: 'profile',
       documents: [],
       documentsChars: 0,
       gaps: [],
       gapIndex: 0,
       schedule: null,
+      profile: {},
+      profileQIndex: 0,
     };
     f0Sessions.set(chatId, session);
     await deleteF0Session(chatId); // сбрасываем персист прошлого онбординга этого чата
+    await saveF0Session(chatId, session); // профиль переживает рестарт с первого вопроса
     f0Log.info(
       { step: 'f0.session_started', chatId, sessionId: session.id, trigger },
       'f0 onboarding session started',
     );
-    await ctx.reply(F0_START_TEXT, { reply_markup: f0ModeKeyboard }).catch((err) => {
+    await ctx.reply(F0_PROFILE_INTRO).catch((err) => {
       log.warn({ err, chatId }, 'f0.start.reply_failed');
     });
+    await askNextProfileQuestion(ctx, session);
   }
 
   // Story 8.5: явный выбор пути кнопкой. Работает только в collecting до первого файла —
@@ -972,6 +1482,13 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
     const chatId = ctx.chat?.id;
     if (chatId === undefined) return;
     const session = await getOrRestoreF0Session(chatId);
+    // Story 9.1: до 🔑-минимума профиля способ онбординга не выбирается.
+    if (session?.phase === 'profile') {
+      await ctx
+        .reply('ℹ️ Сначала 🔑-минимум профиля клиента — способ загрузки стратегии предложу после. Продолжить — /resume.')
+        .catch(() => {});
+      return;
+    }
     if (session === undefined || session.phase !== 'collecting') {
       await ctx.reply(F0_NO_SESSION_TEXT).catch(() => {});
       return;
@@ -1004,10 +1521,15 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
   function f0SessionAtRisk(session: F0Session | undefined): session is F0Session {
     if (session === undefined) return false;
     if (session.phase === 'filling') return true;
+    // Story 9.1: начатый профиль (есть хотя бы один ответ) — прогресс, не сбрасываем молча.
+    if (session.phase === 'profile') return (session.profileQIndex ?? 0) > 0;
     // Story 8.5: принятый, но не отработанный xlsx — тоже несохранённый прогресс.
+    // Story 9.1: собранный профиль в collecting (до черновика) — тоже прогресс.
     return (
       session.phase === 'collecting' &&
-      (session.documents.length > 0 || session.importResult !== undefined)
+      (session.documents.length > 0 ||
+        session.importResult !== undefined ||
+        session.profile !== undefined)
     );
   }
 
@@ -1017,13 +1539,15 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
     if (chatId === undefined) return;
     const session = await getOrRestoreF0Session(chatId);
     if (f0SessionAtRisk(session)) {
-      const company = session.draft?.extraction.company;
+      const company = session.draft?.extraction.company ?? session.profile?.companyName;
       const progress =
-        session.phase === 'filling'
-          ? `отвечено ${session.gapIndex} из ${session.gaps.length} вопросов`
-          : session.importResult !== undefined
-            ? 'принят Excel для импорта' // Story 8.5 (ревью LOW-1): не «файлов: 0»
-            : `файлов в пакете: ${session.documents.length}`;
+        session.phase === 'profile'
+          ? `профиль: отвечено ${session.profileQIndex ?? 0} вопр.` // Story 9.1
+          : session.phase === 'filling'
+            ? `отвечено ${session.gapIndex} из ${session.gaps.length} вопросов`
+            : session.importResult !== undefined
+              ? 'принят Excel для импорта' // Story 8.5 (ревью LOW-1): не «файлов: 0»
+              : `файлов в пакете: ${session.documents.length}`;
       await ctx
         .reply(
           `⚠️ Идёт онбординг${company !== undefined && company !== null ? ` «${company}»` : ''} (${progress}).\n` +
@@ -1162,6 +1686,8 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
     const clientId = ctx.match[1]!;
     const card = await loadClientCard(clientId);
     const kb = new InlineKeyboard().text('✅ Работать с этим клиентом', `client_use:${clientId}`);
+    // Story 9.1: расширенный профиль доступен и позже — из карточки клиента.
+    if (card !== null) kb.row().text('➕ Дозаполнить профиль', `profile_fill:${clientId}`);
     if (card === null) {
       const name =
         (await getClientName(clientId)) ?? (clientId === DEFAULT_CLIENT_ID ? 'Geonline' : clientId);
@@ -1351,6 +1877,23 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
     }
     if (session.processing) {
       await ctx.reply(F0_BUSY_TEXT).catch(() => {});
+      return;
+    }
+    // Story 9.1: в фазе профиля документы стратегии не принимаются (AC1). Исключение —
+    // A3.1 «оргструктура файлом»: сохраняем референс (имя файла), содержимое не парсим.
+    if (session.phase === 'profile') {
+      const q = currentProfileQuestion(session);
+      if (q?.id === 'a3_1' && !profileOfferPending(session)) {
+        const fileName = ctx.message.document.file_name ?? 'document';
+        session.profile ??= {};
+        session.profile.orgStructure = `📎 ${fileName}`;
+        await ctx
+          .reply(`📎 Сохранил референс оргструктуры: ${fileName} (содержимое файла не разбираю).`)
+          .catch(() => {});
+        await advanceProfileQuestion(ctx, session, q, 'answered');
+        return;
+      }
+      await ctx.reply(F0_PROFILE_FIRST_TEXT).catch(() => {});
       return;
     }
     // Файлы принимаем только на этапе сбора. После сборки черновика (filling/ready)
@@ -1655,6 +2198,13 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
       await ctx.reply(F0_BUSY_TEXT).catch(() => {});
       return;
     }
+    // Story 9.1: до завершения 🔑-минимума профиля черновик не собирается.
+    if (session.phase === 'profile') {
+      await ctx
+        .reply('ℹ️ Сначала профиль клиента — продолжить вопросы: /resume.')
+        .catch(() => {});
+      return;
+    }
     // Story 8.5: путь импорта — черновик из принятого xlsx, без LLM.
     if (session.mode === 'import') {
       if (session.importResult === undefined) {
@@ -1945,6 +2495,30 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
 
   bot.command('skip', async (ctx) => {
     const session = await getOrRestoreF0Session(ctx.chat.id);
+    // Story 9.1: /skip в диалоге профиля — 🔑 нельзя пропустить (пояснение + повтор),
+    // расширенный вопрос пропускается без заполнения поля.
+    if (session?.phase === 'profile') {
+      if (profileOfferPending(session)) {
+        await sendProfileOffer(ctx, session);
+        return;
+      }
+      const q = currentProfileQuestion(session);
+      if (q === undefined) {
+        await finishProfileDialog(ctx, session);
+        return;
+      }
+      if (q.key) {
+        const topsHint =
+          q.id === 'a3_2' && (session.profile?.tops ?? []).length > 0
+            ? ' Закончить с топами — кнопка «✅ Готово».'
+            : '';
+        await ctx.reply(`${F0_PROFILE_KEY_REQUIRED_TEXT}${topsHint}`).catch(() => {});
+        await askNextProfileQuestion(ctx, session); // повтор того же вопроса
+        return;
+      }
+      await advanceProfileQuestion(ctx, session, q, 'skipped');
+      return;
+    }
     if (session === undefined || session.phase !== 'filling') {
       await ctx.reply('ℹ️ Сейчас нечего пропускать — активного диалога онбординга нет.').catch(() => {});
       return;
@@ -1968,7 +2542,11 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
       await ctx.reply('ℹ️ Нет активного онбординга. Начни новый: /newclient.').catch(() => {});
       return;
     }
-    if (session.phase === 'filling') {
+    if (session.phase === 'profile') {
+      // Story 9.1: возобновление диалога профиля с текущего вопроса (AC2).
+      await ctx.reply('↩️ Продолжаем профиль клиента с места остановки.').catch(() => {});
+      await askNextProfileQuestion(ctx, session);
+    } else if (session.phase === 'filling') {
       await ctx.reply('↩️ Продолжаем онбординг с места остановки.').catch(() => {});
       await askNextF0Gap(ctx, session);
     } else if (session.phase === 'ready') {
@@ -2019,6 +2597,8 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
       spreadsheetUrl,
       startDate: now().toISOString(),
       clientId,
+      // Story 9.1: профиль клиента переносится в карточку.
+      ...(session.profile !== undefined ? { profile: session.profile } : {}),
       now,
     });
     await persistClientCard(card);
@@ -2179,6 +2759,15 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
   bot.command('status', async (ctx) => {
     const chatId = ctx.chat.id;
     const session = await getOrRestoreF0Session(chatId);
+    // Story 9.1: в онбординге до черновика /status показывает собранный профиль.
+    if (
+      session !== undefined &&
+      (session.phase === 'profile' ||
+        (session.draft === undefined && session.profile !== undefined))
+    ) {
+      await ctx.reply(renderProfileStatusMessage(session.profile ?? {})).catch(() => {});
+      return;
+    }
     if (session === undefined || session.draft === undefined) {
       // Story 8.4 (W10): онбординга нет, но клиент выбран в меню → статус из карточки.
       const active = await getActiveClient(chatId);
@@ -2210,6 +2799,7 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
           : null,
         startDate: now().toISOString(),
         clientId,
+        ...(session.profile !== undefined ? { profile: session.profile } : {}),
         now,
       });
     const items = computeReadinessChecklist(card, extraction);
@@ -2630,10 +3220,14 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
     }
 
     // Story 7.1: текстовый триггер онбординга «новый клиент». Не срабатывает во время
-    // активного диалога дозаполнения — иначе ответ, дословно равный «новый клиент»,
-    // случайно сбросил бы сессию. Явный перезапуск во время filling — команда /newclient.
+    // активного диалога дозаполнения или профиля (9.1) — иначе ответ, дословно равный
+    // «новый клиент», случайно сбросил бы сессию. Явный перезапуск — команда /newclient.
     const f0InMemory = f0Sessions.get(chatId);
-    if (f0InMemory?.phase !== 'filling' && /^новый клиент$/iu.test(ctx.message.text.trim())) {
+    if (
+      f0InMemory?.phase !== 'filling' &&
+      f0InMemory?.phase !== 'profile' &&
+      /^новый клиент$/iu.test(ctx.message.text.trim())
+    ) {
       // Story 8.4 (W3): guarded — пакет collecting с файлами тоже не сбрасываем молча.
       await startF0SessionGuarded(ctx, 'text');
       return;
@@ -2650,6 +3244,14 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
           await ctx.reply('↩️ Восстановил онбординг после перерыва.').catch(() => {});
         }
         await handleF0FillAnswer(ctx, f0, ctx.message.text);
+        return;
+      }
+      // Story 9.1: ответы диалога профиля клиента (рестарт восстанавливает с диска — AC2).
+      if (f0?.phase === 'profile') {
+        if (f0InMemory === undefined) {
+          await ctx.reply('↩️ Восстановил онбординг после перерыва.').catch(() => {});
+        }
+        await handleF0ProfileAnswer(ctx, f0, ctx.message.text);
         return;
       }
       // Story 1.8: fallback hint вместо молчания (UX-DR3 «Тишина — враг»).
