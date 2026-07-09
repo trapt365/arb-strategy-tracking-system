@@ -5,7 +5,12 @@ import { withRetry } from './utils/retry.js';
 import { createSheetsWriteClient } from './adapters/sheets.js';
 import { createDriveWriteClient } from './adapters/drive.js';
 import { F0SheetsError } from './errors.js';
-import type { F0FullExtraction } from './types.js';
+import type { F0FullExtraction, ClientTop, ClientProfile } from './types.js';
+import {
+  groundedOkrRows,
+  groundedStakeholderRows,
+  profileTopNames,
+} from './f0-grounding.js';
 
 export { F0SheetsError } from './errors.js';
 
@@ -50,7 +55,7 @@ type Row = Record<string, string>;
 
 // === Чистые мапперы: F0FullExtraction → строки машиночитаемых листов ===
 
-export function mapOkrRows(extraction: F0FullExtraction): Row[] {
+export function mapOkrRows(extraction: F0FullExtraction, tops?: ClientTop[]): Row[] {
   const rows: Row[] = [];
   extraction.objectives.forEach((objective, o) => {
     objective.krs.forEach((kr, k) => {
@@ -70,11 +75,12 @@ export function mapOkrRows(extraction: F0FullExtraction): Row[] {
       });
     });
   });
-  return rows;
+  return groundedOkrRows(rows, tops);
 }
 
-export function mapStakeholderRows(extraction: F0FullExtraction): Row[] {
-  return extraction.participants.map((p) => ({
+export function mapStakeholderRows(extraction: F0FullExtraction, tops?: ClientTop[]): Row[] {
+  const participants = groundedStakeholderRows(extraction, tops);
+  return participants.map((p) => ({
     full_name: p.name,
     // Метка спикера в транскрипте на онбординге неизвестна — засеваем именем (F1 уточнит).
     speaker_name: p.name,
@@ -210,6 +216,8 @@ export interface CreateClientSpreadsheetOpts {
   existingSpreadsheetId?: string;
   /** Story 8.1: шапка листа _meta (дата онбординга, период, трекер). */
   meta?: F0MetaFields;
+  /** Story 9.2: профиль клиента — источник grounding имён для Sheets. */
+  profile?: ClientProfile;
   logger?: SheetsLogger;
   // Инъекции для тестов.
   sheetsClientFactory?: () => Promise<sheets_v4.Sheets>;
@@ -340,8 +348,9 @@ export async function createClientSpreadsheet(
     assertHeaders(sid, OKR_SHEET, okrHeader, OKR_REQUIRED);
     assertHeaders(sid, STAKEHOLDER_SHEET, stakeholderHeader, STAKEHOLDER_REQUIRED);
 
-    const okrRows = mapOkrRows(opts.extraction);
-    const stakeholderRows = mapStakeholderRows(opts.extraction);
+    const profileTops = opts.profile?.tops;
+    const okrRows = mapOkrRows(opts.extraction, profileTops);
+    const stakeholderRows = mapStakeholderRows(opts.extraction, profileTops);
     const hypoRows = mapHypothesisRows(opts.extraction);
     const metaRows = mapMetaRows(opts.extraction, opts.meta);
     counts.okr = okrRows.length;
@@ -395,11 +404,14 @@ export async function createClientSpreadsheet(
 
     // 5.5. Story 8.1 (Fix B): персональные листы «👤 {Имя}» по владельцам KR —
     // duplicateSheet со скрытого эталона, $B$1 = имя параметризует FILTER-формулы.
+    // Story 9.2: профильные топы добавляются как extraOwners — листы создаются даже
+    // если у топа нет ни одного KR (и несовпавшие «🔴 ...» из uniqueOwners не попадают).
     counts.personalSheets = await ensurePersonalSheets(
       sheets,
       sid,
       titleToId,
       okrRows,
+      profileTopNames(profileTops ?? []),
       log,
     );
   } catch (err) {
@@ -456,10 +468,17 @@ function quoteSheetTitle(title: string): string {
   return `'${title.replace(/'/g, "''")}'`;
 }
 
-/** Уникальные владельцы KR в порядке появления — по одному персональному листу на каждого. */
+/**
+ * Уникальные владельцы KR в порядке появления — по одному персональному листу на каждого.
+ * Story 9.2: «🔴 Имя» (несовпавшие при grounding) фильтруются — их вкладки не создаются.
+ */
 export function uniqueOwners(okrRows: Row[]): string[] {
   return [
-    ...new Set(okrRows.map((r) => (r.owner ?? '').trim()).filter((o) => o.length > 0)),
+    ...new Set(
+      okrRows
+        .map((r) => (r.owner ?? '').trim())
+        .filter((o) => o.length > 0 && !o.startsWith('🔴 ')),
+    ),
   ];
 }
 
@@ -467,15 +486,21 @@ export function uniqueOwners(okrRows: Row[]): string[] {
  * Story 8.1: размножить персональные листы «👤 {Имя}» duplicateSheet-ом со скрытого
  * эталона TOP_TEMPLATE_SHEET. Идемпотентно: существующие листы пропускаются (повторный
  * /confirm не плодит дубли). Возвращает число владельцев с персональным листом.
+ * Story 9.2: extraOwners — профильные топы, добавляются к uniqueOwners(okrRows);
+ * дедупликация через Set, порядок: KR-owners → profile-extras.
  */
 async function ensurePersonalSheets(
   sheets: sheets_v4.Sheets,
   spreadsheetId: string,
   titleToId: Map<string, number>,
   okrRows: Row[],
+  extraOwners: string[],
   log: SheetsLogger,
 ): Promise<number> {
-  const owners = uniqueOwners(okrRows);
+  const krOwners = uniqueOwners(okrRows);
+  const seen = new Set(krOwners);
+  const extra = extraOwners.filter((o) => !seen.has(o));
+  const owners = [...krOwners, ...extra];
   const etalonId = titleToId.get(TOP_TEMPLATE_SHEET);
   if (etalonId === undefined) {
     // Старый шаблон без эталона — фича тихо выключается (обратная совместимость 7.4).

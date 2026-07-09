@@ -246,6 +246,25 @@ describe('runF0FullDraft', () => {
     expect(result.totalKrs).toBe(1);
   });
 
+  it('story 9.2: profileParticipants передаётся в loadPrompt при наличии профиля', async () => {
+    const callClaude = vi.fn().mockResolvedValue({
+      raw: '{}',
+      parsed: fullExtraction(),
+      usage: { input_tokens: 10, output_tokens: 5 },
+    });
+    const loadPrompt = vi.fn().mockResolvedValue('PROMPT');
+
+    await runF0FullDraft(
+      { documentText: '# OKR', sourceName: 'a.md', profileParticipants: '- Дамир Сайлов (CEO, зона: Финансы)' },
+      { callClaude, loadPrompt },
+    );
+
+    expect(loadPrompt).toHaveBeenCalledWith(
+      'f0-full-extraction',
+      expect.objectContaining({ profileParticipants: '- Дамир Сайлов (CEO, зона: Финансы)' }),
+    );
+  });
+
   it('throws not_okr_document for document_type=other (инвариант 3)', async () => {
     const callClaude = vi.fn().mockResolvedValue({
       raw: '{}',

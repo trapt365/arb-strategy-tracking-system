@@ -11,7 +11,7 @@ import {
   colLetter,
 } from './f0-sheets.js';
 import { F0SheetsError } from './errors.js';
-import type { F0FullExtraction } from './types.js';
+import type { F0FullExtraction, ClientTop } from './types.js';
 
 const OKR_HEADER = [
   'kr_number', 'short_name', 'key_result', 'owner', 'owner_position',
@@ -212,6 +212,72 @@ describe('uniqueOwners (story 8.1)', () => {
     ]);
     expect(owners).toEqual(['Дамир', 'Мақсат']);
   });
+
+  it('story 9.2: «🔴 Имя» фильтруется — несовпавшие не получают вкладку', () => {
+    const owners = uniqueOwners([
+      { owner: 'Дамир Сайлов' },
+      { owner: '🔴 Д. Сайлов' },
+      { owner: 'Азиза Асланова' },
+      { owner: '🔴 Неизвестный' },
+    ]);
+    expect(owners).toEqual(['Дамир Сайлов', 'Азиза Асланова']);
+  });
+});
+
+// === story 9.2: grounding через tops ===
+
+const profileTops: ClientTop[] = [
+  { name: 'Дамир Сайлов', title: 'CEO', authority: null, area: 'Финансы' },
+  { name: 'Азиза Асланова', title: 'Трекер', authority: null, area: 'Стратегия' },
+];
+
+describe('mapOkrRows (story 9.2: grounding с tops)', () => {
+  it('совпадение → канонический из профиля; несовпадение → «🔴 <extracted>»', () => {
+    const ext = extraction({
+      objectives: [{
+        title: 'Рост',
+        krs: [
+          { formulation: 'KR1', base: '0', target: '100', owner: 'дамир сайлов', deadline: null },
+          { formulation: 'KR2', base: '0', target: '50', owner: 'Д. Сайлов', deadline: null },
+        ],
+      }],
+    });
+    const rows = mapOkrRows(ext, profileTops);
+    expect(rows[0]!.owner).toBe('Дамир Сайлов');
+    expect(rows[1]!.owner).toBe('🔴 Д. Сайлов');
+  });
+
+  it('без tops → owner без изменений (старые сессии)', () => {
+    const rows = mapOkrRows(extraction());
+    expect(rows[0]!.owner).toBe('Мақсат');
+    expect(rows[1]!.owner).toBe('Дамир');
+  });
+});
+
+describe('mapStakeholderRows (story 9.2: grounding с tops)', () => {
+  it('профильные топы первыми; extraction-участников без совпадения — после', () => {
+    const rows = mapStakeholderRows(extraction(), profileTops);
+    const names = rows.map((r) => r.full_name);
+    // Профильные топы первыми
+    expect(names[0]).toBe('Дамир Сайлов');
+    expect(names[1]).toBe('Азиза Асланова');
+    // «Жанель» из extraction не в профиле — добавляется после
+    expect(names).toContain('Жанель');
+  });
+
+  it('дедупликация: «Дамир» в extraction ≠ «Дамир Сайлов» в профиле — оба остаются', () => {
+    // extraction().participants: Дамир, Жанель; профиль: Дамир Сайлов, Азиза Асланова
+    const rows = mapStakeholderRows(extraction(), profileTops);
+    const names = rows.map((r) => r.full_name);
+    expect(names).toContain('Дамир Сайлов');
+    expect(names).toContain('Дамир'); // не совпадает с профилем (разные имена)
+  });
+
+  it('без tops → participants без изменений (старые сессии)', () => {
+    const rows = mapStakeholderRows(extraction());
+    expect(rows).toHaveLength(2);
+    expect(rows[0]!.full_name).toBe('Дамир');
+  });
 });
 
 describe('alignRowsToHeader', () => {
@@ -345,6 +411,38 @@ describe('createClientSpreadsheet — персональные листы топ
     const stake = findRange(upd, '_stakeholder_map!A2')!;
     expect(stake[0]).toHaveLength(8);
     expect(stake[0]![7]).toBe('контакт: @damir');
+  });
+});
+
+describe('createClientSpreadsheet — story 9.2 grounding (AC1)', () => {
+  it('profile-топ без KR получает личный лист; 🔴-owner не получает', async () => {
+    // extraction: владелец KR «А. Асланова» не совпадает с профилем
+    const ext = extraction({
+      objectives: [{
+        title: 'Рост',
+        krs: [{ formulation: 'KR1', base: '0', target: '100', owner: 'А. Асланова', deadline: null }],
+      }],
+    });
+    const azizaTops = [{ name: 'Азиза Асланова', title: 'Трекер', authority: null, area: 'HR' }];
+    const sheets = makeSheets({ titles: allTitles, headers: allHeaders });
+    const drive = makeDrive();
+
+    const result = await createClientSpreadsheet({
+      extraction: ext,
+      spreadsheetName: 'x',
+      profile: { tops: azizaTops },
+      sheetsClientFactory: async () => sheets.client,
+      driveClientFactory: async () => drive.client,
+    });
+
+    // Личный лист создан для канонического имени из профиля, не для '🔴 А. Асланова'
+    expect(result.counts.personalSheets).toBe(1);
+    const dupReq = sheets.calls.addSheet[0] as { requestBody: sheets_v4.Schema$BatchUpdateSpreadsheetRequest };
+    const newNames = (dupReq.requestBody.requests ?? [])
+      .map((r) => r.duplicateSheet?.newSheetName)
+      .filter(Boolean);
+    expect(newNames).toContain('👤 Азиза Асланова');
+    expect(newNames.some((n) => n?.startsWith('👤 🔴'))).toBe(false);
   });
 });
 

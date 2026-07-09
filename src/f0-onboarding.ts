@@ -97,6 +97,11 @@ export interface RunF0DraftArgs {
   documentText: string;
   /** Имена исходных файлов через запятую — для логов и черновика. */
   sourceName: string;
+  /**
+   * Story 9.2: список топов из профиля клиента для промпта F0-извлечения.
+   * Пустая строка, когда профиля нет — промпт видит пустую секцию (нейтрально).
+   */
+  profileParticipants?: string;
   signal?: AbortSignal;
 }
 
@@ -135,7 +140,10 @@ export async function runF0FullDraft(
   const log = (deps.logger ?? rootLogger).child({ pipeline: 'F0', step: 'f0.full_extraction' });
 
   const documentText = sanitizeStrategyDocText(args.documentText, args.sourceName);
-  const prompt = await loadPrompt('f0-full-extraction', { documentText });
+  const prompt = await loadPrompt('f0-full-extraction', {
+    documentText,
+    profileParticipants: args.profileParticipants ?? '',
+  });
 
   log.info({ sourceName: args.sourceName, docChars: documentText.length }, 'f0 full extraction started');
 

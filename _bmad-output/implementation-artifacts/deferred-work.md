@@ -145,3 +145,13 @@
 4. **Длинные сообщения с таблицами плохо читаются в Telegram** — вместо простыней с таблицами давать **ссылку на документ** (Google Drive / созданный Sheet) + 1-2 предложения-саммари. Затрагивает доставку F0-черновика (`src/bot.ts` draft-delivery, ~1060-1110) и, вероятно, F1-доставку отчёта. Использовать URL уже создаваемой таблицы (`f0-sheets.ts`) вместо инлайн-таблиц.
 
 5. **Переименовать бота — «Geonline» это клиент, не продукт** — «Geonline» осталось как имя/бренд в сообщениях и дефолтах, хотя это один из клиентов. Провести аудит: `src/bot.ts`, `prompts/`, `src/config.ts` (внимательно — там же `GEONLINE_F0_SHEET_ID` и `clientId==='geonline'` fallback-логика: **переименовывать бренд/тексты, НЕ ломая clientId-регресс geonline**). Также имя/описание бота в BotFather.
+
+## Deferred from: code review of story 9.2 (2026-07-09)
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-9-2-grounding-profil-edinstvennyy-istochnik-imyon.md`
+  summary: Bot.ts wiring of profileParticipants to runF0FullDraftFn not tested at integration level — a bot.test.ts spy test could verify session.profile.tops → non-empty profileParticipants in runF0FullDraft call.
+  evidence: All bot tests mock runF0FullDraft as opaque stub; none assert on the profileParticipants argument; regression would be silent if the conditional in bot.ts:2274-2276 broke.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-9-2-grounding-profil-edinstvennyy-istochnik-imyon.md`
+  summary: Duplicate profileParticipants ternary in two bot.ts runF0FullDraftFn call sites — minor maintenance concern.
+  evidence: Lines ~2274-2276 and ~2354-2356 contain identical conditional; a future change to profile-tops-context logic must be applied to both call sites.

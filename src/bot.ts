@@ -49,6 +49,7 @@ import {
   type F0Gap,
 } from './f0-fill.js';
 import { createClientSpreadsheet as defaultCreateClientSpreadsheet } from './f0-sheets.js';
+import { profileTopsContext } from './f0-grounding.js';
 import {
   buildClientCard,
   persistClientCard,
@@ -2270,6 +2271,9 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
       const result = await runF0FullDraftFn({
         documentText,
         sourceName: sourceNames.join(', '),
+        profileParticipants: session.profile?.tops?.length
+          ? profileTopsContext(session.profile.tops)
+          : '',
       });
 
       // Общий хвост (персист, саммари, filling) вынесен в deliverF0Draft — Story 8.5
@@ -2347,6 +2351,9 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
       const result = await runF0FullDraftFn({
         documentText: sourceText,
         sourceName: session.draft.sourceNames.join(', '),
+        profileParticipants: session.profile?.tops?.length
+          ? profileTopsContext(session.profile.tops)
+          : '',
       });
       // Сессию могли отменить/заменить за время LLM-вызова — результат не примешиваем.
       if (f0Sessions.get(chatId) !== session || session.draft === undefined) {
@@ -2669,6 +2676,8 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
         spreadsheetName,
         existingSpreadsheetId,
         meta: { onboardingDate: dateStr },
+        // Story 9.2: профиль → grounding имён в Sheets (tops → owner-сверка + личные листы).
+        profile: session.profile,
         logger: f0Log,
       });
       session.spreadsheetId = result.spreadsheetId;
