@@ -102,6 +102,10 @@ export interface RunF0DraftArgs {
    * Пустая строка, когда профиля нет — промпт видит пустую секцию (нейтрально).
    */
   profileParticipants?: string;
+  /**
+   * Story 9.4: признак одиночной презентации — ужесточает промпт («переноси, не досочиняй»).
+   */
+  isPresentationOnly?: boolean;
   signal?: AbortSignal;
 }
 
@@ -143,6 +147,9 @@ export async function runF0FullDraft(
   const prompt = await loadPrompt('f0-full-extraction', {
     documentText,
     profileParticipants: args.profileParticipants ?? '',
+    presentationHint: args.isPresentationOnly
+      ? '⚠️ Это готовая стратегия в виде презентации — переноси KR, цели и гипотезы точно, без досочинения.'
+      : '',
   });
 
   log.info({ sourceName: args.sourceName, docChars: documentText.length }, 'f0 full extraction started');

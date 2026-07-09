@@ -265,6 +265,52 @@ describe('runF0FullDraft', () => {
     );
   });
 
+  it('passes non-empty presentationHint to loadPrompt when isPresentationOnly: true', async () => {
+    const mockLoadPrompt = vi.fn(async () => '{}');
+    const mockCallClaude = vi.fn(async () => ({
+      parsed: {
+        document_type: 'strategy',
+        company: null,
+        objectives: [],
+        hypotheses: [],
+        participants: [],
+        unrecognized: [],
+      },
+      usage: { input_tokens: 10, output_tokens: 10 },
+    }));
+    await runF0FullDraft(
+      { documentText: 'Стратегия', sourceName: 'deck.pptx', isPresentationOnly: true },
+      { callClaude: mockCallClaude as never, loadPrompt: mockLoadPrompt as never },
+    );
+    expect(mockLoadPrompt).toHaveBeenCalledWith(
+      'f0-full-extraction',
+      expect.objectContaining({ presentationHint: expect.stringContaining('переноси KR') }),
+    );
+  });
+
+  it('passes empty presentationHint to loadPrompt when isPresentationOnly is false/omitted', async () => {
+    const mockLoadPrompt = vi.fn(async () => '{}');
+    const mockCallClaude = vi.fn(async () => ({
+      parsed: {
+        document_type: 'strategy',
+        company: null,
+        objectives: [],
+        hypotheses: [],
+        participants: [],
+        unrecognized: [],
+      },
+      usage: { input_tokens: 10, output_tokens: 10 },
+    }));
+    await runF0FullDraft(
+      { documentText: 'Стратегия', sourceName: 'doc.md' },
+      { callClaude: mockCallClaude as never, loadPrompt: mockLoadPrompt as never },
+    );
+    expect(mockLoadPrompt).toHaveBeenCalledWith(
+      'f0-full-extraction',
+      expect.objectContaining({ presentationHint: '' }),
+    );
+  });
+
   it('throws not_okr_document for document_type=other (инвариант 3)', async () => {
     const callClaude = vi.fn().mockResolvedValue({
       raw: '{}',

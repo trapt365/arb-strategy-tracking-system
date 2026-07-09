@@ -25,6 +25,7 @@
     "dotenv": "^17.4.2",
     "googleapis": "^171.4.0",
     "grammy": "^1.30.0",
+    "jszip": "^3.10.1",
     "mammoth": "^1.12.0",
     "mime-types": "^3.0.2",
     "pdf-parse": "^1.1.4",

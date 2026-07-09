@@ -1,5 +1,6 @@
 import mammoth from 'mammoth';
 import pdfParse from 'pdf-parse';
+import JSZip from 'jszip';
 import { decodeDocumentBuffer, f0DocumentKind, F0_MAX_FILE_BYTES } from './f0-input.js';
 import { F0OnboardingError } from '../errors.js';
 
@@ -10,8 +11,50 @@ import { F0OnboardingError } from '../errors.js';
 
 export interface F0ExtractedDocument {
   sourceName: string;
-  kind: 'text' | 'docx' | 'pdf';
+  kind: 'text' | 'docx' | 'pdf' | 'pptx';
   text: string;
+}
+
+const PPTX_A_T_RE = /<a:t[^>]*>([^<]+)<\/a:t>/g;
+
+function decodePptxEntities(s: string): string {
+  return s
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&apos;/g, "'")
+    .replace(/&quot;/g, '"');
+}
+
+/**
+ * Извлекает текст из PPTX-файла: распаковывает ZIP, читает ppt/slides/slide*.xml,
+ * вытаскивает содержимое <a:t> узлов и декодирует XML-сущности.
+ */
+export async function extractPptxText(buf: Buffer): Promise<string> {
+  const zip = await JSZip.loadAsync(buf);
+  const slideEntries = Object.keys(zip.files)
+    .filter((name) => /^ppt\/slides\/slide\d+\.xml$/i.test(name))
+    .sort((a, b) => {
+      const numA = parseInt(a.replace(/\D/g, ''), 10);
+      const numB = parseInt(b.replace(/\D/g, ''), 10);
+      return numA - numB;
+    });
+
+  const slideTexts: string[] = [];
+  for (const name of slideEntries) {
+    const xml = await zip.files[name].async('string');
+    const texts: string[] = [];
+    let m: RegExpExecArray | null;
+    PPTX_A_T_RE.lastIndex = 0;
+    while ((m = PPTX_A_T_RE.exec(xml)) !== null) {
+      texts.push(decodePptxEntities(m[1]));
+    }
+    if (texts.length > 0) {
+      slideTexts.push(texts.join(' '));
+    }
+  }
+
+  return slideTexts.join('\n\n');
 }
 
 export async function extractTextFromDocument(
@@ -42,6 +85,8 @@ export async function extractTextFromDocument(
     if (kind === 'docx') {
       const result = await mammoth.extractRawText({ buffer: buf });
       text = result.value;
+    } else if (kind === 'pptx') {
+      text = await extractPptxText(buf);
     } else {
       const result = await pdfParse(buf);
       text = result.text;

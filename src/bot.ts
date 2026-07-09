@@ -963,20 +963,12 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
 
   // Story 8.5: два пути входа — импорт готового Excel (без LLM) или синтез из документов.
   // Кнопки не обязательны: путь фиксируется и автоматически по расширению первого файла.
-  const F0_START_TEXT = [
-    '🆕 Онбординг нового клиента. Два пути:',
-    '',
-    '📥 Есть готовая стратегия в Excel — пришли один .xlsx, импортирую напрямую (без ИИ-пересборки).',
-    '🧠 Есть документы (.md / .txt / .docx / .pdf): протокол сессии, OKR-документ, нарратив — пришли файлы, соберу стратегию из них. Можно несколько подряд; когда всё прислал — «Собрать черновик» или /draft.',
-    '',
-    'Путь можно выбрать кнопкой или просто прислать первый файл — пойму по формату.',
-    'Соберу панель OKR, банк гипотез и участников. KR без числовой базы «с X до Y»/ответственного и гипотезы без метрики помечу 🔴.',
-  ].join('\n');
+  const F0_STRATEGY_SCREEN_TEXT = 'Как заводим стратегию?';
   const F0_BUSY_TEXT = '⏳ Уже обрабатываю пакет — дождись черновика.';
   const F0_NO_SESSION_TEXT =
     'Чтобы начать онбординг нового клиента, отправь /newclient — затем пришли документы.';
   const F0_UNSUPPORTED_TEXT =
-    '⚠️ Поддерживаются .md, .txt, .docx, .pdf. Пришли документ в одном из этих форматов.';
+    '⚠️ Поддерживаются .md, .txt, .docx, .pdf, .pptx. Пришли документ в одном из этих форматов.';
   const F0_TOO_LARGE_TEXT = '⚠️ Файл больше 20 МБ — Telegram не отдаёт такие боту. Сократи документ.';
   const F0_NO_DOCS_TEXT = 'ℹ️ Пакет пуст — сначала пришли хотя бы один файл артефакта.';
   const F0_MAX_PACKAGE_FILES = 20;
@@ -996,15 +988,15 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
     unsupported_file: F0_UNSUPPORTED_TEXT,
     import_unmappable:
       '⚠️ Не смог распознать в Excel таблицу стратегии: нужен лист с колонками KR — результат, база, цель, ответственный (минимум 3 из них).\n' +
-      '🧠 Могу собрать стратегию из документов — пришли .md / .txt / .docx / .pdf.',
+      '💡 Выбери другой путь:',
   };
 
   const f0BuildKeyboard = new InlineKeyboard().text('✅ Собрать черновик', 'f0_build');
-  // Story 8.5: развилка путей на старте (кнопки опциональны — есть автодетект по файлу).
-  const f0ModeKeyboard = new InlineKeyboard()
-    .text('📥 Есть готовая стратегия (Excel)', 'f0_mode_import')
-    .row()
-    .text('🧠 Собрать из документов', 'f0_mode_synthesis');
+  // Story 9.4: три пути онбординга (кнопки опциональны — есть автодетект по файлу).
+  const f0StrategyKeyboard = new InlineKeyboard()
+    .text('📥 Готовая стратегия в Excel', 'f0_mode_import').row()
+    .text('💬 Вопросник (с голосом)', 'f0_mode_questionnaire').row()
+    .text('📄 Документы (протоколы, транскрипты, презентации)', 'f0_mode_synthesis');
 
   // ───────── Story 9.1: диалог «Профиль клиента» (Часть A) — первый шаг ─────────
 
@@ -1119,8 +1111,8 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
   }
 
   /**
-   * Переход из профиля в СУЩЕСТВУЮЩИЙ flow сбора стратегии (Story 9.1: без изменений
-   * экрана — F0_START_TEXT + f0ModeKeyboard; замена экрана — Story 9.4).
+   * Переход из профиля в flow сбора стратегии (Story 9.4: экран «Как заводим стратегию?»
+   * с тремя кнопками — f0StrategyKeyboard).
    */
   async function startStrategyCollection(ctx: Context, session: F0Session): Promise<void> {
     const chatId = ctx.chat?.id;
@@ -1138,7 +1130,7 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
       },
       'f0 client profile completed — strategy collection started',
     );
-    await ctx.reply(F0_START_TEXT, { reply_markup: f0ModeKeyboard }).catch((err) => {
+    await ctx.reply(F0_STRATEGY_SCREEN_TEXT, { reply_markup: f0StrategyKeyboard }).catch((err) => {
       log.warn({ err, chatId }, 'f0.start.reply_failed');
     });
   }
@@ -1470,7 +1462,7 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
       return;
     }
     // Story 9.1: онбординг начинается с обязательного профиля клиента (Часть A),
-    // существующий flow сбора (F0_START_TEXT + f0ModeKeyboard) — после 🔑-минимума.
+    // экран выбора пути (f0StrategyKeyboard, 3 кнопки) — после 🔑-минимума (Story 9.4).
     const session: F0Session = {
       id: randomUUID().slice(0, 8),
       processing: false,
@@ -1535,6 +1527,11 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
 
   bot.callbackQuery('f0_mode_import', async (ctx) => chooseF0Mode(ctx, 'import'));
   bot.callbackQuery('f0_mode_synthesis', async (ctx) => chooseF0Mode(ctx, 'synthesis'));
+  // Story 9.4: stub для вопросника (9.5 заменит handler).
+  bot.callbackQuery('f0_mode_questionnaire', async (ctx) => {
+    await ctx.answerCallbackQuery().catch(() => {});
+    await ctx.reply('💬 Вопросник появится в следующем обновлении — пока выбери 📄 Документы или 📥 Excel.').catch(() => {});
+  });
 
   // Story 8.4 (W3): сессия с несохранённым прогрессом — черновик с ответами (filling)
   // или собранный, но не отработанный пакет файлов (collecting). Ready не в счёт:
@@ -1902,7 +1899,13 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
         if (session.importResult === undefined && session.documents.length === 0) {
           session.mode = undefined;
         }
-        await ctx.reply(F0_REPLY_BY_CODE[err.code]).catch(() => {});
+        // Story 9.4: при import_unmappable повторно показываем 3-кнопочный экран.
+        await ctx
+          .reply(
+            F0_REPLY_BY_CODE[err.code],
+            err.code === 'import_unmappable' ? { reply_markup: f0StrategyKeyboard } : undefined,
+          )
+          .catch(() => {});
       } else {
         f0Log.error({ err, step: 'f0.import_failed', chatId, sourceName }, 'f0 xlsx import failed');
         alertOps({
@@ -2350,6 +2353,9 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
         profileParticipants: session.profile?.tops?.length
           ? profileTopsContext(session.profile.tops)
           : '',
+        isPresentationOnly:
+          session.documents.length === 1 &&
+          session.documents[0]?.sourceName.toLowerCase().endsWith('.pptx') === true,
       });
 
       // Общий хвост (персист, саммари, filling) вынесен в deliverF0Draft — Story 8.5
@@ -2430,6 +2436,7 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
         profileParticipants: session.profile?.tops?.length
           ? profileTopsContext(session.profile.tops)
           : '',
+        isPresentationOnly: false, // гипотезы синтезируются из текста Excel, не из презентации
       });
       // Сессию могли отменить/заменить за время LLM-вызова — результат не примешиваем.
       if (f0Sessions.get(chatId) !== session || session.draft === undefined) {

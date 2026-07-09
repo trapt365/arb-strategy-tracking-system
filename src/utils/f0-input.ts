@@ -6,7 +6,7 @@ import { F0OnboardingError } from '../errors.js';
 
 // Текстовые форматы — декодируются здесь напрямую. docx/pdf обрабатывает f0-document.ts.
 export const F0_TEXT_EXTENSIONS = ['.md', '.markdown', '.txt'] as const;
-export const F0_BINARY_EXTENSIONS = ['.docx', '.pdf'] as const;
+export const F0_BINARY_EXTENSIONS = ['.docx', '.pdf', '.pptx'] as const;
 export const F0_SUPPORTED_EXTENSIONS = [
   ...F0_TEXT_EXTENSIONS,
   ...F0_BINARY_EXTENSIONS,
@@ -17,6 +17,7 @@ const F0_SUPPORTED_MIMES = new Set([
   'text/markdown',
   'application/pdf',
   'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation',
 ]);
 
 // Telegram Bot API getFile отдаёт файлы до 20 MB.
@@ -53,16 +54,22 @@ export function isSupportedF0Document(fileName?: string, mimeType?: string): boo
   return mimeType !== undefined && F0_SUPPORTED_MIMES.has(mimeType);
 }
 
-/** Тип парсинга по имени/mime: 'text' декодируется напрямую, 'docx'/'pdf' — бинарные. */
+/** Тип парсинга по имени/mime: 'text' декодируется напрямую, 'docx'/'pdf'/'pptx' — бинарные. */
 export function f0DocumentKind(
   fileName?: string,
   mimeType?: string,
-): 'text' | 'docx' | 'pdf' | 'unsupported' {
+): 'text' | 'docx' | 'pdf' | 'pptx' | 'unsupported' {
   const name = (fileName ?? '').toLowerCase();
   if (name.endsWith('.docx') || mimeType === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document') {
     return 'docx';
   }
   if (name.endsWith('.pdf') || mimeType === 'application/pdf') return 'pdf';
+  if (
+    name.endsWith('.pptx') ||
+    mimeType === 'application/vnd.openxmlformats-officedocument.presentationml.presentation'
+  ) {
+    return 'pptx';
+  }
   if (
     F0_TEXT_EXTENSIONS.some((ext) => name.endsWith(ext)) ||
     mimeType === 'text/plain' ||

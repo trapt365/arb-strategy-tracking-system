@@ -195,3 +195,19 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-9-7-nedelnyy-otchyot-trekera-po-klientu.md`
   summary: Weekly report commitments aggregated without per-meeting context (date/topName not shown per commitment line).
   evidence: `formatWeeklyReport` lists `• who → what, до deadline` but drops which meeting originated the commitment; with 2+ meetings/week the origin is ambiguous. UX polish for a future iteration.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-9-4-edinyy-vkhod-prezentacii-v-dokumentakh-robastnyy-xlsx.md`
+  summary: Stub `f0_mode_questionnaire` handler не проверяет фазу сессии — отвечает при любом состоянии.
+  evidence: `chooseF0Mode` (import/synthesis) имеет guard на `phase !== 'collecting'`; questionnaire-stub его не имеет. Хэндлер temporary до 9.5 — guard добавит 9.5.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-9-4-edinyy-vkhod-prezentacii-v-dokumentakh-robastnyy-xlsx.md`
+  summary: `{{presentationHint}}` в промпте создаёт лишнюю пустую строку между `## Инструкции` и `### 1.` когда hint пустой.
+  evidence: Промпт-шаблон: `## Инструкции\n\n{{presentationHint}}\n\n### 1.` → при empty hint: двойной blank. Косметика, LLM-обработку не нарушает.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-9-4-edinyy-vkhod-prezentacii-v-dokumentakh-robastnyy-xlsx.md`
+  summary: `parseInt(name.replace(/\D/g, ''), 10)` в sort-компараторе `extractPptxText` возвращает NaN для slide-файлов без цифр в имени.
+  evidence: Валидные PPTX всегда имеют `slideN.xml`; corner case только для поломанных PPTX. Решение: `|| 0` fallback в parseInt.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-9-4-edinyy-vkhod-prezentacii-v-dokumentakh-robastnyy-xlsx.md`
+  summary: Расширение словаря синонимов xlsx не покрыто тестами — нет regression-guard для новых синонимов.
+  evidence: Файл `ARB_Solutions_Стратегический_трекер_v1_1_1.xlsx` отсутствует в репозитории; spec Design Notes явно откладывает snapshot-тест до появления файла. Добавить как test fixture когда файл будет доступен.

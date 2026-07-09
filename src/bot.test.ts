@@ -2063,7 +2063,16 @@ describe('bot — импорт готовой стратегии из xlsx (Stor
 
     const rejected = texts85(calls).find((t) => t.includes('Не смог распознать в Excel'));
     expect(rejected).toBeDefined();
-    expect(rejected).toContain('Могу собрать стратегию из документов');
+    expect(rejected).toContain('Выбери другой путь');
+
+    // Matrix Row 3: кнопка «Вопросник» должна присутствовать в reply_markup сообщения об отказе.
+    const rejectedCall = calls.find(
+      (c) =>
+        c.method === 'sendMessage' &&
+        (c.payload.text as string).includes('Не смог распознать в Excel'),
+    );
+    expect(rejectedCall).toBeDefined();
+    expect(JSON.stringify(rejectedCall!.payload.reply_markup)).toContain('f0_mode_questionnaire');
 
     // После отказа путь синтеза открыт: обычный .md принимается в пакет.
     const before = calls.length;
@@ -2164,6 +2173,51 @@ describe('bot — импорт готовой стратегии из xlsx (Stor
     expect(runF0Spy).toHaveBeenCalledTimes(1);
     expect(texts85(calls, b3).some((t) => t.includes('уже есть в черновике'))).toBe(true);
   });
+
+  // Matrix Row 4: stub-ответ на кнопку «Вопросник»
+  it('кнопка «Вопросник» → stub-ответ с предложением выбрать другой путь', async () => {
+    const { bot, calls } = buildImportBot();
+    await completeProfileMinimum(bot);
+    const before = calls.length;
+    await bot.handleUpdate(callbackUpdate('f0_mode_questionnaire'));
+    const afterTexts = texts85(calls, before);
+    expect(
+      afterTexts.some((t) => t.includes('Вопросник') && (t.includes('обновлении') || t.includes('Документы'))),
+    ).toBe(true);
+  });
+
+  // Matrix Row 2: .pptx документ принят в пакет
+  it('автодетект .pptx: документ принят в пакет, режим synthesis', async () => {
+    const { bot, calls } = buildImportBot({
+      extractTextFromDocument: (async (_buf: Buffer, name?: string) => ({
+        sourceName: name ?? 'deck.pptx',
+        kind: 'pptx' as const,
+        text: 'Стратегия',
+      })) as unknown as BotDeps['extractTextFromDocument'],
+    });
+    await completeProfileMinimum(bot);
+    const before = calls.length;
+    await bot.handleUpdate(documentUpdate('deck.pptx'));
+    expect(texts85(calls, before).some((t) => t.includes('📎 Принят: deck.pptx'))).toBe(true);
+  });
+
+  // Matrix Row 5: одиночный .pptx → isPresentationOnly: true передаётся в runF0FullDraft
+  it('одиночный .pptx в пакете → runF0FullDraft вызван с isPresentationOnly: true', async () => {
+    const spy = vi.fn(async () => f0DraftResult());
+    const { bot } = buildImportBot({
+      runF0FullDraft: (spy as unknown) as BotDeps['runF0FullDraft'],
+      extractTextFromDocument: (async (_buf: Buffer, name?: string) => ({
+        sourceName: name ?? 'deck.pptx',
+        kind: 'pptx' as const,
+        text: 'Стратегия',
+      })) as unknown as BotDeps['extractTextFromDocument'],
+    });
+    await completeProfileMinimum(bot);
+    await bot.handleUpdate(documentUpdate('deck.pptx'));
+    await bot.handleUpdate(commandUpdate('/draft'));
+    await vi.waitFor(() => expect(spy).toHaveBeenCalled());
+    expect((spy.mock.calls[0]![0] as { isPresentationOnly?: boolean }).isPresentationOnly).toBe(true);
+  });
 });
 
 // ─── Story 9.1: профиль клиента — обязательный первый шаг онбординга ──────────
@@ -2197,8 +2251,8 @@ describe('bot — профиль клиента: обязательный пер
     const all = texts91(calls);
     expect(all.some((t) => t.includes('Как называется компания?'))).toBe(true);
     expect(all.some((t) => t.includes('🔑 (1/4)'))).toBe(true);
-    // Экран способов (существующий F0_START_TEXT) не показан до минимума.
-    expect(all.some((t) => t.includes('Два пути'))).toBe(false);
+    // Экран способов не показан до минимума.
+    expect(all.some((t) => t.includes('Как заводим стратегию?'))).toBe(false);
 
     // Документ стратегии до минимума — отклоняется, в пакет не попадает.
     const before = calls.length;
@@ -2261,12 +2315,15 @@ describe('bot — профиль клиента: обязательный пер
 
     const before = calls.length;
     await bot.handleUpdate(callbackUpdate('f0p_go'));
-    // Существующий flow сбора: F0_START_TEXT + кнопки выбора пути (без изменений).
+    // Story 9.4: экран «Как заводим стратегию?» с тремя кнопками.
     const start = calls.slice(before).find(
-      (c) => c.method === 'sendMessage' && (c.payload.text as string).includes('Два пути'),
+      (c) => c.method === 'sendMessage' && (c.payload.text as string).includes('Как заводим стратегию?'),
     );
     expect(start).toBeDefined();
-    expect(JSON.stringify(start!.payload.reply_markup)).toContain('f0_mode_import');
+    const startMarkup = JSON.stringify(start!.payload.reply_markup);
+    expect(startMarkup).toContain('f0_mode_import');
+    expect(startMarkup).toContain('f0_mode_questionnaire');
+    expect(startMarkup).toContain('f0_mode_synthesis');
   });
 
   it('топы A3.2: не разложился на поля → один переспрос, повтор сохраняется как есть', async () => {
