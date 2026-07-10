@@ -65,6 +65,7 @@ const KR_COLUMN_SYNONYMS: ReadonlyArray<readonly [KrColumn, readonly string[]]> 
       'стратегическое направление',
       'направление развития',
       'приоритет',
+      'тип',
     ],
   ],
   [
@@ -74,6 +75,7 @@ const KR_COLUMN_SYNONYMS: ReadonlyArray<readonly [KrColumn, readonly string[]]> 
       'ключевой результат',
       'key result',
       'key_result',
+      'objective / key result',
       'результат',
       'формулировка',
       'формулировка kr',
@@ -170,7 +172,12 @@ function matchKrColumn(header: string): KrColumn | null {
   if (header.length === 0) return null;
   for (const [column, synonyms] of KR_COLUMN_SYNONYMS) {
     for (const syn of synonyms) {
-      if (header === syn || header.startsWith(`${syn} `) || header.startsWith(`${syn}(`)) {
+      if (header === syn) return column;
+    }
+  }
+  for (const [column, synonyms] of KR_COLUMN_SYNONYMS) {
+    for (const syn of synonyms) {
+      if (header.startsWith(`${syn} `) || header.startsWith(`${syn}(`)) {
         return column;
       }
     }

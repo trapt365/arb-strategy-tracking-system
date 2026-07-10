@@ -285,3 +285,13 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-10-3-bagfiks-grounding-flag-smesheniya-klientov.md`
   summary: Import-path (`buildF0DraftFromImport`) не проходит через mismatch-проверку и не покрыт assertive тестом на это.
   evidence: По дизайну (spec: «import path не проверяется — нет LLM-извлечённого company»), но намерение нигде не задокументировано тестом. Если `F0ImportResult.extraction.company` когда-либо заполнится при импорте xlsx — баг станет незаметным. Решение: добавить тест «import path + mismatched company → нет mismatch-диалога» как assertive regression guard.
+
+## Deferred from: review of story-10.4 (2026-07-10)
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-10-4-bagfiks-xlsx-realnyy-fayl-arb-v1-1.md`
+  summary: Потенциальная prefix-коллизия синонима `'тип'` → objective при заголовке `'тип операции'`.
+  evidence: Синоним `'тип'` точный (exact-pass только), поэтому `'тип операции'` не захватывается сейчас. Но если в будущем в другой категории добавят prefix-синоним `'тип'` — коллизия возникнет. Риск pre-existing паттерн, не введён этой историей. Триггер: расширение KR_COLUMN_SYNONYMS новыми prefix-синонимами с `'тип'`. Решение: при добавлении новых синонимов проверять prefix-пересечения.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-10-4-bagfiks-xlsx-realnyy-fayl-arb-v1-1.md`
+  summary: Нет бинарной фикстуры реального ARB Solutions v1.1 файла в тестах — фикстура синтетическая.
+  evidence: Реальный файл в `/mnt/c/Users/Timur/Downloads/ARB Solutions Стратегический трекер v1.1 (1).xlsx` — не в репозитории. Prod-логи подтверждают `import_unmappable` до фикса. Синтетическая фикстура покрывает структуру и маппинг, но не binary edge-кейсы (merged cells, hidden rows, conditional formatting). Триггер: клиентский файл ARB-формата с нестандартным форматированием. Решение: добавить минимальный бинарный .xlsx в `src/fixtures/` при следующем ARB-баге.

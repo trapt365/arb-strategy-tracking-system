@@ -285,6 +285,81 @@ describe('f0-import: формат B (произвольная таблица)', 
   });
 });
 
+describe('Story 10.4: ARB v1.1 xlsx import', () => {
+  it('(a) ARB v1.1 full import — лист Vision&Strategy с шапкой в строке 11', () => {
+    const wb = XLSX.utils.book_new();
+    const rows: unknown[][] = [
+      // Строки 0–9: произвольная шапка
+      ['ARB Solutions'],
+      ['Стратегический трекер v1.1'],
+      [],
+      ['Финансовая цель 2026'],
+      [],
+      [],
+      [],
+      [],
+      [],
+      [],
+      // Строка 10: надзаголовок
+      ['🎯 СТРАТЕГИЧЕСКИЕ OKR', '', '', '', '', ''],
+      // Строка 11: заголовок KR-таблицы
+      ['Тип', 'Objective / Key Result', '', '', 'Срок', 'Ответственный'],
+      // Строка 12: данные
+      ['Enablers', 'Построить команду', '', '', '', 'Айдар'],
+      // Строка 13: KR-строка
+      ['', '└─ Нанять 3 специалистов', '', '', 'июнь 2026', 'Айдар'],
+    ];
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(rows), 'Vision&Strategy');
+    const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' }) as Buffer;
+
+    const result = importStrategyXlsx(buf, 'ARB Solutions Стратегический трекер v1.1 (1).xlsx');
+
+    expect(result.format).toBe('generic');
+    expect(result.extraction.objectives.length).toBeGreaterThanOrEqual(1);
+    const allKrs = result.extraction.objectives.flatMap((o) => o.krs);
+    expect(allKrs.length).toBeGreaterThanOrEqual(1);
+    expect(result.extraction.objectives[0]!.krs.some((k) => k.owner === 'Айдар')).toBe(true);
+  });
+
+  it('(b) regression: prefix-match не сломан (ответственный за KR → owner)', () => {
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(
+      wb,
+      XLSX.utils.aoa_to_sheet([
+        ['Ответственный за KR', 'Ключевой результат', 'Текущее значение', 'Целевое значение', 'Срок реализации'],
+        ['Айгерим', 'Выручка 20 млн', '10 млн', '20 млн', 'Q4 2026'],
+        ['Бекзат', 'NPS 50', '35', '50', 'Q4 2026'],
+      ]),
+      'Стратегия',
+    );
+    const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' }) as Buffer;
+
+    const result = importStrategyXlsx(buf, 'prefix-regression.xlsx');
+
+    expect(result.format).toBe('generic');
+    expect(result.extraction.objectives.length).toBeGreaterThanOrEqual(1);
+    expect(result.extraction.objectives[0]!.krs[0]!.owner).toBe('Айгерим');
+  });
+
+  it('(c) regression: existing exact-match не сломан (база → base)', () => {
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(
+      wb,
+      XLSX.utils.aoa_to_sheet([
+        ['Направление', 'KR', 'База', 'Цель', 'Срок', 'Ответственный'],
+        ['Продажи', 'Выручка 20 млн', '10 млн', '20 млн', 'Q4 2026', 'Айгерим'],
+        ['Продажи', 'Конверсия 15%', '9%', '15%', 'Q4 2026', 'Айгерим'],
+      ]),
+      'Стратегия',
+    );
+    const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' }) as Buffer;
+
+    const result = importStrategyXlsx(buf, 'exact-regression.xlsx');
+
+    expect(result.extraction.objectives[0]!.krs[0]!.base).toBe('10 млн');
+  });
+});
+
 describe('f0-import: xlsxToText (для досинтеза гипотез)', () => {
   it('текстифицирует листы с маркерами и данными', () => {
     const text = xlsxToText(toBuffer(genericWorkbook()), 'клиент.xlsx');
