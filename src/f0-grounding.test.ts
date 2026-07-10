@@ -6,6 +6,7 @@ import {
   groundedStakeholderRows,
   profileTopsContext,
   profileTopNames,
+  detectCompanyMismatch,
 } from './f0-grounding.js';
 
 const tops: ClientTop[] = [
@@ -174,5 +175,38 @@ describe('profileTopNames', () => {
 
   it('пустой массив → []', () => {
     expect(profileTopNames([])).toEqual([]);
+  });
+});
+
+// === detectCompanyMismatch (Story 10.3) ===
+
+describe('detectCompanyMismatch', () => {
+  it('(a) extractedCompany === null → null (пропускаем проверку)', () => {
+    expect(detectCompanyMismatch(null, 'geonline')).toBeNull();
+  });
+
+  it('(b) profileCompanyName === undefined → null (пропускаем проверку)', () => {
+    expect(detectCompanyMismatch('GeoXpert', undefined)).toBeNull();
+  });
+
+  it('(c) точное совпадение → null', () => {
+    expect(detectCompanyMismatch('Geonline', 'Geonline')).toBeNull();
+  });
+
+  it('(d) совпадение case-insensitive → null', () => {
+    expect(detectCompanyMismatch('geonline', 'Geonline')).toBeNull();
+  });
+
+  it('(e) расхождение → CompanyMismatch с оригинальными значениями', () => {
+    const result = detectCompanyMismatch('GeoXpert', 'geonline');
+    expect(result).toEqual({ extracted: 'GeoXpert', profile: 'geonline' });
+  });
+
+  it('(f) пустая строка extractedCompany → null', () => {
+    expect(detectCompanyMismatch('', 'geonline')).toBeNull();
+  });
+
+  it('(g) пустая строка profileCompanyName → null', () => {
+    expect(detectCompanyMismatch('GeoXpert', '')).toBeNull();
   });
 });

@@ -3194,3 +3194,175 @@ describe('bot — Story 10.1: audio/video meeting intake', () => {
     expect(alertOpsSpy).toHaveBeenCalled();
   });
 });
+
+// ─── Story 10.3: grounding mismatch флаг ─────────────────────────────────────
+
+describe('bot — Story 10.3: grounding mismatch флаг', () => {
+  beforeEach(cleanOnboardingArtifacts);
+  afterEach(cleanOnboardingArtifacts);
+
+  function buildMismatchBot(opts: BuildOpts & { extractedCompany?: string } = {}) {
+    const extractedCompany = opts.extractedCompany ?? 'GeoXpert';
+    return buildBot({
+      extractTextFromDocument: ((async (_buf: Buffer, name?: string) => ({
+        sourceName: name ?? 'doc.md',
+        kind: 'text',
+        text: 'x'.repeat(5_000),
+      })) as unknown) as BotDeps['extractTextFromDocument'],
+      runF0FullDraft: ((async () =>
+        f0DraftResult(f0Extraction({ company: extractedCompany }))
+      ) as unknown) as BotDeps['runF0FullDraft'],
+      ...opts,
+    });
+  }
+
+  const textsMismatch = (calls: ApiCall[], from = 0): string[] =>
+    calls
+      .slice(from)
+      .filter((c) => c.method === 'sendMessage')
+      .map((c) => c.payload.text as string);
+
+  // (a) mismatch detected: reply содержит названия компаний + inline keyboard
+  it('(a) mismatch: reply содержит «GeoXpert» и «geonline»; inline_keyboard с cmi_proceed и cmi_cancel', async () => {
+    const { bot, calls } = buildMismatchBot({ extractedCompany: 'GeoXpert' });
+    // Profile с companyName = 'geonline'
+    await bot.handleUpdate(commandUpdate('/newclient'));
+    await bot.handleUpdate(plainTextUpdate('geonline'));
+    await bot.handleUpdate(plainTextUpdate('Онлайн-образование'));
+    await bot.handleUpdate(callbackUpdate('f0p_go'));
+
+    const before = calls.length;
+    await bot.handleUpdate(documentUpdate('strategy.md'));
+    await bot.handleUpdate(commandUpdate('/draft'));
+    const sentTexts = textsMismatch(calls, before);
+
+    // Reply с mismatch должен содержать оба названия
+    expect(sentTexts.some((t) => t.includes('GeoXpert') && t.includes('geonline'))).toBe(true);
+
+    // inline_keyboard должен присутствовать с cmi_proceed и cmi_cancel
+    const mismatchMsg = calls.slice(before).find(
+      (c) => c.method === 'sendMessage' && (c.payload.text as string).includes('GeoXpert'),
+    );
+    expect(mismatchMsg).toBeDefined();
+    const keyboard = mismatchMsg!.payload.reply_markup as { inline_keyboard: Array<Array<{ callback_data: string }>> };
+    const buttons = keyboard.inline_keyboard.flat().map((b) => b.callback_data);
+    expect(buttons).toContain('cmi_proceed');
+    expect(buttons).toContain('cmi_cancel');
+  });
+
+  // (b) совпадение компаний → нет mismatch-reply; session.phase === 'filling' после /draft + /confirm
+  it('(b) совпадение компаний (case-insensitive) → нет mismatch-reply; draft доставлен', async () => {
+    const { bot, calls } = buildMismatchBot({ extractedCompany: 'Ромашка' });
+    await completeProfileMinimum(bot); // companyName = 'Ромашка'
+
+    const before = calls.length;
+    await bot.handleUpdate(documentUpdate('strategy.md'));
+    await bot.handleUpdate(commandUpdate('/draft'));
+    const sentTexts = textsMismatch(calls, before);
+
+    // Не должно быть mismatch-reply (нет «Чьи данные берём?»)
+    expect(sentTexts.some((t) => t.includes('Чьи данные берём'))).toBe(false);
+    // Черновик должен быть доставлен — progress-сообщение редактируется в саммари
+    const edits = calls.slice(before).filter((c) => c.method === 'editMessageText');
+    expect(edits.some((e) => (e.payload.text as string).includes('Черновик'))).toBe(true);
+  });
+
+  // (c) cmi_proceed после mismatch → session.phase === 'filling'
+  it('(c) cmi_proceed после mismatch → draft доставлен (черновик в editMessageText)', async () => {
+    const { bot, calls } = buildMismatchBot({ extractedCompany: 'GeoXpert' });
+    await bot.handleUpdate(commandUpdate('/newclient'));
+    await bot.handleUpdate(plainTextUpdate('geonline'));
+    await bot.handleUpdate(plainTextUpdate('Онлайн-образование'));
+    await bot.handleUpdate(callbackUpdate('f0p_go'));
+    await bot.handleUpdate(documentUpdate('strategy.md'));
+    await bot.handleUpdate(commandUpdate('/draft'));
+
+    // Убеждаемся, что mismatch показан
+    const mismatchShown = calls.some(
+      (c) => c.method === 'sendMessage' && (c.payload.text as string).includes('GeoXpert'),
+    );
+    expect(mismatchShown).toBe(true);
+
+    const before = calls.length;
+    await bot.handleUpdate(callbackUpdate('cmi_proceed'));
+
+    // После cmi_proceed должен отправиться черновик (sendMessage с «Черновик» или editMessageText)
+    const afterTexts = calls
+      .slice(before)
+      .filter((c) => c.method === 'sendMessage' || c.method === 'editMessageText')
+      .map((c) => c.payload.text as string);
+    expect(afterTexts.some((t) => t.includes('Черновик') || t.includes('черновик') || t.includes('Извлечено'))).toBe(true);
+  });
+
+  // (d) cmi_cancel после mismatch → reply содержит «Отменено»; pendingMismatchDraft очищен
+  it('(d) cmi_cancel после mismatch → reply содержит «Отменено»', async () => {
+    const { bot, calls } = buildMismatchBot({ extractedCompany: 'GeoXpert' });
+    await bot.handleUpdate(commandUpdate('/newclient'));
+    await bot.handleUpdate(plainTextUpdate('geonline'));
+    await bot.handleUpdate(plainTextUpdate('Онлайн-образование'));
+    await bot.handleUpdate(callbackUpdate('f0p_go'));
+    await bot.handleUpdate(documentUpdate('strategy.md'));
+    await bot.handleUpdate(commandUpdate('/draft'));
+
+    const before = calls.length;
+    await bot.handleUpdate(callbackUpdate('cmi_cancel'));
+    const afterTexts = textsMismatch(calls, before);
+    expect(afterTexts.some((t) => t.includes('Отменено'))).toBe(true);
+  });
+
+  // (f) stale-кнопка: cmi_proceed / cmi_cancel без pendingMismatchDraft → ℹ️
+  it('(f) stale cmi_proceed (нет pending) → ℹ️ «Эта кнопка от прошлого онбординга»', async () => {
+    const { bot, calls } = buildMismatchBot();
+    await completeProfileMinimum(bot);
+    // Нет /draft → нет pendingMismatchDraft
+    const before = calls.length;
+    await bot.handleUpdate(callbackUpdate('cmi_proceed'));
+    const afterTexts = calls
+      .slice(before)
+      .filter((c) => c.method === 'sendMessage')
+      .map((c) => c.payload.text as string);
+    expect(afterTexts.some((t) => t.includes('прошлого онбординга'))).toBe(true);
+  });
+
+  it('(g) stale cmi_cancel (нет pending) → ℹ️ «Эта кнопка от прошлого онбординга»', async () => {
+    const { bot, calls } = buildMismatchBot();
+    await completeProfileMinimum(bot);
+    const before = calls.length;
+    await bot.handleUpdate(callbackUpdate('cmi_cancel'));
+    const afterTexts = calls
+      .slice(before)
+      .filter((c) => c.method === 'sendMessage')
+      .map((c) => c.payload.text as string);
+    expect(afterTexts.some((t) => t.includes('прошлого онбординга'))).toBe(true);
+  });
+
+  // (e) extraction.company === null → нет mismatch-reply; draft доставлен
+  it('(e) extraction.company === null → нет mismatch-reply; черновик доставлен', async () => {
+    // Используем buildBot напрямую с company=null
+    const { bot: bot2, calls: calls2 } = buildBot({
+      extractTextFromDocument: ((async () => ({
+        sourceName: 'doc.md',
+        kind: 'text',
+        text: 'x'.repeat(5_000),
+      })) as unknown) as BotDeps['extractTextFromDocument'],
+      runF0FullDraft: ((async () =>
+        f0DraftResult(f0Extraction({ company: null as unknown as string }))
+      ) as unknown) as BotDeps['runF0FullDraft'],
+    });
+
+    await completeProfileMinimum(bot2);
+    const before = calls2.length;
+    await bot2.handleUpdate(documentUpdate('strategy.md'));
+    await bot2.handleUpdate(commandUpdate('/draft'));
+
+    // Не должно быть mismatch-reply
+    const sentTexts = calls2
+      .slice(before)
+      .filter((c) => c.method === 'sendMessage')
+      .map((c) => c.payload.text as string);
+    expect(sentTexts.some((t) => t.includes('Чьи данные берём'))).toBe(false);
+    // Черновик должен быть доставлен
+    const edits = calls2.slice(before).filter((c) => c.method === 'editMessageText');
+    expect(edits.some((e) => (e.payload.text as string).includes('Черновик'))).toBe(true);
+  });
+});

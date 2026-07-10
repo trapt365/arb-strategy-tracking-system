@@ -271,3 +271,17 @@
 - **[defer] Нет расширения файла в tmpPath** — `meeting-${randomUUID()}` без расширения. Soniox определяет кодек по расширению при части реализаций; текущий Soniox-клиент принимает файл без расширения (проверено в Story 1.x). Если в будущем обновить soniox-клиент или добавить другой провайдер — нужно передавать `ctx.message.audio.mime_type` → расширение. Триггер: смена/обновление транскрипшн-провайдера.
 - **[defer] meetingDate = время получения, не дата встречи** — `now().toISOString()` в `handleMeetingFileIntake` фиксирует момент загрузки файла, а не реальную дату встречи. Для MVP приемлемо (встречи обрабатываются сразу). Триггер: пользователи загружают записи встреч с задержкой > 1 дня. Решение: UI-диалог «Когда прошла встреча?» или парсинг имени файла.
 - **[defer] `ReportJobSchema` без `.refine()` на url/filePath** — схема позволяет job без url и без filePath; runtime catch выдаст понятное сообщение, но статическая проверка отсутствует. Триггер: третий job-source без явного guard. Решение: `.refine(d => d.url || d.filePath, { message: 'job must have url or filePath' })` — не сделано в MVP, т.к. меняет форму схемы и требует обновления всех create-точек.
+
+## Deferred from: review of story-10.3 (2026-07-10)
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-10-3-bagfiks-grounding-flag-smesheniya-klientov.md`
+  summary: Второй `/draft` пока `companyMismatchPending` активен перезаписывает `pendingMismatchDraft` без предупреждения.
+  evidence: `buildF0Draft` не проверяет `session.companyMismatchPending` в начале; при повторном вызове новый `result` молча заменяет первый pending. Узкое окно (нужно дважды нажать /draft за секунды), но потеря черновика безмолвна. Решение: guard в начале `buildF0Draft` — если `session.companyMismatchPending` → ℹ️ «Уже ждёт подтверждения (cmi_proceed/cmi_cancel)».
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-10-3-bagfiks-grounding-flag-smesheniya-klientov.md`
+  summary: Нет structured-логирования при обнаружении mismatch и при cmi_proceed/cmi_cancel.
+  evidence: Все значимые события F0 пишут `f0Log.info` — mismatch detection, confirm, cancel не пишут ничего. Невозможен post-mortem анализ случаев смешения клиентов в продакшне. Решение: `f0Log.warn({ step: 'company_mismatch', extracted, profile, chatId }, ...)` + `f0Log.info({ step: 'cmi_proceed/cancel', chatId }, ...)`.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-10-3-bagfiks-grounding-flag-smesheniya-klientov.md`
+  summary: Import-path (`buildF0DraftFromImport`) не проходит через mismatch-проверку и не покрыт assertive тестом на это.
+  evidence: По дизайну (spec: «import path не проверяется — нет LLM-извлечённого company»), но намерение нигде не задокументировано тестом. Если `F0ImportResult.extraction.company` когда-либо заполнится при импорте xlsx — баг станет незаметным. Решение: добавить тест «import path + mismatched company → нет mismatch-диалога» как assertive regression guard.

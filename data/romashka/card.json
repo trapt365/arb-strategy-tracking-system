@@ -1,0 +1,24 @@
+{
+  "clientId": "romashka",
+  "company": "Ромашка",
+  "industry": null,
+  "participants": [
+    {
+      "name": "Айгерим",
+      "role": "CEO",
+      "okrDirection": null,
+      "telegram": "@aigerim"
+    }
+  ],
+  "ceo": "Айгерим",
+  "trackerChatId": 7890,
+  "schedule": null,
+  "spreadsheetId": "s1",
+  "sheetsUrl": "https://docs.google.com/spreadsheets/d/s1/edit",
+  "startDate": "2026-05-19T10:00:00.000Z",
+  "createdAt": "2026-05-19T10:00:00.000Z",
+  "profile": {
+    "companyName": "Ромашка",
+    "businessSummary": "Продаём ромашки бизнесу"
+  }
+}

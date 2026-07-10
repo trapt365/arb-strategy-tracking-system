@@ -181,7 +181,7 @@ development_status:
   epic-10: in_progress  # 2026-07-10: 10-1+10-2 done; движок рестартован на 10-3+10-4 после спасения из auto-rollback
   10-1-priyom-audio-vstrechi-sushchestvuyushchego-klienta: done  # 2026-07-10: реализовано (commit 5e18b65), спасено из auto-rollback движка (таймаут 3ч на ручной сессии); gate PASS (tsc + 683 vitest); untracked bot-audio-intake-10-1.test.ts удалён — мисмоделировал async-очередь (проверял sendMessage вместо editMessageText)  # D20/D21/D22: аудио встречи активного клиента → Soniox → F1 persist → питает недельный отчёт 9.7 (спина)
   10-2-proshchayushchiy-vkhod-tyazhelyy-profil-v-advanced: done  # 2026-07-10: реализовано (commit 42d7771 + 53c2dd0), спасено из auto-rollback; gate PASS  # реверс 9.1: 🔑-минимум = название+суть; топы/decision-maker/расширенный → /advanced (код сохранён); недостающее в таблице, не допрос
-  10-3-bagfiks-grounding-flag-smesheniya-klientov: backlog  # D2: имя профиля ≠ сущности документов → 🔴/вопрос, не молчаливая сборка OKR по чужому документу
+  10-3-bagfiks-grounding-flag-smesheniya-klientov: done  # D2: имя профиля ≠ сущности документов → 🔴/вопрос, не молчаливая сборка OKR по чужому документу
   10-4-bagfiks-xlsx-realnyy-fayl-arb-v1-1: backlog  # D1: словарь синонимов на «ARB Solutions Стратегический трекер v1.1 (1).xlsx» (import_unmappable), файл в тесты
   10-5-treker-gipotez-tretiy-tip-otchyota: backlog  # НОВОЕ: гипотезы по департаментам, обновления статусов + новые + сводка + выводы (шаблон geonline нед.12), «прошлая неделя + дельта»
   10-6-golden-eval-otchyotov: backlog  # 9.7 недельный + трекер гипотез на входах geonline нед.8/12 → сравнение с эталонами (критерий качества, тесты не судят читаемость)

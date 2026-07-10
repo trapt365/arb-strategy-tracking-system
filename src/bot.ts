@@ -55,7 +55,7 @@ import {
   type F0Gap,
 } from './f0-fill.js';
 import { createClientSpreadsheet as defaultCreateClientSpreadsheet } from './f0-sheets.js';
-import { profileTopsContext } from './f0-grounding.js';
+import { profileTopsContext, detectCompanyMismatch } from './f0-grounding.js';
 import {
   buildClientCard,
   persistClientCard,
@@ -348,6 +348,9 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
     qnRetryKrIdx?: number;
     // Story 9.5: голосовые ответы — pending transcript, ждём подтверждения трекером.
     voicePending?: { transcript: string };
+    // Story 10.3: in-memory флаг смешения клиентов. Не персистируется.
+    pendingMismatchDraft?: F0FullDraftResult;
+    companyMismatchPending?: boolean;
   }
   const f0Sessions = new Map<number, F0Session>();
 
@@ -2814,6 +2817,22 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
           session.documents[0]?.sourceName.toLowerCase().endsWith('.pptx') === true,
       });
 
+      // Story 10.3: перед deliverF0Draft — проверка смешения клиентов (synthesis path only).
+      const mismatch = detectCompanyMismatch(result.extraction.company, session.profile?.companyName);
+      if (mismatch !== null) {
+        await finishProgress('🧠 Черновик собран.');
+        session.pendingMismatchDraft = result;
+        session.companyMismatchPending = true;
+        await ctx.reply(
+          `🔴 Документы про «${mismatch.extracted}», клиент — «${mismatch.profile}». Чьи данные берём?`,
+          { reply_markup: { inline_keyboard: [[
+              { text: '✅ Это правильные документы', callback_data: 'cmi_proceed' },
+              { text: '🔄 Загружу другие', callback_data: 'cmi_cancel' },
+          ]] } }
+        ).catch(() => {});
+        return;
+      }
+
       // Общий хвост (персист, саммари, filling) вынесен в deliverF0Draft — Story 8.5
       // использует его и для импорта. finished/clearInterval гасит sendFirst-обёртка.
       await deliverF0Draft({ ctx, chatId, session, result, sourceNames, sendFirst: finishProgress });
@@ -2853,6 +2872,50 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
   bot.callbackQuery('f0_build', async (ctx) => {
     await ctx.answerCallbackQuery().catch(() => {});
     await buildF0Draft(ctx);
+  });
+
+  // Story 10.3: трекер подтверждает, что документы правильные — доставляем сохранённый черновик.
+  bot.callbackQuery('cmi_proceed', async (ctx) => {
+    await ctx.answerCallbackQuery().catch(() => {});
+    const chatId = ctx.chat?.id;
+    if (chatId === undefined) return;
+    const session = await getOrRestoreF0Session(chatId);
+    if (session === undefined || !session.companyMismatchPending || session.pendingMismatchDraft === undefined) {
+      await ctx.reply('ℹ️ Эта кнопка от прошлого онбординга. Актуальное состояние: /status.').catch(() => {});
+      return;
+    }
+    const result = session.pendingMismatchDraft;
+    const sourceNames = session.documents.map((d) => d.sourceName);
+    session.companyMismatchPending = false;
+    session.pendingMismatchDraft = undefined;
+    try {
+      await deliverF0Draft({
+        ctx,
+        chatId,
+        session,
+        result,
+        sourceNames,
+        sendFirst: async (text) => { await ctx.reply(text).catch(() => {}); return true; },
+      });
+    } catch (err) {
+      f0Log.error({ err, step: 'cmi_proceed.deliver_failed', chatId }, 'cmi_proceed draft delivery failed');
+      await ctx.reply('⚠️ Не удалось доставить черновик. Попробуй /draft заново.').catch(() => {});
+    }
+  });
+
+  // Story 10.3: трекер хочет загрузить другие документы — отменяем ожидание.
+  bot.callbackQuery('cmi_cancel', async (ctx) => {
+    await ctx.answerCallbackQuery().catch(() => {});
+    const chatId = ctx.chat?.id;
+    if (chatId === undefined) return;
+    const session = await getOrRestoreF0Session(chatId);
+    if (session === undefined || !session.companyMismatchPending) {
+      await ctx.reply('ℹ️ Эта кнопка от прошлого онбординга.').catch(() => {});
+      return;
+    }
+    session.companyMismatchPending = false;
+    session.pendingMismatchDraft = undefined;
+    await ctx.reply('↩️ Отменено. Пакет документов цел — загрузи нужные файлы и собери снова: /draft.').catch(() => {});
   });
 
   // Story 8.5 (ответ Тимура на в.4 записки): досинтез гипотез LLM-ом из того же xlsx.

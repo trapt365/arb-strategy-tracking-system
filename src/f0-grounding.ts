@@ -121,3 +121,33 @@ export function profileTopsContext(tops: ClientTop[]): string {
 export function profileTopNames(tops: ClientTop[]): string[] {
   return tops.map((t) => t.name);
 }
+
+// Story 10.3: флаг смешения клиентов — сравнение названия компании из LLM-извлечения
+// с профилем трекера. Чистая функция без I/O.
+
+export interface CompanyMismatch {
+  extracted: string;
+  profile: string;
+}
+
+/**
+ * Сравнивает извлечённое название компании с профильным.
+ * Возвращает null, если:
+ *   - extractedCompany === null
+ *   - profileCompanyName отсутствует / пустая строка
+ *   - нормализованные значения (trim + toLowerCase) совпадают
+ * Иначе возвращает { extracted, profile } с оригинальными значениями (для UX-текста).
+ */
+export function detectCompanyMismatch(
+  extractedCompany: string | null,
+  profileCompanyName: string | undefined,
+): CompanyMismatch | null {
+  if (extractedCompany === null) return null;
+  const extractedTrimmed = extractedCompany.trim();
+  if (extractedTrimmed.length === 0) return null;
+  if (profileCompanyName === undefined || profileCompanyName === null) return null;
+  const profileTrimmed = profileCompanyName.trim();
+  if (profileTrimmed.length === 0) return null;
+  if (extractedTrimmed.toLowerCase() === profileTrimmed.toLowerCase()) return null;
+  return { extracted: extractedCompany, profile: profileCompanyName };
+}
