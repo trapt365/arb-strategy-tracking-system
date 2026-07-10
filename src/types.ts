@@ -139,6 +139,30 @@ export const HypothesisItemSchema = z.object({
 });
 export type HypothesisItem = z.infer<typeof HypothesisItemSchema>;
 
+// ─────────────────────────────────────────────────────────────────────────────
+// F5 Hypo Tracker (Story 10.5)
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const HypoSnapshotItemSchema = z.object({
+  statement: z.string().min(1),
+  department: z.string().nullable(),
+  okrLink: z.string().nullable(),
+  status: z.string(),
+});
+export type HypoSnapshotItem = z.infer<typeof HypoSnapshotItemSchema>;
+
+export const HypoSnapshotSchema = z.object({
+  weekNumber: z.number().int().positive(),
+  year: z.number().int().positive(),
+  hypotheses: z.array(HypoSnapshotItemSchema),
+});
+export type HypoSnapshot = z.infer<typeof HypoSnapshotSchema>;
+
+export const HypoTrackerConclusionsSchema = z.object({
+  conclusions: z.array(z.string()).min(1).max(7),
+});
+export type HypoTrackerConclusions = z.infer<typeof HypoTrackerConclusionsSchema>;
+
 export const CommitmentStatusUpdateSchema = z.object({
   who: z.string(),
   what: z.string(),

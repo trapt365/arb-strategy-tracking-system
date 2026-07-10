@@ -295,3 +295,23 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-10-4-bagfiks-xlsx-realnyy-fayl-arb-v1-1.md`
   summary: Нет бинарной фикстуры реального ARB Solutions v1.1 файла в тестах — фикстура синтетическая.
   evidence: Реальный файл в `/mnt/c/Users/Timur/Downloads/ARB Solutions Стратегический трекер v1.1 (1).xlsx` — не в репозитории. Prod-логи подтверждают `import_unmappable` до фикса. Синтетическая фикстура покрывает структуру и маппинг, но не binary edge-кейсы (merged cells, hidden rows, conditional formatting). Триггер: клиентский файл ARB-формата с нестандартным форматированием. Решение: добавить минимальный бинарный .xlsx в `src/fixtures/` при следующем ARB-баге.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-10-5-treker-gipotez-tretiy-tip-otchyota.md`
+  summary: Удалённые гипотезы (присутствующие в снимке, но отсутствующие в текущем листе) не отображаются в дельта-отчёте.
+  evidence: `computeDelta` итерирует только `current` и смотрит в `snapshotMap`; обратный проход (snapshot → current) не выполняется. Пользователь, удаливший гипотезу из листа, не увидит этого в отчёте. Spec не требует `removed` секцию, но это реальный информационный gap для трекера.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-10-5-treker-gipotez-tretiy-tip-otchyota.md`
+  summary: Снимок перезаписывается каждый запуск; повторный запуск в ту же неделю после изменений сбрасывает дельту следующей недели.
+  evidence: Если трекер нажимает кнопку дважды в одну неделю после изменения статуса, второй снимок совпадает с текущим листом → на следующей неделе дельта будет пустой. Single-file overwrite без weekNumber-guard. Требует редизайна (weekNumber guard или история снимков) для устранения.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-10-5-treker-gipotez-tretiy-tip-otchyota.md`
+  summary: `alertOps` не вызывается в `runHypoTracker` при HALT-ошибках чтения листа.
+  evidence: При `SheetsAdapterError` с кодом `auth`/`sheet_not_found`/`header_missing` pipeline выбрасывает plain `Error`; `alertOps` уже был вызван внутри адаптера, но pipeline-уровень не добавляет собственный alert. Контраст с F1-pipeline, который вызывает `alertOps` на всех fatal path.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-10-5-treker-gipotez-tretiy-tip-otchyota.md`
+  summary: Bot handler не пробрасывает `deps.now` в `runHypoTracker`, что усложняет детерминированное тестирование через `BotDeps`.
+  evidence: `now` инжектируется через `BotDeps` и используется в weekly-handler напрямую; hypo_tracker handler вызывает `runHypoTracker({ clientId, clientName })` без `now`. Pipeline вызывает `new Date()` внутри. BotDeps-тесты не могут контролировать week/year внутри pipeline.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-10-5-treker-gipotez-tretiy-tip-otchyota.md`
+  summary: `splitForTelegram` прикрепляет inline keyboard ко всем чанкам многочастного сообщения, а не только к последнему.
+  evidence: `for (const msg of splitForTelegram(text)) { await ctx.reply(msg, { reply_markup: kb }) }` — kb дублируется на каждом сообщении. Pre-existing паттерн из `weekly:` handler. Косметический дефект при длинных отчётах.

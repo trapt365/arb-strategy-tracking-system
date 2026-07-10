@@ -183,7 +183,7 @@ development_status:
   10-2-proshchayushchiy-vkhod-tyazhelyy-profil-v-advanced: done  # 2026-07-10: реализовано (commit 42d7771 + 53c2dd0), спасено из auto-rollback; gate PASS  # реверс 9.1: 🔑-минимум = название+суть; топы/decision-maker/расширенный → /advanced (код сохранён); недостающее в таблице, не допрос
   10-3-bagfiks-grounding-flag-smesheniya-klientov: done  # D2: имя профиля ≠ сущности документов → 🔴/вопрос, не молчаливая сборка OKR по чужому документу
   10-4-bagfiks-xlsx-realnyy-fayl-arb-v1-1: done  # D1: словарь синонимов на «ARB Solutions Стратегический трекер v1.1 (1).xlsx» (import_unmappable), файл в тесты
-  10-5-treker-gipotez-tretiy-tip-otchyota: backlog  # НОВОЕ: гипотезы по департаментам, обновления статусов + новые + сводка + выводы (шаблон geonline нед.12), «прошлая неделя + дельта»
+  10-5-treker-gipotez-tretiy-tip-otchyota: done  # НОВОЕ: гипотезы по департаментам, обновления статусов + новые + сводка + выводы (шаблон geonline нед.12), «прошлая неделя + дельта»
   10-6-golden-eval-otchyotov: backlog  # 9.7 недельный + трекер гипотез на входах geonline нед.8/12 → сравнение с эталонами (критерий качества, тесты не судят читаемость)
   10-7-kosmetika-marker-klienta-privetstvie-dliny: backlog  # D8/D9/D14/D15-D19/D23/D24: маркер активного клиента, приветствие/название, длины листов Sheets, /start-дубли, залипший стейт, футер, маркеры, «Скоро» в help
   epic-10-retrospective: optional

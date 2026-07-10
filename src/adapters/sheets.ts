@@ -532,6 +532,65 @@ export async function appendOpsLog(
   }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Story 10.5: read _hypotheses sheet for F5 Hypo Tracker pipeline.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const HYPOTHESES_REQUIRED_HEADERS = ['statement', 'status'] as const;
+const HYPOTHESES_RANGE = '_hypotheses!A1:Z';
+
+export async function readHypothesesSheet(
+  clientId: string,
+  logger?: SheetsClientLogger,
+): Promise<Record<string, string>[]> {
+  const baseLogger = (logger ?? rootLogger) as SheetsClientLogger;
+  const log = baseLogger.child({
+    pipeline: 'F5',
+    step: 'sheets.readHypotheses',
+    clientId,
+  });
+
+  const sheetId = await resolveSheetId(clientId);
+  const startMs = Date.now();
+  let status: 'ok' | 'error' = 'error';
+
+  try {
+    const sheets = await getSheetsClient();
+    const response = await withRetry(
+      () =>
+        sheets.spreadsheets.values.batchGet({
+          spreadsheetId: sheetId,
+          ranges: [HYPOTHESES_RANGE],
+        }),
+      {
+        maxRetries: 3,
+        backoffMs: [1000, 3000, 9000],
+        shouldRetry: shouldRetrySheets,
+        logger: log,
+      },
+    );
+
+    const values = (response.data.valueRanges?.[0]?.values ?? []) as string[][];
+    const rows = parseSheetRange(values, '_hypotheses', HYPOTHESES_REQUIRED_HEADERS);
+    status = 'ok';
+    return rows;
+  } catch (err) {
+    const adapterError =
+      err instanceof SheetsAdapterError ? err : mapGoogleApiError(err, sheetId);
+    alertOps({
+      pipeline: 'F5',
+      step: 'sheets.readHypotheses',
+      clientId,
+      error: adapterError,
+      context: { sheetId, range: HYPOTHESES_RANGE, code: adapterError.code },
+    });
+    throw adapterError;
+  } finally {
+    const durationMs = Date.now() - startMs;
+    log.info({ step: 'sheets.readHypotheses', durationMs, sheetId, status }, 'readHypothesesSheet complete');
+  }
+}
+
 function parseStakeholders(values: string[][]): unknown[] {
   if (values.length === 0) {
     throw new SheetsAdapterError('sheet_not_found', { sheet: '_stakeholder_map' });

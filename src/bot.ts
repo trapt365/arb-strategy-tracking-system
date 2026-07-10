@@ -117,6 +117,7 @@ import {
   loadWeekReports,
   formatWeeklyReport,
 } from './utils/weekly-report.js';
+import { runHypoTracker } from './f5-hypo-tracker.js';
 import { withRetry } from './utils/retry.js';
 import {
   escapeMarkdownV2,
@@ -2162,6 +2163,7 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
       kb.row().text('➕ Дозаполнить профиль', `profile_fill:${clientId}`);
     }
     kb.row().text('📅 Недельный отчёт', `weekly:${clientId}`);
+    kb.row().text('🧪 Трекер гипотез', `hypo_tracker:${clientId}`);
     await ctx
       .reply(
         `✅ Клиент: ${name}.\n📊 /report <ссылка> — отчёт по встрече\n📋 /status — готовность к неделе`,
@@ -2198,6 +2200,29 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
       { step: 'bot.weekly.sent', clientId, count: reports?.length ?? 0 },
       'weekly report sent',
     );
+  });
+
+  // Story 10.5: трекер гипотез — третий тип отчёта.
+  bot.callbackQuery(/^hypo_tracker:(.+)$/, async (ctx) => {
+    await ctx.answerCallbackQuery().catch(() => {});
+    const clientId = ctx.match[1]!;
+    const name = (await getClientName(clientId)) ?? clientId;
+    const sheetId = await getClientSheetId(clientId).catch(() => undefined);
+    let text: string;
+    try {
+      text = await runHypoTracker({ clientId, clientName: name });
+    } catch (err) {
+      log.warn({ step: 'bot.hypo_tracker.error', clientId, err }, 'hypo_tracker failed');
+      text = 'Не удалось загрузить трекер гипотез.';
+    }
+    const kb = new InlineKeyboard();
+    if (sheetId !== undefined) {
+      kb.url('📁 Таблица', `https://docs.google.com/spreadsheets/d/${sheetId}`);
+    }
+    for (const msg of splitForTelegram(text)) {
+      await ctx.reply(msg, { reply_markup: kb }).catch(() => {});
+    }
+    log.info({ step: 'bot.hypo_tracker.sent', clientId, clientName: name }, 'hypo_tracker report sent');
   });
 
   // W10: статус любого клиента из карточки — не только активной сессии.
