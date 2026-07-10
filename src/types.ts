@@ -428,6 +428,20 @@ export const F0PersistedSessionSchema = z.object({
   // Story 8.5: текстифицированный xlsx для кнопки «🧠 Досинтезировать гипотезы» —
   // переживает рестарт, чтобы кнопка работала и после перезапуска бота.
   importSourceText: z.string().optional(),
+  // Ревью эпика 9: пакет документов и принятый xlsx-импорт переживают рестарт.
+  // Сессия фазы collecting с профилем персистится (9.1), но без этих полей restore
+  // отвечал «↩️ Восстановил…» с пустым пакетом — файлы приходилось слать заново.
+  documents: z.array(z.object({ sourceName: z.string(), text: z.string() })).optional(),
+  documentsChars: z.number().int().nonnegative().optional(),
+  importResult: z
+    .object({
+      extraction: F0FullExtractionSchema,
+      format: z.enum(['template', 'generic']),
+      sheetName: z.string(),
+      mappedColumns: z.array(z.string()),
+      sourceName: z.string(),
+    })
+    .optional(),
   // Story 9.1: профиль клиента (Часть A) + позиция диалога профиля. Всё optional —
   // сессии до 9.1 валидны без них; persist после каждого ответа переживает рестарт.
   profile: ClientProfileSchema.optional(),

@@ -139,12 +139,17 @@ export async function getActiveClient(
   return map[String(chatId)];
 }
 
-/** Атомарно запомнить активного клиента чата. Warn-only (не бросает). */
+/**
+ * Атомарно запомнить активного клиента чата. Warn-only (не бросает).
+ * Возвращает true, если запись легла на диск; false — если сбой (ревью эпика 9:
+ * caller обязан НЕ подтверждать выбор при false, иначе /report без аргумента
+ * молча уедет в geonline-fallback).
+ */
 export async function setActiveClient(
   chatId: number,
   clientId: string,
   deps: RegistryDeps = {},
-): Promise<void> {
+): Promise<boolean> {
   const dir = deps.rootDir ?? REGISTRY_DIR;
   const log = deps.logger ?? rootLogger;
   const map = await loadActiveClients(deps);
@@ -156,8 +161,10 @@ export async function setActiveClient(
     await fs.writeFile(tmp, JSON.stringify(map, null, 2), 'utf8');
     await fs.rename(tmp, path);
     log.info({ chatId, clientId }, 'active client saved');
+    return true;
   } catch (err) {
     log.warn({ err, chatId, clientId }, 'active client save failed — continuing');
+    return false;
   }
 }
 

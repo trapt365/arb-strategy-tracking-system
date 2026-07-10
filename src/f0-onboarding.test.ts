@@ -421,6 +421,39 @@ describe('persistF0Session / loadF0Session (AC3 round-trip)', () => {
     }
   });
 
+  // Ревью эпика 9: пакет документов и принятый xlsx-импорт переживают рестарт —
+  // без этих полей restore обнулял их, и «↩️ Восстановил…» показывал пустой пакет.
+  it('collecting-сессия: documents и importResult переживают round-trip', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'f0-sess-'));
+    try {
+      const s: F0PersistedSession = {
+        ...session(dir),
+        phase: 'collecting',
+        draftId: undefined,
+        extraction: undefined,
+        documents: [{ sourceName: 'strategy.docx', text: 'Цели компании...' }],
+        documentsChars: 16,
+        importResult: {
+          extraction: fullExtraction(),
+          format: 'template',
+          sheetName: 'KR',
+          mappedColumns: ['objective', 'key_result'],
+          sourceName: 'strategy.xlsx',
+        },
+      };
+      await persistF0Session(s, { rootDir: dir });
+      const loaded = await loadF0Session(555, { rootDir: dir });
+      expect(loaded).not.toBeNull();
+      expect(loaded!.documents).toHaveLength(1);
+      expect(loaded!.documents![0]!.sourceName).toBe('strategy.docx');
+      expect(loaded!.documentsChars).toBe(16);
+      expect(loaded!.importResult?.sourceName).toBe('strategy.xlsx');
+      expect(loaded!.importResult?.extraction.hypotheses).toHaveLength(2);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('returns null for a missing session file', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'f0-sess-'));
     try {

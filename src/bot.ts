@@ -364,6 +364,11 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
       ...(s.retryGapIndex !== undefined ? { retryGapIndex: s.retryGapIndex } : {}),
       ...(s.mode !== undefined ? { mode: s.mode } : {}),
       ...(s.importSourceText !== undefined ? { importSourceText: s.importSourceText } : {}),
+      // Ревью эпика 9: пакет и принятый импорт — в персист (иначе restore теряет файлы).
+      ...(s.documents.length > 0
+        ? { documents: s.documents, documentsChars: s.documentsChars }
+        : {}),
+      ...(s.importResult !== undefined ? { importResult: s.importResult } : {}),
       ...(s.profile !== undefined ? { profile: s.profile } : {}),
       ...(s.profileQIndex !== undefined ? { profileQIndex: s.profileQIndex } : {}),
       ...(s.profileRetryQIndex !== undefined ? { profileRetryQIndex: s.profileRetryQIndex } : {}),
@@ -395,8 +400,10 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
       id: persisted.sessionId,
       processing: false,
       phase: persisted.phase,
-      documents: [],
-      documentsChars: 0,
+      // Ревью эпика 9: пакет/импорт восстанавливаются из персиста, не обнуляются.
+      documents: persisted.documents ?? [],
+      documentsChars: persisted.documentsChars ?? 0,
+      importResult: persisted.importResult,
       // Story 9.1: у сессии фазы profile/collecting черновика ещё нет.
       draft:
         persisted.draftId !== undefined && persisted.extraction !== undefined
@@ -2079,7 +2086,15 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
     const chatId = ctx.chat?.id;
     if (chatId === undefined) return;
     const clientId = ctx.match[1]!;
-    setActiveClient(chatId, clientId).catch(() => {});
+    // Ревью эпика 9: дождаться записи и НЕ подтверждать при сбое — иначе следующий
+    // /report без аргумента молча уйдёт в geonline-fallback (чужая таблица).
+    const activeSaved = await setActiveClient(chatId, clientId);
+    if (!activeSaved) {
+      await ctx
+        .reply('⚠️ Не удалось сохранить выбор клиента — нажми кнопку ещё раз.')
+        .catch(() => {});
+      return;
+    }
     const name = (await getClientName(clientId)) ?? clientId;
     const sheetId = await getClientSheetId(clientId);
     const card = await loadClientCard(clientId);
@@ -2160,7 +2175,13 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
       await ctx.reply(`ℹ️ Клиент «${clientId}» не найден в реестре.`).catch(() => {});
       return;
     }
-    await setActiveClient(chatId, clientId);
+    const activeSaved = await setActiveClient(chatId, clientId);
+    if (!activeSaved) {
+      await ctx
+        .reply('⚠️ Не удалось сохранить выбор клиента — нажми кнопку ещё раз.')
+        .catch(() => {});
+      return;
+    }
     const name = (await getClientName(clientId)) ?? clientId;
     f0Log.info({ step: 'bot.active_client_set', chatId, clientId }, 'active client selected');
     await ctx

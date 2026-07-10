@@ -25,7 +25,7 @@ const {
 } = vi.hoisted(() => ({
   mockLoadRegistry: vi.fn<[], Promise<ClientRegistry>>(),
   mockGetActiveClient: vi.fn<[number], Promise<string | undefined>>(),
-  mockSetActiveClient: vi.fn<[number, string], Promise<void>>(),
+  mockSetActiveClient: vi.fn<[number, string], Promise<boolean>>(),
   mockGetClientName: vi.fn<[string], Promise<string | undefined>>(),
   mockGetClientSheetId: vi.fn<[string], Promise<string | undefined>>(),
   mockListClientIds: vi.fn<[], Promise<string[]>>(),
@@ -169,7 +169,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   mockLoadRegistry.mockResolvedValue({});
   mockGetActiveClient.mockResolvedValue(undefined);
-  mockSetActiveClient.mockResolvedValue(undefined);
+  mockSetActiveClient.mockResolvedValue(true);
   mockGetClientName.mockResolvedValue(undefined);
   mockGetClientSheetId.mockResolvedValue(undefined);
   mockListClientIds.mockResolvedValue(['geonline']);

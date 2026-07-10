@@ -6,6 +6,8 @@ import { randomUUID } from 'node:crypto';
 import {
   loadRegistry,
   upsertClient,
+  setActiveClient,
+  getActiveClient,
   getClientSheetId,
   getClientTopName,
   getClientName,
@@ -86,5 +88,18 @@ describe('client-registry', () => {
   it('JSON-массив (не объект) → пустой реестр', async () => {
     await fs.writeFile(join(dir, 'registry.json'), '[1,2,3]', 'utf8');
     expect(await loadRegistry(deps())).toEqual({});
+  });
+
+  // Ревью эпика 9: caller должен видеть, легла ли запись активного клиента —
+  // ложное «✅ Клиент: X» отправляло следующий /report в geonline-fallback.
+  it('setActiveClient — true при успехе, значение читается обратно', async () => {
+    expect(await setActiveClient(42, 'romashka', deps())).toBe(true);
+    expect(await getActiveClient(42, deps())).toBe('romashka');
+  });
+
+  it('setActiveClient — false при сбое записи (rootDir занят файлом)', async () => {
+    const blocked = join(dir, 'as-file');
+    await fs.writeFile(blocked, 'not a dir', 'utf8');
+    expect(await setActiveClient(42, 'romashka', { rootDir: join(blocked, 'sub') })).toBe(false);
   });
 });
