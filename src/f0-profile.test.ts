@@ -26,21 +26,22 @@ import {
 // Story 9.1: юнит-тесты чистых функций диалога «Профиль клиента» (Часть A).
 
 describe('очередь вопросов Части A', () => {
-  it('🔑-минимум: A1.1, A1.2, A3.2, A3.3 — в этом порядке, все key', () => {
-    expect(PROFILE_MIN_QUESTIONS.map((q) => q.id)).toEqual(['a1_1', 'a1_2', 'a3_2', 'a3_3']);
+  it('🔑-минимум: A1.1, A1.2 — в этом порядке, оба key (Story 10.2)', () => {
+    expect(PROFILE_MIN_QUESTIONS.map((q) => q.id)).toEqual(['a1_1', 'a1_2']);
     expect(PROFILE_MIN_QUESTIONS.every((q) => q.key)).toBe(true);
-    expect(PROFILE_MIN_COUNT).toBe(4);
+    expect(PROFILE_MIN_COUNT).toBe(2);
   });
 
-  it('расширенная часть: 14 вопросов в порядке блоков A1→A2→A3→A4, все не-key', () => {
+  it('расширенная часть: 16 вопросов; a3_2 и a3_3 первыми, затем A1→A2→A3→A4 (Story 10.2)', () => {
     expect(PROFILE_EXT_QUESTIONS.map((q) => q.id)).toEqual([
+      'a3_2', 'a3_3',
       'a1_3', 'a1_4',
       'a2_1', 'a2_2', 'a2_3', 'a2_4', 'a2_5',
       'a3_1',
       'a4_1', 'a4_2', 'a4_3', 'a4_4', 'a4_5', 'a4_6',
     ]);
     expect(PROFILE_EXT_QUESTIONS.every((q) => !q.key)).toBe(true);
-    expect(PROFILE_EXT_COUNT).toBe(14);
+    expect(PROFILE_EXT_COUNT).toBe(16);
   });
 
   it('формулировки — дословно по вопроснику (выборочно)', () => {
@@ -66,7 +67,7 @@ describe('очередь вопросов Части A', () => {
 
   it('nextProfileQuestion: индексация по единой очереди, за концом — undefined', () => {
     expect(nextProfileQuestion(0)!.id).toBe('a1_1');
-    expect(nextProfileQuestion(PROFILE_MIN_COUNT)!.id).toBe('a1_3');
+    expect(nextProfileQuestion(PROFILE_MIN_COUNT)!.id).toBe('a3_2');
     expect(nextProfileQuestion(PROFILE_QUESTIONS.length)).toBeUndefined();
   });
 
@@ -153,16 +154,14 @@ describe('applyProfileAnswer / isQuestionAnswered', () => {
 });
 
 describe('isMinimumComplete', () => {
-  it('true только при A1.1 + A1.2 + ≥1 топ + A3.3', () => {
+  it('true только при A1.1 + A1.2 (Story 10.2: топы/DM перенесены в расширенный)', () => {
     const p: ClientProfile = {
       companyName: 'Ромашка',
       businessSummary: 'Продаём ромашки',
-      tops: [{ name: 'Дамир', title: null, authority: null, area: null }],
-      decisionMaker: 'Дамир',
     };
     expect(isMinimumComplete(p)).toBe(true);
-    expect(isMinimumComplete({ ...p, tops: [] })).toBe(false);
-    expect(isMinimumComplete({ ...p, decisionMaker: undefined })).toBe(false);
+    expect(isMinimumComplete({ ...p, companyName: undefined })).toBe(false);
+    expect(isMinimumComplete({ ...p, businessSummary: undefined })).toBe(false);
     expect(isMinimumComplete({})).toBe(false);
   });
 });
@@ -171,11 +170,11 @@ describe('рендер вопроса и счётчики', () => {
   it('заголовок блока при входе, 🔑-маркировка, прогресс (i/N), пример и подсказка', () => {
     const text = renderProfileQuestion(PROFILE_QUESTIONS[1]!, {
       index: 2,
-      total: 4,
+      total: 2,
       withHeader: true,
     });
     expect(text).toContain('📋 A1. Компания и история');
-    expect(text).toContain('❓ 🔑 (2/4) Чем занимается компания и для кого?');
+    expect(text).toContain('❓ 🔑 (2/2) Чем занимается компания и для кого?');
     expect(text).toContain('Пример: «');
     expect(text).toContain('/skip');
     expect(text).toContain('🎤'); // Story 9.5: голосовой ввод в профиле
@@ -183,27 +182,27 @@ describe('рендер вопроса и счётчики', () => {
 
   it('без заголовка — только вопрос; A3.1 подсказывает 📎', () => {
     const a13 = renderProfileQuestion(PROFILE_QUESTIONS.find((q) => q.id === 'a1_3')!, {
-      index: 1,
-      total: 14,
+      index: 3,
+      total: 16,
       withHeader: false,
     });
     expect(a13).not.toContain('📋');
     expect(a13).not.toContain('🔑');
     const a31 = renderProfileQuestion(PROFILE_QUESTIONS.find((q) => q.id === 'a3_1')!, {
       index: 8,
-      total: 14,
+      total: 16,
       withHeader: true,
     });
     expect(a31).toContain('📎 файлом');
   });
 
-  it('countExtendedFilled считает только расширенные поля', () => {
+  it('countExtendedFilled считает только расширенные поля (Story 10.2: total=16)', () => {
     const p: ClientProfile = {
       companyName: 'Ромашка', // минимум — не в счёт
       history: 'Основана в 2018',
       headcount: '35',
     };
-    expect(countExtendedFilled(p)).toEqual({ filled: 2, total: 14 });
+    expect(countExtendedFilled(p)).toEqual({ filled: 2, total: 16 });
   });
 
   it('renderProfileCardLines: суть + топы/DM + счётчик (компактно, ≤3 строки)', () => {
@@ -221,7 +220,7 @@ describe('рендер вопроса и счётчики', () => {
     expect(lines[0]).toBe('Суть: Продаём ромашки бизнесу');
     expect(lines[1]).toContain('Дамир (коммерческий директор)');
     expect(lines[1]).toContain('DM: Дамир');
-    expect(lines[2]).toBe('Профиль: минимум ✓ · расширенный 0/14');
+    expect(lines[2]).toBe('Профиль: минимум ✓ · расширенный 2/16');
   });
 
   it('renderProfileStatusMessage: компания, прогресс минимума и расширенной части', () => {
@@ -230,8 +229,8 @@ describe('рендер вопроса и счётчики', () => {
       businessSummary: 'Продаём ромашки',
     });
     expect(msg).toContain('👤 Профиль клиента — Ромашка');
-    expect(msg).toContain('Минимум 🔑: 2/4');
-    expect(msg).toContain('расширенный: 0/14');
+    expect(msg).toContain('Минимум 🔑: 2/2');
+    expect(msg).toContain('расширенный: 0/16');
     expect(msg).toContain('/resume');
   });
 });

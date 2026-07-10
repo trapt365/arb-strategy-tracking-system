@@ -30,7 +30,7 @@ export const PROFILE_BLOCK_HEADERS: Record<ProfileQuestion['block'], string> = {
   A4: 'A4. Запрос и ожидания (проблематизация первого прохода)',
 };
 
-// 🔑-минимум: без него способ онбординга стратегии не предлагается (AC1 эпика).
+// 🔑-минимум: только название + суть; топы/DM — в начале расширенного.
 export const PROFILE_MIN_QUESTIONS: ProfileQuestion[] = [
   {
     id: 'a1_1',
@@ -48,10 +48,15 @@ export const PROFILE_MIN_QUESTIONS: ProfileQuestion[] = [
     example:
       'Образовательный центр подготовки к ЕНТ, Алматы+онлайн; клиенты — родители школьников 9–11 классов',
   },
+];
+
+// Расширенный профиль — опционален, порядок блоков как в Части A.
+// a3_2 и a3_3 — всегда первыми (a3_2 перед a3_3: profileDmKeyboard строит список из tops).
+export const PROFILE_EXT_QUESTIONS: ProfileQuestion[] = [
   {
     id: 'a3_2',
     block: 'A3',
-    key: true,
+    key: false,
     type: 'tops',
     text:
       'Кто из топов участвует в исполнении стратегии? По каждому: имя, должность, полномочия, зона ответственности. По одному сообщением.',
@@ -60,14 +65,10 @@ export const PROFILE_MIN_QUESTIONS: ProfileQuestion[] = [
   {
     id: 'a3_3',
     block: 'A3',
-    key: true,
+    key: false,
     type: 'choice',
     text: 'Кто принимает финальные решения по стратегии (decision maker)?',
   },
-];
-
-// Расширенный профиль — опционален, порядок блоков как в Части A.
-export const PROFILE_EXT_QUESTIONS: ProfileQuestion[] = [
   {
     id: 'a1_3',
     block: 'A1',
@@ -206,13 +207,11 @@ export function nextProfileQuestion(qIndex: number): ProfileQuestion | undefined
   return PROFILE_QUESTIONS[qIndex];
 }
 
-/** 🔑-минимум собран: A1.1, A1.2, ≥1 топ, A3.3 (AC1). */
+/** 🔑-минимум собран: A1.1 (название) + A1.2 (суть) (AC1). */
 export function isMinimumComplete(profile: ClientProfile): boolean {
   return (
     (profile.companyName ?? '').trim().length > 0 &&
-    (profile.businessSummary ?? '').trim().length > 0 &&
-    (profile.tops ?? []).length > 0 &&
-    (profile.decisionMaker ?? '').trim().length > 0
+    (profile.businessSummary ?? '').trim().length > 0
   );
 }
 

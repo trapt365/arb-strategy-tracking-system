@@ -1079,7 +1079,7 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
 
   const F0_PROFILE_INTRO = [
     '🆕 Онбординг нового клиента. Первый шаг — профиль клиента:',
-    '🔑-минимум из 4 вопросов (название, суть бизнеса, топы, decision maker).',
+    '🔑-минимум из 2 вопросов (название и суть бизнеса).',
     'Способ загрузки стратегии и расширенный профиль предложу после минимума.',
   ].join('\n');
   const F0_PROFILE_KEY_REQUIRED_TEXT =
@@ -1094,7 +1094,7 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
     .text('➕ Добавить ещё', 'f0p_top_more')
     .text('✅ Готово', 'f0p_top_done');
   const f0ProfileOfferKeyboard = new InlineKeyboard()
-    .text('➕ Расширенный профиль', 'f0p_ext')
+    .text('➕ Добавить топов', 'f0p_ext')
     .text('Дальше', 'f0p_go');
 
   function currentProfileQuestion(session: F0Session): ProfileQuestion | undefined {
@@ -1138,7 +1138,7 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
   async function sendProfileOffer(ctx: Context, _session: F0Session): Promise<void> {
     await ctx
       .reply(
-        '🔑 Минимум для таблицы собран. ➕ Заполнить расширенный профиль (лучше контекст отчётов и гипотез) — или продолжить?',
+        '✅ Название и суть зафиксированы. Добавить топов и детали сейчас — или сразу к стратегии?',
         { reply_markup: f0ProfileOfferKeyboard },
       )
       .catch(() => {});
@@ -3165,6 +3165,73 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
     }
   });
 
+  // Story 10.2: /advanced — запуск расширенного профиля.
+  bot.command('advanced', async (ctx) => {
+    const chatId = ctx.chat.id;
+    if (!trackerChatIds.has(chatId)) return;
+    const session = await getOrRestoreF0Session(chatId);
+
+    if (session !== undefined) {
+      if (session.phase === 'profile') {
+        if (profileOfferPending(session)) {
+          // Offer pending — начать расширенный профиль немедленно (≡ f0p_ext).
+          session.profileExtended = true;
+          await saveF0Session(chatId, session);
+          await askNextProfileQuestion(ctx, session);
+        } else if (session.profileExtended === true) {
+          await ctx.reply('ℹ️ Профиль уже дополняется — продолжай отвечать на вопросы.').catch(() => {});
+          await askNextProfileQuestion(ctx, session);
+        } else {
+          await ctx.reply('ℹ️ Сначала заверши минимум (название и суть), потом добавим топов.').catch(() => {});
+          await askNextProfileQuestion(ctx, session);
+        }
+      } else {
+        await ctx
+          .reply('⚠️ Идёт онбординг на другом этапе. Заверши его (/confirm) или отмени (/cancel).')
+          .catch(() => {});
+      }
+      return;
+    }
+
+    // Нет сессии — дозаполнение карточки активного клиента.
+    const clientId = await getActiveClient(chatId);
+    if (clientId === undefined) {
+      await ctx
+        .reply('ℹ️ Нет активного клиента. Выбери через /start или начни через /newclient.')
+        .catch(() => {});
+      return;
+    }
+    const card = await loadClientCard(clientId);
+    if (card === null) {
+      await ctx.reply(`ℹ️ Карточка клиента «${clientId}» не найдена. Начни онбординг: /newclient.`).catch(() => {});
+      return;
+    }
+    const advSession: F0Session = {
+      id: randomUUID().slice(0, 8),
+      processing: false,
+      phase: 'profile',
+      documents: [],
+      documentsChars: 0,
+      gaps: [],
+      gapIndex: 0,
+      schedule: null,
+      profile: { ...(card.profile ?? {}) },
+      profileQIndex: PROFILE_MIN_COUNT, // только расширенные вопросы
+      profileExtended: true,
+      profileCardClientId: clientId,
+    };
+    f0Sessions.set(chatId, advSession);
+    await saveF0Session(chatId, advSession);
+    f0Log.info(
+      { step: 'f0.profile_advanced_started', chatId, sessionId: advSession.id, clientId },
+      'f0 /advanced profile fill started',
+    );
+    await ctx
+      .reply(`➕ Дозаполняем профиль «${card.company}» — расширенные вопросы. Ответы пишутся в карточку.`)
+      .catch(() => {});
+    await askNextProfileQuestion(ctx, advSession);
+  });
+
   // Story 7.4: понятные сообщения по кодам сбоя создания таблицы.
   function f0SheetsErrorText(err: F0SheetsError): string {
     switch (err.code) {
@@ -4374,6 +4441,7 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
         { command: 'help',   description: 'Инструкция и список команд' },
         { command: 'report', description: 'Создать отчёт по встрече' },
         { command: 'newclient', description: 'Онбординг нового клиента' },
+        { command: 'advanced', description: 'Добавить топов и расширенный профиль клиента' },
         { command: 'draft', description: 'Собрать черновик онбординга из пакета' },
         { command: 'confirm', description: 'Завершить онбординг клиента' },
         { command: 'status', description: 'Готовность клиента к неделе 1' },

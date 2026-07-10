@@ -250,6 +250,20 @@
 - **[не доверифицировано] Диск-чтения в hot-path** — `src/bot.ts:~3965` fallback-хендлер читает active-clients.json+registry.json на каждое непойманное сообщение; `:2083,2107` start_client/weekly парсят registry дважды последовательно. Решение: write-through кэш реестра (все писатели в одном процессе) + Promise.all.
 - **[REFUTED, для истории] ISO-неделя UTC vs local** — обе стороны (meetingDate и недельный расчёт) на UTC → рассинхрона нет, только косметика заголовка для встреч пн 00:00-05:00 Алматы.
 
+## Deferred from: review of story-10.2 (2026-07-10)
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-10-2-proshchayushchiy-vkhod-klienta.md`
+  summary: `/advanced` no-session path recreates fill session even when all ext questions already answered — `finishProfileDialog` fires immediately with a confusing response.
+  evidence: Same behavior as pre-existing `profile_fill:{clientId}` callback. Triggered when user calls `/advanced` on a client with fully filled extended profile. Story 10.7 cosmetics pass could add a "profile complete" guard.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-10-2-proshchayushchiy-vkhod-klienta.md`
+  summary: `completeProfileMinimum` test helper sends `f0p_go` without first asserting offer screen appeared — fragile if `PROFILE_MIN_COUNT` ever changes.
+  evidence: Helper is used in ~10 tests. If `PROFILE_MIN_COUNT` changes, helper silently sends a stale callback and downstream tests fail with cryptic errors instead of a clear "offer screen missing" failure.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-10-2-proshchayushchiy-vkhod-klienta.md`
+  summary: Test assertions use magic-number `(1/16)`, `(3/16)` etc. instead of `PROFILE_EXT_COUNT` constant — maintenance landmine if ext-questions count changes.
+  evidence: Future additions to `PROFILE_EXT_QUESTIONS` (e.g. Story 10.5) will break these tests with opaque number mismatches.
+
 ## Deferred from: review of story-10.1 (2026-07-10)
 
 - **[defer] processJob filePath-ветка не покрыта сквозным тестом** — bot.test.ts тесты 10.1 проверяют enqueue (filePath в job), но processJob сам мокируется; `transcribeFromFilePath` + F1 вызов через filePath-путь в интеграционном тесте отсутствует. Триггер: первый баг в processJob filePath-ветке в проде. Решение: интеграционный тест processJob с `job.filePath` mock.

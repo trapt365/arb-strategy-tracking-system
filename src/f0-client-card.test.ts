@@ -163,7 +163,7 @@ describe('профиль клиента в карточке (Story 9.1)', () => 
     expect(msg).toContain('Суть: Продаём ромашки бизнесу');
     expect(msg).toContain('Дамир (CEO)');
     expect(msg).toContain('DM: Дамир');
-    expect(msg).toContain('расширенный 1/14'); // заполнена только history
+    expect(msg).toContain('расширенный 3/16'); // заполнены a3_2 (tops), a3_3 (DM), a1_3 (history)
     expect(msg.split('\n').length).toBeLessThanOrEqual(15);
   });
 
