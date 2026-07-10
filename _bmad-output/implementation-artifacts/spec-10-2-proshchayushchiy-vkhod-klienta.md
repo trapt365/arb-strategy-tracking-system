@@ -2,8 +2,9 @@
 title: '[10.2] Прощающий вход клиента; тяжёлый профиль → /advanced'
 type: 'feature'
 created: '2026-07-10'
-status: 'in-review'
+status: 'done'
 baseline_revision: '5e18b65'
+final_revision: '42d7771'
 review_loop_iteration: 0
 followup_review_recommended: false
 context: []
