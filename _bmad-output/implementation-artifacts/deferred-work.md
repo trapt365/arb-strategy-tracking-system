@@ -315,3 +315,35 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-10-5-treker-gipotez-tretiy-tip-otchyota.md`
   summary: `splitForTelegram` прикрепляет inline keyboard ко всем чанкам многочастного сообщения, а не только к последнему.
   evidence: `for (const msg of splitForTelegram(text)) { await ctx.reply(msg, { reply_markup: kb }) }` — kb дублируется на каждом сообщении. Pre-existing паттерн из `weekly:` handler. Косметический дефект при длинных отчётах.
+
+## Deferred from: spec-10-8-treker-gipotez-struktura-geonline.md (review 2026-07-10)
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-10-8-treker-gipotez-struktura-geonline.md`
+  summary: `computeDelta` не отслеживает удалённые гипотезы — гипотеза, исчезнувшая из листа, не показывается в отчёте.
+  evidence: `DeltaResult` содержит только `changed` и `added`; нет `removed`. Колонка Δ в сводной матрице считает только addedCount. Pre-existing из 10.5.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-10-8-treker-gipotez-struktura-geonline.md`
+  summary: Per-department «Ответственный» и «Метрики» строки из оригинального backlog spec не вошли в структурный форматтер.
+  evidence: Оригинальный backlog spec 10.8 упоминал "Строка Ответственный: имя · Метрики: ключевые цифры" per dept. В ready-for-dev spec и форматтере эти строки отсутствуют — были депримированы при планировании.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-10-8-treker-gipotez-struktura-geonline.md`
+  summary: Неизвестный статус гипотезы рендерится как '⬜' без warn-лога — тихий fallback не диагностируем.
+  evidence: `statusEmoji()` returns `STATUS_EMOJI[norm] ?? '⬜'` без loggin. Статусы вне маппинга (архив, пауза, custom) не видны в логах.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-10-8-treker-gipotez-struktura-geonline.md`
+  summary: Только `header_missing` тестируется как HALT-условие; `auth` и `sheet_not_found` покрывают ту же ветку кода, но без явных тестов.
+  evidence: `runHypoTracker — header_missing` test покрывает один из трёх HALT-кодов. Остальные два тестируются имплицитно (та же ветка), но явного теста нет.
+
+## Deferred from: spec-10-8-treker-gipotez-struktura-geonline.md (review 2026-07-10, follow-up pass)
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-10-8-treker-gipotez-struktura-geonline.md`
+  summary: Нет диагностического лога когда все F1-отчёты за неделю оказались partial и `f1ReportsText` пустой — деградация незаметна в логах.
+  evidence: `loadWeekReports` возвращает отчёты, но `PartialDeliveryReport` имеет `sections: []`. Лог Step 5 пишет `count: N`, не указывая, что текст = ''. Производительные инциденты будут неотличимы от сценария «встреч не было».
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-10-8-treker-gipotez-struktura-geonline.md`
+  summary: `HypoTrackerConclusionsSchema` и `HypoTrackerConclusions` — мёртвый код в `src/types.ts` после миграции F5 на `HypoStructuredInsightsSchema` (10.8).
+  evidence: Поиск по кодовой базе показал, что `HypoTrackerConclusionsSchema` / `HypoTrackerConclusions` импортируются только в `src/types.ts` (как экспорт) — ни один другой файл их не использует после переименования в `src/f5-hypo-tracker.ts`.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-10-8-treker-gipotez-struktura-geonline.md`
+  summary: Нет интеграционного теста `runHypoTracker` для сценария «первый запуск с непустым листом (≥2 департамента)» — AC покрыт только на уровне pure-функции `formatHypoReportStructured`.
+  evidence: Тесты A–D в `f5-hypo-tracker.test.ts` тестируют форматтер напрямую. Тест 4 (empty sheet) и Тест 5 (no changes) тестируют pipeline, но с одной гипотезой без snap. Сценарий «первый запуск, ≥2 dept, `full` содержит все гипотезы в «Новые» таблицах» не проходит через `runHypoTracker`.

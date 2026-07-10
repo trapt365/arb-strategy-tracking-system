@@ -144,6 +144,7 @@ export type HypothesisItem = z.infer<typeof HypothesisItemSchema>;
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const HypoSnapshotItemSchema = z.object({
+  id: z.string().optional(),
   statement: z.string().min(1),
   department: z.string().nullable(),
   okrLink: z.string().nullable(),
@@ -162,6 +163,18 @@ export const HypoTrackerConclusionsSchema = z.object({
   conclusions: z.array(z.string()).min(1).max(7),
 });
 export type HypoTrackerConclusions = z.infer<typeof HypoTrackerConclusionsSchema>;
+
+export const HypoStructuredInsightsSchema = z.object({
+  hypoInsights: z.array(z.object({
+    statement: z.string().min(1),
+    comment: z.string().optional(),
+    launch: z.string().optional(),
+    result: z.string().optional(),
+    nextStep: z.string().optional(),
+  })),
+  topInsights: z.array(z.string()).min(1).max(5),
+});
+export type HypoStructuredInsights = z.infer<typeof HypoStructuredInsightsSchema>;
 
 export const CommitmentStatusUpdateSchema = z.object({
   who: z.string(),

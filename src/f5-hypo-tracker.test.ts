@@ -2,8 +2,13 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { promises as fs } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { computeDelta, formatHypoReport, runHypoTracker } from './f5-hypo-tracker.js';
-import type { HypoSnapshotItem, HypoSnapshot } from './types.js';
+import {
+  computeDelta,
+  formatHypoReportFlat,
+  formatHypoReportStructured,
+  runHypoTracker,
+} from './f5-hypo-tracker.js';
+import type { HypoSnapshotItem, HypoSnapshot, HypoStructuredInsights } from './types.js';
 import { SheetsAdapterError } from './errors.js';
 
 // Mock the sheets adapter so pipeline tests don't need real credentials
@@ -12,10 +17,11 @@ vi.mock('./adapters/sheets.js', async (importOriginal) => {
   return {
     ...actual,
     readHypothesesSheet: vi.fn(),
+    readClientContext: vi.fn(),
   };
 });
 
-import { readHypothesesSheet } from './adapters/sheets.js';
+import { readHypothesesSheet, readClientContext } from './adapters/sheets.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Test 1: Delta — 2 changed + 1 new
@@ -63,14 +69,14 @@ describe('computeDelta', () => {
 // Test 3: First run format — no snapshot, no "Изменения" section
 // ─────────────────────────────────────────────────────────────────────────────
 
-describe('formatHypoReport', () => {
+describe('formatHypoReportFlat', () => {
   it('first run: includes all statements, no "Изменения" section', () => {
     const rows: HypoSnapshotItem[] = [
       { statement: 'Гипотеза Альфа', department: null, okrLink: null, status: 'идея' },
       { statement: 'Гипотеза Бета', department: null, okrLink: null, status: 'в тесте' },
     ];
 
-    const text = formatHypoReport({
+    const text = formatHypoReportFlat({
       clientName: 'TestClient',
       week: 28,
       year: 2026,
@@ -94,6 +100,7 @@ describe('formatHypoReport', () => {
 describe('runHypoTracker — empty sheet', () => {
   beforeEach(() => {
     vi.mocked(readHypothesesSheet).mockResolvedValue([]);
+    vi.mocked(readClientContext).mockRejectedValue(new Error('no context'));
   });
 
   it('returns "Гипотезы не найдены" and does not write snapshot on first run', async () => {
@@ -104,7 +111,8 @@ describe('runHypoTracker — empty sheet', () => {
       deps: { now: () => new Date('2026-07-10T12:00:00Z'), rootDir },
     });
 
-    expect(result).toBe('Гипотезы не найдены в листе _hypotheses.');
+    expect(result.compact).toBe('Гипотезы не найдены в листе _hypotheses.');
+    expect(result.full).toBe('');
 
     // Snapshot should NOT have been written
     const snapshotPath = join(rootDir, 'geonline', 'hypo-snapshot.json');
@@ -142,7 +150,7 @@ describe('runHypoTracker — empty sheet', () => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe('runHypoTracker — no changes', () => {
-  it('returns "Изменений за неделю нет" and updates snapshot weekNumber', async () => {
+  it('returns compact with snapshot updated weekNumber', async () => {
     const rootDir = join(tmpdir(), `hypo-test-${Date.now()}`);
     const clientDir = join(rootDir, 'geonline');
     await fs.mkdir(clientDir, { recursive: true });
@@ -158,6 +166,7 @@ describe('runHypoTracker — no changes', () => {
     vi.mocked(readHypothesesSheet).mockResolvedValue([
       { statement: 'Гипотеза A', department: '', status: 'идея', okrLink: '' },
     ]);
+    vi.mocked(readClientContext).mockRejectedValue(new Error('no context'));
 
     const result = await runHypoTracker({
       clientId: 'geonline',
@@ -165,8 +174,11 @@ describe('runHypoTracker — no changes', () => {
       deps: { now: () => new Date('2026-07-10T12:00:00Z'), rootDir },
     });
 
-    // Report should indicate no changes
-    expect(result).toContain('Изменений за неделю нет');
+    // compact should mention the client name
+    expect(result.compact).toContain('Geonline');
+    // full should be non-empty with structural output
+    expect(result.full).not.toBe('');
+    expect(result.full).toContain('Обновления статусов');
 
     // Snapshot should be updated with new weekNumber (week 28 for 2026-07-10)
     const updated = JSON.parse(await fs.readFile(snapshotPath, 'utf8')) as HypoSnapshot;
@@ -176,12 +188,12 @@ describe('runHypoTracker — no changes', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Test 6: Claude failure → report without "Выводы" section (non-blocking)
+// Test 6: Claude failure → report without insights (non-blocking)
 // Matrix row: Claude упал
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe('runHypoTracker — Claude failure (matrix row: Claude упал)', () => {
-  it('returns report without "Выводы" when Claude throws after withRetry', async () => {
+  it('returns result with full containing structure when Claude throws after withRetry', async () => {
     const rootDir = join(tmpdir(), `hypo-test-${Date.now()}`);
     const clientDir = join(rootDir, 'geonline');
     await fs.mkdir(clientDir, { recursive: true });
@@ -200,6 +212,7 @@ describe('runHypoTracker — Claude failure (matrix row: Claude упал)', () =
     vi.mocked(readHypothesesSheet).mockResolvedValue([
       { statement: 'Гипотеза A', department: '', status: 'в тесте', okrLink: '' },
     ]);
+    vi.mocked(readClientContext).mockRejectedValue(new Error('no context'));
 
     // Use status:400 so shouldRetryClaude returns false → immediate failure, no retry backoff
     const claudeErr = Object.assign(new Error('bad request'), { status: 400 });
@@ -215,10 +228,9 @@ describe('runHypoTracker — Claude failure (matrix row: Claude упал)', () =
       },
     });
 
-    // Report should be returned without the "Выводы" section
-    expect(result).toContain('Гипотеза A');
-    expect(result).not.toContain('Выводы');
-    expect(result).toContain('идея → в тесте');
+    // compact should mention the client + matrix; full should have structure
+    expect(result.compact).toContain('geonline');
+    expect(result.full).toContain('Обновления статусов');
   });
 });
 
@@ -239,5 +251,158 @@ describe('runHypoTracker — header_missing', () => {
         deps: { now: () => new Date('2026-07-10T12:00:00Z'), rootDir: join(tmpdir(), 'hypo-halt-test') },
       }),
     ).rejects.toThrow('hypotheses sheet unreadable — manual fix needed');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Test A: formatHypoReportStructured — full structure with ≥2 departments
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('formatHypoReportStructured', () => {
+  const baseItems: HypoSnapshotItem[] = [
+    { id: 'М-1', statement: 'Гипотеза Маркетинг 1', department: 'Маркетинг', okrLink: null, status: 'в тесте' },
+    { id: 'М-2', statement: 'Гипотеза Маркетинг 2', department: 'Маркетинг', okrLink: null, status: 'работает' },
+    { id: 'П-1', statement: 'Гипотеза Продажи 1', department: 'Продажи', okrLink: null, status: 'идея' },
+    { id: 'П-2', statement: 'Гипотеза Продажи 2', department: 'Продажи', okrLink: null, status: 'не работает' },
+  ];
+
+  const baseSnapshot: HypoSnapshot = {
+    weekNumber: 27,
+    year: 2026,
+    hypotheses: [
+      { statement: 'Гипотеза Маркетинг 1', department: 'Маркетинг', okrLink: null, status: 'идея' },
+      { statement: 'Гипотеза Маркетинг 2', department: 'Маркетинг', okrLink: null, status: 'идея' },
+      { statement: 'Гипотеза Продажи 1', department: 'Продажи', okrLink: null, status: 'идея' },
+      // Гипотеза Продажи 2 is new
+    ],
+  };
+
+  const baseDelta = computeDelta(baseItems, baseSnapshot.hypotheses);
+
+  const baseInsights: HypoStructuredInsights = {
+    hypoInsights: [
+      { statement: 'Гипотеза Маркетинг 1', comment: '↑ перешла в тест — хороший сигнал' },
+      { statement: 'Гипотеза Маркетинг 2', comment: '🟢 подтверждена' },
+      { statement: 'Гипотеза Продажи 1', comment: '' },
+      {
+        statement: 'Гипотеза Продажи 2',
+        comment: 'Новая',
+        launch: 'Следующая неделя',
+        result: 'Рост на 10%',
+        nextStep: 'Назначить ответственного',
+      },
+    ],
+    topInsights: [
+      'Маркетинг ускоряется — 2 гипотезы сдвинулись',
+      'Продажи добавили новую гипотезу без метрик',
+      'Общий портфель растёт',
+    ],
+  };
+
+  it('Test A: full contains header, legend, ≥2 dept sections, both tables, matrix, insights', () => {
+    const { full } = formatHypoReportStructured({
+      clientName: 'Geonline',
+      ceoName: 'Иванов И.И.',
+      week: 28,
+      year: 2026,
+      items: baseItems,
+      snapshot: baseSnapshot,
+      delta: baseDelta,
+      insights: baseInsights,
+      meetingDates: ['2026-07-07', '2026-07-09'],
+    });
+
+    // Header table with Период
+    expect(full).toContain('Период');
+    // Legend with 🟢 Работает
+    expect(full).toContain('🟢 Работает');
+    // At least 2 department sections
+    expect(full).toContain('## 1.');
+    expect(full).toContain('## 2.');
+    // Both tables in each section
+    expect(full).toContain('Обновления статусов');
+    expect(full).toContain('Новые гипотезы');
+    // Correct column headers for updates table
+    expect(full).toContain('Статус нед.');
+    expect(full).toContain('Комментарий');
+    // Correct column headers for new table
+    expect(full).toContain('Запуск');
+    expect(full).toContain('Результат / Метрика');
+    expect(full).toContain('Следующий шаг');
+    // Summary matrix
+    expect(full).toContain('Сводная матрица статусов');
+    expect(full).toContain('Департамент | 🟢');
+    // Key insights section
+    expect(full).toContain('Ключевые выводы');
+    expect(full).toContain('Маркетинг ускоряется');
+
+    // Order: header before legend before sections before matrix before insights
+    expect(full.indexOf('Период')).toBeLessThan(full.indexOf('🟢 Работает'));
+    expect(full.indexOf('🟢 Работает')).toBeLessThan(full.indexOf('## 1.'));
+    expect(full.indexOf('## 2.')).toBeLessThan(full.indexOf('Сводная матрица'));
+    expect(full.indexOf('Сводная матрица')).toBeLessThan(full.indexOf('Ключевые выводы'));
+  });
+
+  it('Test B: hypotheses without department appear in "Прочие" section', () => {
+    const itemsWithNull: HypoSnapshotItem[] = [
+      { statement: 'Гипотеза Маркетинг 1', department: 'Маркетинг', okrLink: null, status: 'в тесте' },
+      { statement: 'Без департамента', department: null, okrLink: null, status: 'идея' },
+    ];
+
+    const { full } = formatHypoReportStructured({
+      clientName: 'Geonline',
+      ceoName: 'Руководство',
+      week: 28,
+      year: 2026,
+      items: itemsWithNull,
+      snapshot: null,
+      delta: null,
+      insights: null,
+      meetingDates: [],
+    });
+
+    expect(full).toContain('Прочие');
+    expect(full).toContain('Без департамента');
+  });
+
+  it('Test C: insights = null → structure without comments, tables still present', () => {
+    const { full } = formatHypoReportStructured({
+      clientName: 'Geonline',
+      ceoName: 'Руководство',
+      week: 28,
+      year: 2026,
+      items: baseItems,
+      snapshot: baseSnapshot,
+      delta: baseDelta,
+      insights: null,
+      meetingDates: [],
+    });
+
+    // Structure present
+    expect(full).toContain('Обновления статусов');
+    expect(full).toContain('Новые гипотезы');
+    expect(full).toContain('Сводная матрица');
+    // Комментарий column present but cells empty for changed items
+    expect(full).toContain('Комментарий');
+    // Ключевые выводы section absent when insights = null
+    expect(full).not.toContain('Ключевые выводы');
+  });
+
+  it('Test D: compact contains each dept name and "📎 Полный трекер — во вложении"', () => {
+    const { compact } = formatHypoReportStructured({
+      clientName: 'Geonline',
+      ceoName: 'Иванов И.И.',
+      week: 28,
+      year: 2026,
+      items: baseItems,
+      snapshot: baseSnapshot,
+      delta: baseDelta,
+      insights: baseInsights,
+      meetingDates: [],
+    });
+
+    expect(compact).toContain('Маркетинг');
+    expect(compact).toContain('Продажи');
+    expect(compact).toContain('📎 Полный трекер — во вложении');
   });
 });

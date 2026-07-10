@@ -34,7 +34,7 @@ const {
   mockUpsertClient: vi.fn<[string, { sheetId: string; name: string; topName?: string }], Promise<void>>(),
   mockLoadClientCard: vi.fn<[string], Promise<null>>(),
   mockLoadWeekReports: vi.fn<[string], Promise<DeliveryReadyReport[]>>(),
-  mockRunHypoTracker: vi.fn<[{ clientId: string; clientName?: string }], Promise<string>>(),
+  mockRunHypoTracker: vi.fn<[{ clientId: string; clientName?: string }], Promise<{ compact: string; full: string }>>(),
 }));
 
 vi.mock('./client-registry.js', () => ({
@@ -184,7 +184,7 @@ beforeEach(() => {
   mockUpsertClient.mockResolvedValue(undefined);
   mockLoadClientCard.mockResolvedValue(null);
   mockLoadWeekReports.mockResolvedValue([]);
-  mockRunHypoTracker.mockResolvedValue('🧪 Трекер гипотез — Qubiq — нед.28/2026\n\nИзменений за неделю нет.');
+  mockRunHypoTracker.mockResolvedValue({ compact: '🧪 Трекер гипотез — Qubiq — нед.28/2026\n\nИзменений за неделю нет.', full: '' });
 });
 
 // ── Tests ──────────────────────────────────────────────────────────────────────
@@ -279,7 +279,10 @@ describe('Story 10.5 — hypo_tracker:clientId callback', () => {
     mockGetClientSheetId.mockImplementation(async (id) =>
       id === 'qubiq' ? 'sheet1' : undefined,
     );
-    mockRunHypoTracker.mockResolvedValue('🧪 Трекер гипотез — Qubiq — нед.28/2026\n\nИзменений за неделю нет.');
+    mockRunHypoTracker.mockResolvedValue({
+      compact: '🧪 Трекер гипотез — Qubiq — нед.28/2026\n\nСводка: нет изменений',
+      full: '# 🧪 Трекер гипотез — Qubiq — нед.28/2026\n\nПолный отчёт',
+    });
 
     const { bot, calls } = buildBot();
     await bot.handleUpdate(callbackUpdate('hypo_tracker:qubiq'));
@@ -289,6 +292,11 @@ describe('Story 10.5 — hypo_tracker:clientId callback', () => {
     const allText = replies.map((r) => r.payload.text as string).join('\n');
     expect(allText).toContain('🧪 Трекер гипотез');
     expect(allText).toContain('Qubiq');
+
+    // Story 10.8: full report delivered as document attachment
+    const docCalls = calls.filter((c) => c.method === 'sendDocument');
+    expect(docCalls.length).toBe(1);
+    expect(docCalls[0]?.payload['caption']).toBe('Полный трекер гипотез');
 
     expect(mockRunHypoTracker).toHaveBeenCalledWith(
       expect.objectContaining({ clientId: 'qubiq', clientName: 'Qubiq' }),
@@ -307,5 +315,23 @@ describe('Story 10.5 — hypo_tracker:clientId callback', () => {
     expect(replies.length).toBeGreaterThan(0);
     const allText = replies.map((r) => r.payload.text as string).join('\n');
     expect(allText).toContain('Не удалось загрузить трекер гипотез');
+  });
+
+  it('(3) hypo_tracker:qubiq — full === "" → sendDocument не вызывается', async () => {
+    mockGetClientName.mockResolvedValue('Qubiq');
+    mockGetClientSheetId.mockResolvedValue(undefined);
+    mockRunHypoTracker.mockResolvedValue({ compact: 'Гипотезы не найдены в листе _hypotheses.', full: '' });
+
+    const { bot, calls } = buildBot();
+    await bot.handleUpdate(callbackUpdate('hypo_tracker:qubiq'));
+
+    // No document should be sent when full is empty
+    const docCalls = calls.filter((c) => c.method === 'sendDocument');
+    expect(docCalls.length).toBe(0);
+
+    // But compact should still be sent
+    const replies = calls.filter((c) => c.method === 'sendMessage');
+    const allText = replies.map((r) => r.payload.text as string).join('\n');
+    expect(allText).toContain('Гипотезы не найдены');
   });
 });

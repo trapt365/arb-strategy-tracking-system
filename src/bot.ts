@@ -1,4 +1,4 @@
-import { Bot, GrammyError, InlineKeyboard, type Context } from 'grammy';
+import { Bot, GrammyError, InlineKeyboard, InputFile, type Context } from 'grammy';
 import { randomUUID } from 'node:crypto';
 import { writeFile, unlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -2202,24 +2202,33 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
     );
   });
 
-  // Story 10.5: трекер гипотез — третий тип отчёта.
+  // Story 10.5 / 10.8: трекер гипотез — третий тип отчёта.
   bot.callbackQuery(/^hypo_tracker:(.+)$/, async (ctx) => {
     await ctx.answerCallbackQuery().catch(() => {});
     const clientId = ctx.match[1]!;
     const name = (await getClientName(clientId)) ?? clientId;
     const sheetId = await getClientSheetId(clientId).catch(() => undefined);
-    let text: string;
+    const { week } = getISOWeekAndYear(new Date().toISOString().slice(0, 10));
+    let result: { compact: string; full: string };
     try {
-      text = await runHypoTracker({ clientId, clientName: name });
+      result = await runHypoTracker({ clientId, clientName: name });
     } catch (err) {
       log.warn({ step: 'bot.hypo_tracker.error', clientId, err }, 'hypo_tracker failed');
-      text = 'Не удалось загрузить трекер гипотез.';
+      result = { compact: 'Не удалось загрузить трекер гипотез.', full: '' };
     }
     const kb = new InlineKeyboard();
     if (sheetId !== undefined) {
       kb.url('📁 Таблица', `https://docs.google.com/spreadsheets/d/${sheetId}`);
     }
-    for (const msg of splitForTelegram(text)) {
+    if (result.full) {
+      await ctx
+        .replyWithDocument(
+          new InputFile(Buffer.from(result.full, 'utf8'), `hypo-tracker-${clientId}-w${week}.md`),
+          { caption: 'Полный трекер гипотез' },
+        )
+        .catch(() => {});
+    }
+    for (const msg of splitForTelegram(result.compact)) {
       await ctx.reply(msg, { reply_markup: kb }).catch(() => {});
     }
     log.info({ step: 'bot.hypo_tracker.sent', clientId, clientName: name }, 'hypo_tracker report sent');
