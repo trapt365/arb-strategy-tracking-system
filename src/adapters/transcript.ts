@@ -34,6 +34,101 @@ export interface TranscribeFromUrlDeps {
   logger?: typeof rootLogger;
 }
 
+export async function transcribeFromFilePath(
+  filePath: string,
+  meta: TranscriptMeta,
+  deps: Pick<TranscribeFromUrlDeps, 'sonioxClient' | 'logger'> = {},
+): Promise<Transcript> {
+  const baseLogger = deps.logger ?? rootLogger;
+  const log = baseLogger.child({ pipeline: 'F1', step: 'transcript', clientId: meta.clientId });
+  const sonioxClient = deps.sonioxClient ?? createSonioxClient({ logger: log });
+
+  const totalStart = Date.now();
+  let transcribeMs = 0;
+  let parseMs = 0;
+  let fileId: string | undefined;
+  let status: 'ok' | 'error' = 'error';
+
+  try {
+    const transcribeStart = Date.now();
+    fileId = await sonioxClient.uploadFile(filePath);
+    const transcriptionId = await sonioxClient.createTranscription(fileId);
+    await sonioxClient.pollUntilCompleted(transcriptionId);
+    const sonioxTranscript = await sonioxClient.fetchTranscript(transcriptionId);
+    transcribeMs = Date.now() - transcribeStart;
+
+    const parseStart = Date.now();
+    const parsedTranscript = parseSonioxTokens(sonioxTranscript.tokens, meta, log);
+    if (parsedTranscript.speakers.length === 0) {
+      const emptyErr = new TranscriptValidationError('empty', { reason: 'all_tokens_filtered', filePath });
+      alertOps({ pipeline: 'F1', step: 'transcript', clientId: meta.clientId, error: emptyErr, context: { filePath } });
+      log.error({ pipeline: 'F1', step: 'transcript', clientId: meta.clientId }, 'transcript empty after filtering audio events');
+      throw emptyErr;
+    }
+    let validated: Transcript;
+    try {
+      validated = TranscriptSchema.parse(parsedTranscript);
+    } catch (err) {
+      if (err instanceof ZodError) {
+        alertOps({
+          pipeline: 'F1',
+          step: 'transcript',
+          clientId: meta.clientId,
+          error: err,
+          context: { issues: err.issues, filePath },
+        });
+        log.error({ pipeline: 'F1', step: 'transcript', clientId: meta.clientId, validationErrors: err.issues });
+        throw new TranscriptValidationError(
+          'schema',
+          { issues: err.issues, filePath },
+          { cause: err },
+        );
+      }
+      throw err;
+    }
+    parseMs = Date.now() - parseStart;
+
+    status = 'ok';
+    return validated;
+  } catch (err) {
+    if (!(err instanceof TranscriptValidationError)) {
+      alertOps({
+        pipeline: 'F1',
+        step: 'transcript',
+        clientId: meta.clientId,
+        error: err,
+        context: { filePath, errorName: err instanceof Error ? err.name : undefined },
+      });
+    }
+    throw err;
+  } finally {
+    const cleanupErrors: unknown[] = [];
+    if (fileId) {
+      await sonioxClient.deleteFile(fileId).catch((err: unknown) => cleanupErrors.push(err));
+    }
+    if (cleanupErrors.length > 0) {
+      log.warn({ cleanupErrors }, 'cleanup errors after transcribeFromFilePath');
+    }
+    log.info(
+      {
+        step: 'transcript.total',
+        durationMs: Date.now() - totalStart,
+        transcribeMs,
+        parseMs,
+      },
+      'transcribeFromFilePath complete',
+    );
+    recordOpsEvent(status === 'ok' ? 'info' : 'error', {
+      pipeline: 'F1',
+      step: 'transcript.total',
+      clientId: meta.clientId,
+      durationMs: Date.now() - totalStart,
+      status,
+      context: { transcribeMs, parseMs, source: 'telegram_file' },
+    });
+  }
+}
+
 export async function transcribeFromUrl(
   url: string,
   meta: TranscriptMeta,

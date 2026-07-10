@@ -241,7 +241,8 @@ export type ReportJobStatus = z.infer<typeof ReportJobStatusSchema>;
 export const ReportJobSchema = z.object({
   id: z.string().length(8),
   chatId: z.number().int(),
-  url: z.string().min(1),
+  url: z.string().optional(),
+  filePath: z.string().optional(),
   clientId: z.string().min(1),
   topName: z.string().min(1),
   meetingDate: z.string().min(1),

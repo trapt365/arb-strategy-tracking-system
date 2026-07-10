@@ -278,6 +278,8 @@ interface BuildOpts {
   queue?: BotDeps['queue'];
   // Story 9.5: Soniox-клиент для тестов голоса.
   sonioxClient?: BotDeps['sonioxClient'];
+  // Story 10.1: транскрипция из локального файла (Telegram audio/video intake).
+  transcribeFromFilePath?: BotDeps['transcribeFromFilePath'];
 }
 
 function buildBot(opts: BuildOpts = {}) {
@@ -303,6 +305,9 @@ function buildBot(opts: BuildOpts = {}) {
     createClientSpreadsheet: opts.createClientSpreadsheet,
     queue: opts.queue,
     sonioxClient: opts.sonioxClient,
+    transcribeFromFilePath:
+      opts.transcribeFromFilePath ??
+      ((async () => validTranscript) as unknown as BotDeps['transcribeFromFilePath']),
     logger: silentLogger,
     token: 'TEST:TOKEN',
     botInfo: FALLBACK_BOT_INFO,
@@ -2803,5 +2808,223 @@ describe('bot — Story 9.5: вопросник с голосовыми отве
     await bot.handleUpdate(commandUpdate('/skip'));
     const afterTexts = texts95(calls, before);
     expect(afterTexts.some((t) => t.includes('обязательн') || t.includes('нельзя') || t.includes('хотя бы'))).toBe(true);
+  });
+});
+
+// ─── Story 10.1: Audio/Video Meeting Intake ─────────────────────────────────
+
+function audioUpdate(chatId: number = TEST_TRACKER_CHAT_ID): Update {
+  const message_id = 1000 + updateCounter;
+  return {
+    update_id: updateCounter++,
+    message: {
+      message_id,
+      date: Math.floor(Date.now() / 1000),
+      chat: { id: chatId, type: 'private', first_name: 'Test' },
+      from: { id: chatId, is_bot: false, first_name: 'Test' },
+      audio: {
+        file_id: 'audio-file-1',
+        file_unique_id: 'au-1',
+        duration: 600,
+        mime_type: 'audio/mp4',
+        file_size: 5 * 1024 * 1024,
+      },
+    },
+  } as unknown as Update;
+}
+
+function videoUpdate(chatId: number = TEST_TRACKER_CHAT_ID): Update {
+  const message_id = 1000 + updateCounter;
+  return {
+    update_id: updateCounter++,
+    message: {
+      message_id,
+      date: Math.floor(Date.now() / 1000),
+      chat: { id: chatId, type: 'private', first_name: 'Test' },
+      from: { id: chatId, is_bot: false, first_name: 'Test' },
+      video: {
+        file_id: 'video-file-1',
+        file_unique_id: 'vu-1',
+        width: 1280,
+        height: 720,
+        duration: 1200,
+        mime_type: 'video/mp4',
+        file_size: 50 * 1024 * 1024,
+      },
+    },
+  } as unknown as Update;
+}
+
+describe('bot — Story 10.1: audio/video meeting intake', () => {
+  const registryPath10 = joinPath(CLIENTS_DIR, 'registry.json');
+  const activePath10 = joinPath(CLIENTS_DIR, 'active-clients.json');
+  let registryBackup10: string | null = null;
+  let activeBackup10: string | null = null;
+
+  beforeEach(async () => {
+    registryBackup10 = await backupFile(registryPath10);
+    activeBackup10 = await backupFile(activePath10);
+    await fsp.mkdir(CLIENTS_DIR, { recursive: true });
+    await fsp.writeFile(
+      registryPath10,
+      JSON.stringify({
+        [TEST_CLIENT_ID]: {
+          sheetId: 'sheet-RX',
+          name: 'Ромашка',
+          createdAt: '2026-07-08T00:00:00.000Z',
+        },
+      }),
+      'utf8',
+    );
+    await fsp.rm(activePath10, { force: true }).catch(() => {});
+  });
+
+  afterEach(async () => {
+    await restoreFile(registryPath10, registryBackup10);
+    await restoreFile(activePath10, activeBackup10);
+  });
+
+  const texts10 = (calls: ApiCall[], from = 0): string[] =>
+    calls
+      .slice(from)
+      .filter((c) => c.method === 'sendMessage')
+      .map((c) => c.payload.text as string);
+
+  // Matrix row 1: Happy path — audio file + активный клиент → job enqueued
+  it('(a) audio file + активный клиент → job enqueued с filePath и clientId', async () => {
+    const enqueued: ReportJob[] = [];
+    const realQueue = createReportQueue({ maxSize: 20, logger: silentLogger });
+    const spyQueue = {
+      ...realQueue,
+      enqueue: (job: ReportJob) => {
+        enqueued.push(job);
+        return realQueue.enqueue(job);
+      },
+    } as typeof realQueue;
+
+    const { bot, calls } = buildBot({
+      queue: spyQueue,
+      downloadTelegramFile: async () => Buffer.from('audio-data'),
+    });
+
+    // Устанавливаем активного клиента
+    await fsp.writeFile(
+      activePath10,
+      JSON.stringify({ [String(TEST_TRACKER_CHAT_ID)]: TEST_CLIENT_ID }),
+      'utf8',
+    );
+
+    const before = calls.length;
+    await bot.handleUpdate(audioUpdate());
+
+    // Ack должен появиться (formatQueueAck → '✅ Принято. Отчёт через ~15 мин.')
+    const sentTexts = texts10(calls, before);
+    expect(sentTexts.some((t) => t.includes('Принято') || t.includes('В очереди'))).toBe(true);
+
+    // Job должен быть enqueued
+    expect(enqueued).toHaveLength(1);
+    expect(enqueued[0]!.clientId).toBe(TEST_CLIENT_ID);
+    expect(enqueued[0]!.filePath).toBeDefined();
+    // URL не задан (file-path mode)
+    expect(enqueued[0]!.url).toBeUndefined();
+  });
+
+  // Matrix row 2: Happy path — video file + активный клиент → job enqueued
+  it('(b) video file + активный клиент → job enqueued', async () => {
+    const enqueued: ReportJob[] = [];
+    const realQueue = createReportQueue({ maxSize: 20, logger: silentLogger });
+    const spyQueue = {
+      ...realQueue,
+      enqueue: (job: ReportJob) => {
+        enqueued.push(job);
+        return realQueue.enqueue(job);
+      },
+    } as typeof realQueue;
+
+    const { bot } = buildBot({
+      queue: spyQueue,
+      downloadTelegramFile: async () => Buffer.from('video-data'),
+    });
+
+    await fsp.writeFile(
+      activePath10,
+      JSON.stringify({ [String(TEST_TRACKER_CHAT_ID)]: TEST_CLIENT_ID }),
+      'utf8',
+    );
+
+    await bot.handleUpdate(videoUpdate());
+
+    expect(enqueued).toHaveLength(1);
+    expect(enqueued[0]!.clientId).toBe(TEST_CLIENT_ID);
+    expect(enqueued[0]!.filePath).toBeDefined();
+  });
+
+  // Matrix row 3: Нет активного клиента → reply
+  it('(c) нет активного клиента → reply "Выбери клиента через /start"', async () => {
+    const enqueued: ReportJob[] = [];
+    const realQueue = createReportQueue({ maxSize: 20, logger: silentLogger });
+    const spyQueue = {
+      ...realQueue,
+      enqueue: (job: ReportJob) => {
+        enqueued.push(job);
+        return realQueue.enqueue(job);
+      },
+    } as typeof realQueue;
+    const { bot, calls } = buildBot({ queue: spyQueue });
+    // activePath10 не существует — нет активного клиента
+    const before = calls.length;
+    await bot.handleUpdate(audioUpdate());
+    const sentTexts = texts10(calls, before);
+    expect(sentTexts.some((t) => t.includes('/start') || t.includes('Выбери') || t.includes('клиент'))).toBe(true);
+    // Нет enqueue
+    expect(enqueued).toHaveLength(0);
+  });
+
+  // Matrix row 4: Non-tracker chat → audio-хендлер делает ранний return, job не enqueued
+  it('(d) non-tracker chat → job не enqueued', async () => {
+    const enqueued: ReportJob[] = [];
+    const realQueue = createReportQueue({ maxSize: 20, logger: silentLogger });
+    const spyQueue = {
+      ...realQueue,
+      enqueue: (job: ReportJob) => {
+        enqueued.push(job);
+        return realQueue.enqueue(job);
+      },
+    } as typeof realQueue;
+    const { bot } = buildBot({ queue: spyQueue });
+    await bot.handleUpdate(audioUpdate(TEST_UNAUTHORIZED_CHAT_ID));
+    // Ранний return в audio-хендлере: никакого job для audio intake
+    expect(enqueued).toHaveLength(0);
+  });
+
+  // Matrix row 5: getFile без file_path → alertOps + reply
+  it('(e) getFile без file_path → alertOps + reply об ошибке', async () => {
+    const alertOpsSpy = vi.fn();
+    const { bot, calls } = buildBot({
+      alertOps: alertOpsSpy,
+      downloadTelegramFile: async () => Buffer.from('x'),
+    });
+
+    await fsp.writeFile(
+      activePath10,
+      JSON.stringify({ [String(TEST_TRACKER_CHAT_ID)]: TEST_CLIENT_ID }),
+      'utf8',
+    );
+
+    // Перехватчик, добавленный ПОСЛЕ attachApiSpy, запускается первым.
+    bot.api.config.use(async (_prev, method, payload, signal) => {
+      if (method === 'getFile') {
+        // Возвращаем результат без file_path
+        return { ok: true, result: { file_id: 'f', file_unique_id: 'u' } } as never;
+      }
+      return _prev(method, payload, signal);
+    });
+
+    const before = calls.length;
+    await bot.handleUpdate(audioUpdate());
+    const sentTexts = texts10(calls, before);
+    // Должен ответить пользователю об ошибке
+    expect(sentTexts.some((t) => t.includes('ошибк') || t.includes('файл') || t.includes('повтор') || t.includes('🔴'))).toBe(true);
+    expect(alertOpsSpy).toHaveBeenCalled();
   });
 });

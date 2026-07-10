@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { parseSonioxTokens, parsePlainText, transcribeFromPlainText, transcribeFromUrl } from './transcript.js';
+import { parseSonioxTokens, parsePlainText, transcribeFromPlainText, transcribeFromUrl, transcribeFromFilePath } from './transcript.js';
 import {
   TranscriptValidationError,
   TranscriptConfigError,
@@ -308,5 +308,56 @@ describe('TranscriptMetadataSchema — strict ISO-8601', () => {
       metadata: { date: '2026-04-22T10:00:00+05:00', duration: 1, meeting_type: 'tracking_session' },
     };
     expect(() => TranscriptSchema.parse(ok)).not.toThrow();
+  });
+});
+
+describe('transcribeFromFilePath', () => {
+  let alertOpsSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    alertOpsSpy = vi.spyOn(ops, 'alertOps').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    alertOpsSpy.mockRestore();
+  });
+
+  const validTokens: SonioxToken[] = [
+    { text: ' Привет', start_ms: 0, end_ms: 500, speaker: '1', is_audio_event: false },
+    { text: ' мир', start_ms: 500, end_ms: 1000, speaker: '1', is_audio_event: false },
+  ];
+
+  const stubSonioxForFilePath = (tokens: SonioxToken[] = validTokens) => ({
+    uploadFile: vi.fn().mockResolvedValue('soniox-file-id'),
+    createTranscription: vi.fn().mockResolvedValue('soniox-tx-id'),
+    pollUntilCompleted: vi.fn().mockResolvedValue(undefined),
+    fetchTranscript: vi.fn().mockResolvedValue({ id: 'soniox-tx-id', text: '', tokens }),
+    deleteFile: vi.fn().mockResolvedValue(undefined),
+  });
+
+  it('happy path: returns validated Transcript when Soniox returns valid tokens', async () => {
+    const sonioxClient = stubSonioxForFilePath();
+    const result = await transcribeFromFilePath('/tmp/meeting-test.m4a', META, { sonioxClient });
+    expect(result.speakers).toHaveLength(1);
+    expect(result.speakers[0]!.name).toBe('Speaker 1');
+    expect(result.metadata.meeting_type).toBe('tracking_session');
+    expect(sonioxClient.uploadFile).toHaveBeenCalledWith('/tmp/meeting-test.m4a');
+    expect(sonioxClient.deleteFile).toHaveBeenCalledWith('soniox-file-id');
+  });
+
+  it('Soniox error: uploadFile throws → error is rethrown and alertOps is called', async () => {
+    const uploadError = new Error('Soniox upload failed');
+    const sonioxClient = {
+      ...stubSonioxForFilePath(),
+      uploadFile: vi.fn().mockRejectedValue(uploadError),
+    };
+    await expect(
+      transcribeFromFilePath('/tmp/meeting-test.m4a', META, { sonioxClient }),
+    ).rejects.toThrow('Soniox upload failed');
+    expect(alertOpsSpy).toHaveBeenCalledTimes(1);
+    const payload = alertOpsSpy.mock.calls[0]![0] as { pipeline: string; step: string; error: unknown };
+    expect(payload.pipeline).toBe('F1');
+    expect(payload.step).toBe('transcript');
+    expect(payload.error).toBe(uploadError);
   });
 });

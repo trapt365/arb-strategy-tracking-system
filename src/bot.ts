@@ -15,7 +15,10 @@ import {
   type AlertPayload,
   type WatchdogHandle,
 } from './ops.js';
-import { transcribeFromUrl as defaultTranscribeFromUrl } from './adapters/transcript.js';
+import {
+  transcribeFromUrl as defaultTranscribeFromUrl,
+  transcribeFromFilePath as defaultTranscribeFromFilePath,
+} from './adapters/transcript.js';
 import { readClientContext as defaultReadClientContext, appendOpsLog } from './adapters/sheets.js';
 import { runF1 as defaultRunF1, applyEditToReport as defaultApplyEditToReport } from './f1-report.js';
 import {
@@ -186,6 +189,8 @@ export interface BotDeps {
   downloadTelegramFile?: (filePath: string) => Promise<Buffer>;
   /** Story 9.5: Soniox-клиент для транскрипции голосовых ответов. */
   sonioxClient?: SonioxClient;
+  /** Story 10.1: транскрипция Telegram-файла встречи (тесты подменяют). */
+  transcribeFromFilePath?: typeof defaultTranscribeFromFilePath;
 }
 
 export interface CreatedBot {
@@ -196,7 +201,8 @@ export interface CreatedBot {
   start: () => Promise<void>;
 }
 
-function sanitizeUrlForLog(rawUrl: string): string {
+function sanitizeUrlForLog(rawUrl: string | undefined): string {
+  if (rawUrl === undefined) return '[telegram-file]';
   try {
     const u = new URL(rawUrl);
     return `${u.protocol}//${u.host}${u.pathname}`;
@@ -227,6 +233,7 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
 
   const runF1 = deps.runF1 ?? defaultRunF1;
   const transcribeFromUrl = deps.transcribeFromUrl ?? defaultTranscribeFromUrl;
+  const transcribeFromFilePath = deps.transcribeFromFilePath ?? defaultTranscribeFromFilePath;
   const readClientContext = deps.readClientContext ?? defaultReadClientContext;
   const alertOps = deps.alertOps ?? defaultAlertOps;
   const applyEditToReport = deps.applyEditToReport ?? defaultApplyEditToReport;
@@ -729,11 +736,19 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
 
       let transcript;
       try {
-        transcript = await transcribeFromUrl(job.url, {
-          clientId: job.clientId,
-          meetingDate: job.meetingDate,
-          meetingType: job.meetingType,
-        });
+        if (job.filePath) {
+          transcript = await transcribeFromFilePath(job.filePath, {
+            clientId: job.clientId,
+            meetingDate: job.meetingDate,
+            meetingType: job.meetingType,
+          }, { sonioxClient: sonioxClientResolved, logger: baseLogger });
+        } else {
+          transcript = await transcribeFromUrl(job.url!, {
+            clientId: job.clientId,
+            meetingDate: job.meetingDate,
+            meetingType: job.meetingType,
+          });
+        }
       } catch (err) {
         if (timedOutJobs.has(job.id)) {
           jobLog.info('job already timed out; discarding transcript error');
@@ -933,6 +948,9 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
       job.status = 'failed';
       job.completedAt = now().toISOString();
     } finally {
+      if (job.filePath) {
+        await unlink(job.filePath).catch(() => {});
+      }
       clearJobTimer(job.id);
       timedOutJobs.delete(job.id);
       completedJobs.set(job.id, job);
@@ -3898,6 +3916,176 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
       session.processing = false;
       void processingMsg;
     }
+  });
+
+  // ───────── Story 10.1: обработчик аудио/видео встречи существующего клиента ─────────
+
+  async function handleMeetingFileIntake(ctx: Context, chatId: number): Promise<void> {
+    if (!trackerChatIds.has(chatId)) return;
+
+    // Pre-check overflow
+    if (queue.size() >= queueMaxSize) {
+      log.warn(
+        { chatId, queueSize: queue.size(), maxSize: queueMaxSize },
+        'bot.queue_overflow',
+      );
+      alertOps({
+        pipeline: 'F1',
+        step: 'bot.queue_overflow',
+        error: new QueueOverflowError(queueMaxSize, queue.size()),
+        context: { queueSize: queue.size(), maxSize: queueMaxSize },
+      });
+      await ctx.reply(formatErrorMessage('queue_overflow')).catch(() => {});
+      return;
+    }
+
+    const clientId = await getActiveClient(chatId);
+    if (clientId === undefined) {
+      await ctx
+        .reply('Выбери клиента через /start, прежде чем отправлять запись встречи.')
+        .catch(() => {});
+      return;
+    }
+
+    const topName =
+      (await getClientTopName(clientId)) ??
+      (await getClientName(clientId)) ??
+      'Клиент';
+
+    try {
+      assertClientId(clientId);
+    } catch (err) {
+      log.error(
+        { err, step: 'bot.audio.invalid_client_id', clientId },
+        'invalid clientId — refusing to enqueue audio job',
+      );
+      alertOps({
+        pipeline: 'F1',
+        step: 'bot.audio.invalid_client_id',
+        error: err,
+        context: { clientId },
+      });
+      await ctx.reply(formatErrorMessage('pipeline_failed')).catch(() => {});
+      return;
+    }
+
+    const file = await ctx.getFile();
+    if (file.file_path === undefined) {
+      alertOps({
+        pipeline: 'F1',
+        step: 'bot.audio.no_file_path',
+        clientId,
+        error: new Error('telegram getFile returned no file_path'),
+        context: { chatId },
+      });
+      await ctx.reply('🔴 Не удалось получить файл от Telegram. Попробуй ещё раз.').catch(() => {});
+      return;
+    }
+
+    let buf: Buffer;
+    try {
+      buf = await downloadTelegramFile(file.file_path);
+    } catch (err) {
+      log.error(
+        { err, step: 'bot.audio.download_failed', clientId, chatId },
+        'downloadTelegramFile failed',
+      );
+      alertOps({
+        pipeline: 'F1',
+        step: 'bot.audio.download_failed',
+        clientId,
+        error: err,
+        context: { chatId },
+      });
+      await ctx.reply('🔴 Не удалось скачать файл. Попробуй ещё раз.').catch(() => {});
+      return;
+    }
+
+    const tmpPath = pathJoin(tmpdir(), `meeting-${randomUUID()}`);
+    try {
+      await writeFile(tmpPath, buf);
+    } catch (err) {
+      log.error(
+        { err, step: 'bot.audio.write_failed', clientId, chatId },
+        'writeFile to tmp failed',
+      );
+      alertOps({
+        pipeline: 'F1',
+        step: 'bot.audio.write_failed',
+        clientId,
+        error: err,
+        context: { chatId, tmpPath },
+      });
+      await ctx.reply('🔴 Не удалось сохранить файл. Попробуй ещё раз.').catch(() => {});
+      return;
+    }
+
+    const job: ReportJob = {
+      id: randomUUID().slice(0, 8),
+      chatId,
+      url: undefined,
+      filePath: tmpPath,
+      clientId,
+      topName,
+      meetingDate: now().toISOString(),
+      status: 'queued',
+      queuedAt: now().toISOString(),
+      retryCount: 0,
+    };
+
+    const estimatedPosition = queue.size() + 1;
+    let ackMessageId: number | undefined;
+    try {
+      const ack = await ctx.reply(formatQueueAck(estimatedPosition, estimatedPosition));
+      ackMessageId = ack.message_id;
+    } catch (err) {
+      log.error({ err }, 'ack reply failed for audio job');
+    }
+    job.progressMessageId = ackMessageId;
+
+    let placement: { position: number; queueSize: number };
+    try {
+      placement = queue.enqueue(job);
+    } catch (err) {
+      if (err instanceof QueueOverflowError) {
+        log.warn({ chatId }, 'bot.queue_overflow.race (audio)');
+        alertOps({
+          pipeline: 'F1',
+          step: 'bot.queue_overflow',
+          error: err,
+          context: { queueSize: err.currentSize, maxSize: err.maxSize },
+        });
+        if (ackMessageId !== undefined) {
+          await bot.api
+            .editMessageText(job.chatId, ackMessageId, formatErrorMessage('queue_overflow'))
+            .catch(() => {});
+        }
+        await unlink(tmpPath).catch(() => {});
+        return;
+      }
+      throw err;
+    }
+
+    scheduleTimeout(job.id);
+
+    log.info(
+      {
+        step: 'bot.audio.queued',
+        jobId: job.id,
+        chatId,
+        position: placement.position,
+        queueSize: placement.queueSize,
+      },
+      'audio/video meeting job enqueued',
+    );
+  }
+
+  bot.on('message:audio', async (ctx) => {
+    await handleMeetingFileIntake(ctx, ctx.chat.id);
+  });
+
+  bot.on('message:video', async (ctx) => {
+    await handleMeetingFileIntake(ctx, ctx.chat.id);
   });
 
   /** Dispatch transcript в нужный обработчик по текущей фазе. */
