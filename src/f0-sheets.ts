@@ -482,6 +482,11 @@ export function uniqueOwners(okrRows: Row[]): string[] {
   ];
 }
 
+/** Story 10.7: сократить полное ФИО до первого слова для имени листа. */
+function firstWord(s: string): string {
+  return s.split(' ')[0] ?? s;
+}
+
 /**
  * Story 8.1: размножить персональные листы «👤 {Имя}» duplicateSheet-ом со скрытого
  * эталона TOP_TEMPLATE_SHEET. Идемпотентно: существующие листы пропускаются (повторный
@@ -512,7 +517,7 @@ async function ensurePersonalSheets(
     }
     return 0;
   }
-  const toCreate = owners.filter((o) => !titleToId.has(`👤 ${o}`));
+  const toCreate = owners.filter((o) => !titleToId.has(`👤 ${firstWord(o)}`));
   if (toCreate.length === 0) return owners.length;
 
   const dup = await withRetry(
@@ -521,7 +526,7 @@ async function ensurePersonalSheets(
         spreadsheetId,
         requestBody: {
           requests: toCreate.map((o) => ({
-            duplicateSheet: { sourceSheetId: etalonId, newSheetName: `👤 ${o}` },
+            duplicateSheet: { sourceSheetId: etalonId, newSheetName: `👤 ${firstWord(o)}` },
           })),
         },
       }),
@@ -555,7 +560,7 @@ async function ensurePersonalSheets(
         requestBody: {
           valueInputOption: 'RAW',
           data: toCreate.map((o) => ({
-            range: `${quoteSheetTitle(`👤 ${o}`)}!B1`,
+            range: `${quoteSheetTitle(`👤 ${firstWord(o)}`)}!B1`,
             values: [[o]],
           })),
         },

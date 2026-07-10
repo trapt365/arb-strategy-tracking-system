@@ -1011,32 +1011,34 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
 
   bot.command('start', async (ctx) => {
     const firstName = ctx.from?.first_name?.trim() || undefined;
+    const chatId = ctx.chat?.id;
+    if (chatId === undefined) return;
     try {
       const registry = await loadRegistry();
       const clients = Object.keys(registry).map((id) => ({ id, name: registry[id]?.name ?? id }));
-      const welcomeText = formatShortWelcome(firstName);
+      const activeId = await getActiveClient(chatId).catch(() => undefined);
+      const activeName =
+        activeId !== undefined
+          ? ((await getClientName(activeId).catch(() => undefined)) ?? activeId)
+          : undefined;
+      const welcomeText = formatShortWelcome(firstName, activeName);
       await ctx.reply(welcomeText, { reply_markup: buildStartMenuKeyboard(clients) });
     } catch (err) {
-      log.warn({ err, chatId: ctx.chat.id }, 'bot.start.reply_failed');
+      log.warn({ err, chatId }, 'bot.start.reply_failed');
       return;
     }
     log.info(
-      { step: 'bot.start.welcomed', chatId: ctx.chat.id, firstName },
+      { step: 'bot.start.welcomed', chatId, firstName },
       'welcome sent',
     );
   });
 
   bot.command('help', async (ctx) => {
     const firstName = ctx.from?.first_name?.trim() || undefined;
-    try {
-      const registry = await loadRegistry();
-      const clients = Object.keys(registry).map((id) => ({ id, name: registry[id]?.name ?? id }));
-      const welcomeText = formatShortWelcome(firstName);
-      await ctx.reply(welcomeText, { reply_markup: buildStartMenuKeyboard(clients) });
-    } catch (err) {
+    await ctx.reply(formatWelcomeMessage(firstName)).catch((err) => {
       log.warn({ err, chatId: ctx.chat.id }, 'bot.help.reply_failed');
       return;
-    }
+    });
     log.info({ step: 'bot.help.requested', chatId: ctx.chat.id }, 'help sent');
   });
 
@@ -1500,7 +1502,11 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
     const existing = await getOrRestoreF0Session(chatId);
     if (existing?.phase === 'profile' || f0SessionAtRisk(existing)) {
       await ctx
-        .reply('⚠️ Идёт другой онбординг/диалог. Заверши его (/resume) или отмени (/cancel), потом дозаполняй профиль.')
+        .reply('⚠️ Идёт другой онбординг/диалог. Отмени его или продолжи:', {
+          reply_markup: new InlineKeyboard()
+            .text('❌ Отменить онбординг', `f0_cancel_stuck:${existing.id}`)
+            .text('↩️ Продолжить', 'f0_cancel_stuck_no'),
+        })
         .catch(() => {});
       return;
     }
@@ -2102,6 +2108,31 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
       .catch(() => {});
   });
 
+  // Story 10.7: «❌ Отменить онбординг» из предупреждения при залипшей сессии.
+  bot.callbackQuery(/^f0_cancel_stuck:(.+)$/, async (ctx) => {
+    const chatId = ctx.chat?.id;
+    if (chatId === undefined) return;
+    const session = await getOrRestoreF0Session(chatId);
+    if (session?.id === ctx.match[1]!) {
+      await ctx.answerCallbackQuery().catch(() => {});
+      f0Sessions.delete(chatId);
+      await deleteF0Session(chatId).catch((err: unknown) => {
+        log.warn({ err, chatId }, 'f0_cancel_stuck: deleteF0Session failed');
+      });
+      await ctx
+        .reply('✅ Онбординг отменён. Новый — /newclient или меню /start.')
+        .catch(() => {});
+    } else {
+      await ctx
+        .answerCallbackQuery({ text: 'Эта кнопка устарела — онбординг уже изменился.' })
+        .catch(() => {});
+    }
+  });
+
+  bot.callbackQuery('f0_cancel_stuck_no', async (ctx) => {
+    await ctx.answerCallbackQuery().catch(() => {});
+  });
+
   // ───────── Story 8.4: меню и навигация по клиентам (W1, W10) ─────────
 
   bot.callbackQuery('menu:help', async (ctx) => {
@@ -2166,7 +2197,7 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
     kb.row().text('🧪 Трекер гипотез', `hypo_tracker:${clientId}`);
     await ctx
       .reply(
-        `✅ Клиент: ${name}.\n📊 /report <ссылка> — отчёт по встрече\n📋 /status — готовность к неделе`,
+        `👤 Клиент: ${name}.\n📊 /report <ссылка> — отчёт по встрече\n📋 /status — готовность к неделе`,
         { reply_markup: kb },
       )
       .catch(() => {});

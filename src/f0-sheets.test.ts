@@ -438,14 +438,92 @@ describe('createClientSpreadsheet — story 9.2 grounding (AC1)', () => {
       driveClientFactory: async () => drive.client,
     });
 
-    // Личный лист создан для канонического имени из профиля, не для '🔴 А. Асланова'
+    // Личный лист создан для первого слова канонического имени из профиля, не для '🔴 А. Асланова'
     expect(result.counts.personalSheets).toBe(1);
     const dupReq = sheets.calls.addSheet[0] as { requestBody: sheets_v4.Schema$BatchUpdateSpreadsheetRequest };
     const newNames = (dupReq.requestBody.requests ?? [])
       .map((r) => r.duplicateSheet?.newSheetName)
       .filter(Boolean);
-    expect(newNames).toContain('👤 Азиза Асланова');
+    // Story 10.7: лист называется по первому слову имени
+    expect(newNames).toContain('👤 Азиза');
+    expect(newNames).not.toContain('👤 Азиза Асланова');
     expect(newNames.some((n) => n?.startsWith('👤 🔴'))).toBe(false);
+  });
+});
+
+describe('createClientSpreadsheet — Story 10.7: имена листов сокращаются до первого слова', () => {
+  it('owner «Иван Петров» → лист называется «👤 Иван»', async () => {
+    const ext = extraction({
+      objectives: [{
+        title: 'Рост',
+        krs: [{ formulation: 'KR1', base: '0', target: '100', owner: 'Иван Петров', deadline: null }],
+      }],
+    });
+    const sheets = makeSheets({ titles: allTitles, headers: allHeaders });
+    const drive = makeDrive();
+    const result = await createClientSpreadsheet({
+      extraction: ext,
+      spreadsheetName: 'x',
+      sheetsClientFactory: async () => sheets.client,
+      driveClientFactory: async () => drive.client,
+    });
+    expect(result.counts.personalSheets).toBe(1);
+    const dupReq = sheets.calls.addSheet[0] as { requestBody: sheets_v4.Schema$BatchUpdateSpreadsheetRequest };
+    const newNames = (dupReq.requestBody.requests ?? [])
+      .map((r) => r.duplicateSheet?.newSheetName)
+      .filter(Boolean);
+    expect(newNames).toContain('👤 Иван');
+    expect(newNames).not.toContain('👤 Иван Петров');
+  });
+
+  it('однословный owner «Иван» → лист называется «👤 Иван» (без изменений)', async () => {
+    const ext = extraction({
+      objectives: [{
+        title: 'Рост',
+        krs: [{ formulation: 'KR1', base: '0', target: '100', owner: 'Иван', deadline: null }],
+      }],
+    });
+    const sheets = makeSheets({ titles: allTitles, headers: allHeaders });
+    const drive = makeDrive();
+    await createClientSpreadsheet({
+      extraction: ext,
+      spreadsheetName: 'x',
+      sheetsClientFactory: async () => sheets.client,
+      driveClientFactory: async () => drive.client,
+    });
+    const dupReq = sheets.calls.addSheet[0] as { requestBody: sheets_v4.Schema$BatchUpdateSpreadsheetRequest };
+    const newNames = (dupReq.requestBody.requests ?? [])
+      .map((r) => r.duplicateSheet?.newSheetName)
+      .filter(Boolean);
+    expect(newNames).toContain('👤 Иван');
+  });
+
+  it('идемпотентность: «👤 Иван» уже существует → owner «Иван Петров» не создаёт дубль', async () => {
+    const ext = extraction({
+      objectives: [{
+        title: 'Рост',
+        krs: [{ formulation: 'KR1', base: '0', target: '100', owner: 'Иван Петров', deadline: null }],
+      }],
+    });
+    // Лист «👤 Иван» уже создан при предыдущем прогоне
+    const sheets = makeSheets({ titles: [...allTitles, '👤 Иван'], headers: allHeaders });
+    const drive = makeDrive();
+    const result = await createClientSpreadsheet({
+      extraction: ext,
+      spreadsheetName: 'x',
+      existingSpreadsheetId: 'existing-id',
+      sheetsClientFactory: async () => sheets.client,
+      driveClientFactory: async () => drive.client,
+    });
+    // ensurePersonalSheets returns owners.length (1 owner handled), no new sheet created
+    expect(result.counts.personalSheets).toBe(1);
+    // Никаких duplicateSheet-запросов не должно быть
+    const dupReq = sheets.calls.addSheet[0] as { requestBody: sheets_v4.Schema$BatchUpdateSpreadsheetRequest } | undefined;
+    const newNames = (dupReq?.requestBody.requests ?? [])
+      .map((r) => r.duplicateSheet?.newSheetName)
+      .filter(Boolean);
+    expect(newNames).not.toContain('👤 Иван');
+    expect(newNames).not.toContain('👤 Иван Петров');
   });
 });
 

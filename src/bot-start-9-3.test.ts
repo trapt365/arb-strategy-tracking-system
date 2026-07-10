@@ -248,7 +248,7 @@ describe('Story 9.3 — /start с клиентами в реестре', () => {
     expect(cbDatas.some((d) => d?.startsWith('start_client:'))).toBe(false);
   });
 
-  it('(3) /help с {qubiq} → та же структура keyboard что /start (client + menu:new + menu:help)', async () => {
+  it('(3) Story 10.7: /help → полный мануал (содержит «Основное:» и «В онбординге:»), без inline keyboard', async () => {
     mockLoadRegistry.mockResolvedValue({
       qubiq: { sheetId: 'abc123', name: 'Qubiq', topName: 'Акбар' },
     });
@@ -258,14 +258,12 @@ describe('Story 9.3 — /start с клиентами в реестре', () => {
     const reply = calls.find((c) => c.method === 'sendMessage');
     expect(reply).toBeDefined();
 
-    const markup = reply!.payload.reply_markup as {
-      inline_keyboard: { text: string; callback_data?: string }[][];
-    };
-    const allButtons = markup.inline_keyboard.flat();
-    const cbDatas = allButtons.map((b) => b.callback_data).filter(Boolean);
-    expect(cbDatas).toContain('start_client:qubiq');
-    expect(cbDatas).toContain('menu:new');
-    expect(cbDatas).toContain('menu:help');
+    const text = reply!.payload.text as string;
+    expect(text).toContain('Основное:');
+    expect(text).toContain('В онбординге:');
+    expect(text).not.toContain('Скоро');
+    // reply_markup отсутствует (нет inline keyboard)
+    expect(reply!.payload.reply_markup).toBeUndefined();
   });
 
   it('(4) callback start_client:qubiq → setActiveClient вызван + ответ содержит «Qubiq»', async () => {
@@ -281,6 +279,48 @@ describe('Story 9.3 — /start с клиентами в реестре', () => {
     const reply = calls.find((c) => c.method === 'sendMessage');
     expect(reply).toBeDefined();
     expect(reply!.payload.text as string).toContain('Qubiq');
+  });
+
+  it('(4b) Story 10.7: callback start_client → первая строка ответа начинается с «👤 Клиент:» (без ✅)', async () => {
+    mockGetClientName.mockImplementation(async (id) => (id === 'qubiq' ? 'Qubiq' : undefined));
+    mockGetClientSheetId.mockResolvedValue(undefined);
+    const { bot, calls } = buildBot();
+    await bot.handleUpdate(callbackUpdate('start_client:qubiq'));
+
+    const reply = calls.find((c) => c.method === 'sendMessage');
+    expect(reply).toBeDefined();
+    const text = reply!.payload.text as string;
+    expect(text.startsWith('👤 Клиент:')).toBe(true);
+    expect(text).not.toContain('✅');
+  });
+
+  it('(8) Story 10.7: /start с активным клиентом → текст содержит «Активный клиент: Qubiq»', async () => {
+    mockLoadRegistry.mockResolvedValue({
+      qubiq: { sheetId: 'abc123', name: 'Qubiq', topName: 'Акбар' },
+    });
+    mockGetActiveClient.mockResolvedValue('qubiq');
+    mockGetClientName.mockImplementation(async (id) => (id === 'qubiq' ? 'Qubiq' : undefined));
+    const { bot, calls } = buildBot();
+    await bot.handleUpdate(startUpdate());
+
+    const reply = calls.find((c) => c.method === 'sendMessage');
+    expect(reply).toBeDefined();
+    const text = reply!.payload.text as string;
+    expect(text).toContain('Активный клиент: Qubiq');
+  });
+
+  it('(9) Story 10.7: /start без активного клиента → «Активный клиент:» отсутствует', async () => {
+    mockLoadRegistry.mockResolvedValue({
+      qubiq: { sheetId: 'abc123', name: 'Qubiq', topName: 'Акбар' },
+    });
+    mockGetActiveClient.mockResolvedValue(undefined);
+    const { bot, calls } = buildBot();
+    await bot.handleUpdate(startUpdate());
+
+    const reply = calls.find((c) => c.method === 'sendMessage');
+    expect(reply).toBeDefined();
+    const text = reply!.payload.text as string;
+    expect(text).not.toContain('Активный клиент:');
   });
 
   it('(5) /report без URL, getActiveClient=qubiq → ответ содержит «Qubiq» и «/report https://»', async () => {

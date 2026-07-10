@@ -2767,6 +2767,98 @@ describe('bot — «➕ Дозаполнить профиль» из карто�
   });
 });
 
+// ─── Story 10.7: profile_fill stuck warning + f0_cancel_stuck handlers ───────
+
+describe('bot — Story 10.7: profile_fill при залипшей сессии + f0_cancel_stuck', () => {
+  const stuckClientId = 'stuck-test-corp';
+  const stuckDir = joinPath('data', stuckClientId);
+  const stuckSessionId = 'stuck-aa';
+  const sessionFilePath = joinPath(ONBOARDING_DIR, `session-${TEST_TRACKER_CHAT_ID}.json`);
+
+  beforeEach(async () => {
+    await cleanOnboardingArtifacts();
+    await fsp.rm(stuckDir, { recursive: true, force: true }).catch(() => {});
+    await fsp.mkdir(stuckDir, { recursive: true });
+    await fsp.writeFile(
+      joinPath(stuckDir, 'card.json'),
+      JSON.stringify({
+        clientId: stuckClientId,
+        company: 'StuckCorp',
+        industry: null,
+        participants: [{ name: 'Тест', role: 'CEO', okrDirection: null, telegram: null }],
+        ceo: 'Тест',
+        trackerChatId: TEST_TRACKER_CHAT_ID,
+        schedule: null,
+        spreadsheetId: null,
+        sheetsUrl: null,
+        startDate: '2026-07-01T00:00:00.000Z',
+        createdAt: '2026-07-01T00:00:00.000Z',
+      }),
+      'utf8',
+    );
+    await fsp.mkdir(ONBOARDING_DIR, { recursive: true });
+    await fsp.writeFile(
+      sessionFilePath,
+      JSON.stringify({
+        chatId: TEST_TRACKER_CHAT_ID,
+        sessionId: stuckSessionId,
+        phase: 'filling',
+        sourceNames: ['doc.md'],
+        extraction: f0Extraction(),
+        gaps: [{ kind: 'schedule', ref: 'расписание', question: 'Расписание?' }],
+        gapIndex: 0,
+        schedule: null,
+        updatedAt: new Date().toISOString(),
+      }),
+      'utf8',
+    );
+  });
+
+  afterEach(async () => {
+    await cleanOnboardingArtifacts();
+    await fsp.rm(stuckDir, { recursive: true, force: true }).catch(() => {});
+  });
+
+  it('matrix row 5: profile_fill при залипшей сессии → предупреждение с кнопкой «❌ Отменить онбординг»', async () => {
+    const { bot, calls } = buildBot();
+    await bot.handleUpdate(callbackUpdate(`profile_fill:${stuckClientId}`));
+    const replies = calls.filter((c) => c.method === 'sendMessage');
+    const warning = replies.find(
+      (c) => (c.payload.text as string).includes('онбординг') || (c.payload.text as string).includes('Идёт'),
+    );
+    expect(warning).toBeDefined();
+    expect(JSON.stringify(warning!.payload.reply_markup)).toContain(
+      `f0_cancel_stuck:${stuckSessionId}`,
+    );
+  });
+
+  it('matrix row 6: f0_cancel_stuck с верным session.id → сессия удалена, reply «Онбординг отменён»', async () => {
+    const { bot, calls } = buildBot();
+    await bot.handleUpdate(callbackUpdate(`f0_cancel_stuck:${stuckSessionId}`));
+    const replies = calls
+      .filter((c) => c.method === 'sendMessage')
+      .map((c) => c.payload.text as string);
+    expect(replies.some((t) => t.includes('Онбординг отменён'))).toBe(true);
+    const exists = await fsp.access(sessionFilePath).then(() => true, () => false);
+    expect(exists).toBe(false);
+  });
+
+  it('matrix row 7: f0_cancel_stuck с устаревшим session.id → answerCallbackQuery «устарела», сессия не удалена', async () => {
+    const { bot, calls } = buildBot();
+    await bot.handleUpdate(callbackUpdate('f0_cancel_stuck:wrong-id-99'));
+    const cbqAnswers = calls.filter((c) => c.method === 'answerCallbackQuery');
+    expect(
+      cbqAnswers.some(
+        (c) =>
+          ((c.payload as { text?: string }).text ?? '').toLowerCase().includes('устарела') ||
+          ((c.payload as { text?: string }).text ?? '').toLowerCase().includes('устарел'),
+      ),
+    ).toBe(true);
+    const exists = await fsp.access(sessionFilePath).then(() => true, () => false);
+    expect(exists).toBe(true);
+  });
+});
+
 // ─── Story 9.5: Вопросник с голосовыми ответами ──────────────────────────────
 
 /** Создаёт voice message update для тестов. */

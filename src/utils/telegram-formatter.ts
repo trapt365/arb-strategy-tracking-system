@@ -316,27 +316,25 @@ export function formatWelcomeMessage(firstName?: string): string {
     '/resume — продолжить дозаполнение · /skip — пропустить вопрос',
     '/confirm — завершить (неполные KR не блокируют — покажу предупреждение)',
     '/cancel — отменить онбординг (с подтверждением)',
-    '',
-    'Скоро:',
-    '🔍 Найти — поиск прошлых отчётов',
-    '📋 Повестка — подготовка к встрече',
-    '',
-    'Команда /help — повторить эту инструкцию.',
   ].join('\n');
 }
 
 /**
  * Story 9.3: short welcome for /start and /help when registry has clients.
- * 3 lines, plain text — no parse_mode.
+ * 3 lines (4 if activeClientName provided), plain text — no parse_mode.
  */
-export function formatShortWelcome(firstName?: string): string {
+export function formatShortWelcome(firstName?: string, activeClientName?: string): string {
   const trimmed = firstName?.trim();
   const greeting = trimmed && trimmed.length > 0 ? `Привет, ${trimmed}!` : 'Привет!';
-  return [
+  const lines = [
     `👋 ${greeting} Я — AI-трекинг бот практики.`,
     'Веду онбординг стратегий и отчёты по встречам с топами.',
     'Выбери клиента или онбордируй нового.',
-  ].join('\n');
+  ];
+  if (activeClientName !== undefined && activeClientName.trim().length > 0) {
+    lines.push(`Активный клиент: ${activeClientName}`);
+  }
+  return lines.join('\n');
 }
 
 /**

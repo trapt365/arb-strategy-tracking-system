@@ -393,10 +393,9 @@ describe('formatWelcomeMessage (Story 1.8)', () => {
     expect(out).not.toContain('Привет, ,');
   });
 
-  it('содержит /report и /help', () => {
+  it('содержит /report', () => {
     const out = formatWelcomeMessage('Азиза');
     expect(out).toContain('/report');
-    expect(out).toContain('/help');
   });
 
   it('Story 8.2 (W1): упоминает онбординг и реализованные команды', () => {
@@ -406,18 +405,32 @@ describe('formatWelcomeMessage (Story 1.8)', () => {
     expect(out).toContain('/confirm');
   });
 
-  it('Story 8.2 (W1): в «Скоро» только нереализованное — /status не числится', () => {
-    const out = formatWelcomeMessage('Азиза');
-    expect(out).toContain('Скоро');
-    expect(out).toContain('🔍 Найти');
-    expect(out).toContain('📋 Повестка');
-    const soonBlock = out.slice(out.indexOf('Скоро'));
-    expect(soonBlock).not.toContain('Статус');
-  });
-
   it('Story 8.2 (W7): /confirm описан как предупреждающий, не блокирующий', () => {
     const out = formatWelcomeMessage('Азиза');
     expect(out).toContain('не блокируют');
+  });
+
+  it('Story 10.7: НЕ содержит «Скоро» (блок удалён)', () => {
+    const out = formatWelcomeMessage('Азиза');
+    expect(out).not.toMatch(/Скоро/i);
+    expect(out).not.toContain('🔍 Найти');
+    expect(out).not.toContain('📋 Повестка');
+  });
+
+  it('Story 10.7: НЕ содержит «/help — повторить» (футер удалён)', () => {
+    const out = formatWelcomeMessage('Азиза');
+    expect(out).not.toContain('/help — повторить');
+  });
+
+  it('Story 10.7: строк не более 15 (включая пустые)', () => {
+    const out = formatWelcomeMessage('Азиза');
+    expect(out.split('\n').length).toBeLessThanOrEqual(15);
+  });
+
+  it('содержит «Основное:» и «В онбординге:»', () => {
+    const out = formatWelcomeMessage('Азиза');
+    expect(out).toContain('Основное:');
+    expect(out).toContain('В онбординге:');
   });
 
   it('plain text — НЕ содержит MarkdownV2-escape backslashes', () => {
@@ -446,9 +459,20 @@ describe('formatShortWelcome (Story 9.3)', () => {
     expect(out).not.toContain('Привет, !');
   });
 
-  it('не длиннее 3 строк', () => {
+  it('без activeClientName — не длиннее 3 строк, нет «Активный»', () => {
     const out = formatShortWelcome('Азиза');
     expect(out.split('\n').length).toBeLessThanOrEqual(3);
+    expect(out).not.toContain('Активный');
+  });
+
+  it('Story 10.7: с activeClientName = "Geonline" — содержит «Активный клиент: Geonline»', () => {
+    const out = formatShortWelcome('Азиза', 'Geonline');
+    expect(out).toContain('Активный клиент: Geonline');
+  });
+
+  it('Story 10.7: без activeClientName — «Активный клиент:» отсутствует', () => {
+    const out = formatShortWelcome('Азиза', undefined);
+    expect(out).not.toContain('Активный клиент:');
   });
 
   it('plain text — не содержит MarkdownV2-escape backslashes', () => {

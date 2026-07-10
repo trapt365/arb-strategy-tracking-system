@@ -347,3 +347,17 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-10-8-treker-gipotez-struktura-geonline.md`
   summary: Нет интеграционного теста `runHypoTracker` для сценария «первый запуск с непустым листом (≥2 департамента)» — AC покрыт только на уровне pure-функции `formatHypoReportStructured`.
   evidence: Тесты A–D в `f5-hypo-tracker.test.ts` тестируют форматтер напрямую. Тест 4 (empty sheet) и Тест 5 (no changes) тестируют pipeline, но с одной гипотезой без snap. Сценарий «первый запуск, ≥2 dept, `full` содержит все гипотезы в «Новые» таблицах» не проходит через `runHypoTracker`.
+
+## Deferred from: review of story-10.7 (2026-07-10)
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-10-7-kosmetika-marker-klienta-privetstvie-dliny.md`
+  summary: `firstWord` collision — два владельца с одинаковым первым словом (напр. «Иван Петров» и «Иван Сидоров») получают одно и то же имя листа `👤 Иван`, что ведёт к объединению их персональных листов.
+  evidence: Дизайн `firstWord(s.split(' ')[0])` намеренно выбран в spec (Design Notes) с осознанным ограничением; риск материализуется только при наличии двух топов с одинаковым именем в одном клиенте. Триггер: онбординг клиента с однофамильцами. Решение: использовать первые два слова (`split(' ').slice(0,2).join(' ')`) или уникальный суффикс при коллизии.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-10-7-kosmetika-marker-klienta-privetstvie-dliny.md`
+  summary: Неразрывный пробел (`\u00A0`) в имени владельца не разбивается `split(' ')` — `'Иван\u00A0Петров'.split(' ')` возвращает `['Иван\u00A0Петров']` (одно слово), лист называется `👤 Иван\u00A0Петров`.
+  evidence: Pre-existing ограничение `String.prototype.split(' ')` — обрабатывает только ASCII-пробел. На практике имена из Sheets/профиля используют обычный пробел. Триггер: copy-paste имени с неразрывным пробелом из внешней системы. Решение: нормализовать через `/\s+/` вместо `' '` в `firstWord`.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-10-7-kosmetika-marker-klienta-privetstvie-dliny.md`
+  summary: `f0_cancel_stuck_no` callback (кнопка «↩️ Продолжить» в предупреждении о залипшей сессии) не имеет теста — тривиальный handler, только `answerCallbackQuery`.
+  evidence: Handler добавлен для предотвращения ошибки «no handlers» при нажатии кнопки; единственное наблюдаемое поведение — spinner исчезает. Низкий риск, stub-функциональность. Триггер: если handler когда-либо изменится. Решение: добавить тест при расширении функциональности кнопки.
