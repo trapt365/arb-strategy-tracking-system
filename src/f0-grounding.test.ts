@@ -40,6 +40,26 @@ describe('groundOwnerName', () => {
     const result = groundOwnerName('Дамир', []);
     expect(result).toEqual({ name: 'Дамир', matched: false });
   });
+
+  // Ревью эпика 9: fuzzy по подмножеству токенов (импорт xlsx с сокращёнными именами).
+  it('fuzzy: фамилия «Сайлов» ⊂ «Дамир Сайлов» → единственный кандидат → matched', () => {
+    const result = groundOwnerName('Сайлов', tops);
+    expect(result).toEqual({ name: 'Дамир Сайлов', matched: true });
+  });
+
+  it('fuzzy: имя «Дамир» ⊂ «Дамир Сайлов» → matched', () => {
+    const result = groundOwnerName('Дамир', tops);
+    expect(result).toEqual({ name: 'Дамир Сайлов', matched: true });
+  });
+
+  it('fuzzy неоднозначность: два однофамильца → matched=false (нужен человек)', () => {
+    const twoPetrovs: ClientTop[] = [
+      { name: 'Иван Петров', title: null, authority: null, area: null },
+      { name: 'Пётр Петров', title: null, authority: null, area: null },
+    ];
+    const result = groundOwnerName('Петров', twoPetrovs);
+    expect(result).toEqual({ name: 'Петров', matched: false });
+  });
 });
 
 // === groundedOkrRows ===

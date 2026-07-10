@@ -127,6 +127,7 @@ import {
   formatWelcomeMessage,
   splitForTelegram,
   TELEGRAM_SAFE_MARGIN,
+  truncateEllipsis,
   type ProgressStep,
 } from './utils/telegram-formatter.js';
 import type { ReportJob } from './types.js';
@@ -1602,6 +1603,18 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
       await ctx.reply(F0_NO_SESSION_TEXT).catch(() => {});
       return;
     }
+    // Ревью эпика 9: как chooseF0Mode — не бросать молча уже накопленный путь
+    // (принятый xlsx / загруженные документы). Иначе вопросник затирает стратегию.
+    if (session.mode !== undefined || session.documents.length > 0 || session.importResult !== undefined) {
+      const what =
+        session.importResult !== undefined || session.mode === 'import'
+          ? 'импорт Excel'
+          : 'сборка из документов';
+      await ctx
+        .reply(`ℹ️ Путь уже определён: ${what}. Вопросник — только с чистого листа: /newclient.`)
+        .catch(() => {});
+      return;
+    }
     session.phase = 'questionnaire';
     session.qnStage = 'obj_collect';
     session.qnObjectives = [];
@@ -1641,6 +1654,21 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
 
   // ─── Story 9.5: вопросник — вспомогательные функции ─────────────────────────
 
+  /**
+   * Клавиатура выбора ответственного из топов профиля.
+   * Ревью эпика 9: callback_data = только индекс (не имя) — кириллическое имя в
+   * data превышало лимит Telegram 64 байта → BUTTON_DATA_INVALID → вопросник
+   * замерзал. Имя читается в handler из session.profile.tops[idx]. По кнопке в
+   * строке (.row()) — иначе >8 топов ломают раскладку.
+   */
+  function buildQnOwnerKeyboard(tops: { name: string }[]): InlineKeyboard {
+    const kb = new InlineKeyboard();
+    tops.forEach((top, i) => {
+      kb.text(top.name, `f0q_owner:${i}`).row();
+    });
+    return kb;
+  }
+
   /** Повтор текущего вопроса вопросника (для /resume). */
   async function replayCurrentQnQuestion(ctx: Context, session: F0Session): Promise<void> {
     const stage = session.qnStage ?? 'obj_collect';
@@ -1660,14 +1688,12 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
       } else {
         // owner
         const tops = session.profile?.tops ?? [];
-        const ownerKb = new InlineKeyboard();
-        tops.forEach((top, i) => {
-          ownerKb.text(top.name, `f0q_owner:${i}:${top.name}`);
-        });
         if (tops.length === 0) {
           await ctx.reply(`Кто отвечает за результат по направлению «${objTitle}»? Введи имя текстом.`).catch(() => {});
         } else {
-          await ctx.reply(qnB2_2Text(objTitle), { reply_markup: ownerKb }).catch(() => {});
+          await ctx
+            .reply(qnB2_2Text(objTitle), { reply_markup: buildQnOwnerKeyboard(tops) })
+            .catch(() => {});
         }
       }
     } else {
@@ -1683,7 +1709,7 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
       } else {
         const stmt = (session.qnHypotheses ?? [])[hypoIdx - 1]?.statement ?? `Гипотеза ${hypoIdx}`;
         await ctx
-          .reply(`Гипотеза: «${stmt.slice(0, 60)}»\n${QN_B5_2_TEXT}`)
+          .reply(`Гипотеза: «${truncateEllipsis(stmt, 60)}»\n${QN_B5_2_TEXT}`)
           .catch(() => {});
       }
     }
@@ -1757,11 +1783,9 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
         if (tops.length === 0) {
           await ctx.reply(`Кто отвечает за результат по направлению «${objTitle}»? Введи имя текстом.`).catch(() => {});
         } else {
-          const ownerKb = new InlineKeyboard();
-          tops.forEach((top, i) => {
-            ownerKb.text(top.name, `f0q_owner:${i}:${top.name}`);
-          });
-          await ctx.reply(qnB2_2Text(objTitle), { reply_markup: ownerKb }).catch(() => {});
+          await ctx
+            .reply(qnB2_2Text(objTitle), { reply_markup: buildQnOwnerKeyboard(tops) })
+            .catch(() => {});
         }
         return;
       }
@@ -1793,7 +1817,7 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
           'f0 qn hypothesis statement saved',
         );
         await ctx
-          .reply(`Гипотеза: «${trimmed.slice(0, 60)}»\n${QN_B5_2_TEXT}`)
+          .reply(`Гипотеза: «${truncateEllipsis(trimmed, 60)}»\n${QN_B5_2_TEXT}`)
           .catch(() => {});
         return;
       }
@@ -1866,7 +1890,9 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
     if (chatId === undefined) return;
     const session = await getOrRestoreF0Session(chatId);
     if (session?.phase !== 'questionnaire' || session.qnStage !== 'obj_collect') {
-      await ctx.answerCallbackQuery({ text: F0_STALE_BUTTON_TEXT }).catch(() => {});
+      // Ревью эпика 9: query уже отвечен выше — второй answerCallbackQuery молча
+      // падает; протухшую кнопку показываем сообщением в чате.
+      await ctx.reply(F0_STALE_BUTTON_TEXT).catch(() => {});
       return;
     }
     const objectives = session.qnObjectives ?? [];
@@ -1879,16 +1905,24 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
     await startQnB2Kr(ctx, session);
   });
 
-  /** f0q_owner:{idx}:{name}: трекер выбрал ответственного кнопкой из топов. */
-  bot.callbackQuery(/^f0q_owner:(\d+):(.+)$/, async (ctx) => {
+  /** f0q_owner:{idx}: трекер выбрал ответственного кнопкой из топов (имя — из профиля). */
+  bot.callbackQuery(/^f0q_owner:(\d+)$/, async (ctx) => {
     await ctx.answerCallbackQuery().catch(() => {});
     const chatId = ctx.chat?.id;
     if (chatId === undefined) return;
     const session = await getOrRestoreF0Session(chatId);
     if (session?.phase !== 'questionnaire' || session.qnStage !== 'b2_kr' || session.qnKrStep !== 'owner') {
+      // Ревью эпика 9: протухшая кнопка → видимый ответ, а не молчание.
+      await ctx.reply(F0_STALE_BUTTON_TEXT).catch(() => {});
       return;
     }
-    const ownerName = ctx.match[2]!;
+    // Ревью эпика 9: имя из профиля по индексу (в callback_data имени больше нет).
+    const ownerIdx = Number(ctx.match[1]);
+    const ownerName = session.profile?.tops?.[ownerIdx]?.name;
+    if (ownerName === undefined) {
+      await ctx.reply(F0_STALE_BUTTON_TEXT).catch(() => {});
+      return;
+    }
     const objIdx = session.qnObjIdx ?? 0;
     const krData = session.qnKrData ?? [];
     const existing = krData[objIdx] ?? { formulation: '', owner: null };
@@ -1905,7 +1939,8 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
     if (chatId === undefined) return;
     const session = await getOrRestoreF0Session(chatId);
     if (session?.phase !== 'questionnaire' || session.qnStage !== 'hypo_collect') {
-      await ctx.answerCallbackQuery({ text: F0_STALE_BUTTON_TEXT }).catch(() => {});
+      // Ревью эпика 9: query уже отвечен выше — протухшую кнопку показываем в чате.
+      await ctx.reply(F0_STALE_BUTTON_TEXT).catch(() => {});
       return;
     }
     // Если metric-шаг активен и гипотез > 0, сохраняем metric=null (как /skip).
@@ -3024,9 +3059,10 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
         const objIdx = session.qnObjIdx ?? 0;
         const chatId = ctx.chat.id;
         if (krStep === 'text') {
-          // Пропуск KR: owner = null тоже
+          // Ревью эпика 9: пропуск KR = направление БЕЗ KR, а не KR с текстом «/skip».
+          // krData[objIdx] не заполняем — buildQnDraft для пустого индекса даёт krs: [].
           const krData = session.qnKrData ?? [];
-          krData[objIdx] = { formulation: '/skip', owner: null };
+          delete krData[objIdx];
           session.qnKrData = krData;
           session.qnRetryKrIdx = undefined;
           await saveF0Session(chatId, session);
@@ -3244,7 +3280,8 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
         `ID клиента: ${clientId}  (для /report <ссылка> ${clientId})`,
       ];
       if (krWarnings > 0) {
-        lines.push(`⚠️ ${krWarnings} KR стоит дозаполнить — дозаполни в таблице: ${result.spreadsheetUrl}`);
+        // Счётчик уже показан в /confirm (ревью эпика 9) — здесь только куда дозаполнять.
+        lines.push(`📝 Незаполненные KR дозаполни прямо в таблице: ${result.spreadsheetUrl}`);
       }
       if (result.shared.length > 0) {
         lines.push(`Доступ выдан: ${result.shared.join(', ')}`);
@@ -3300,6 +3337,11 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
     const readyLines = ['✅ Онбординг подтверждён — данные готовы.'];
     if (session.schedule !== null && session.schedule.length > 0) {
       readyLines.push(`🗓 Расписание встреч: ${session.schedule}`);
+    }
+    // Ревью эпика 9: предупреждение о недозаполненных KR — в самом /confirm-ответе,
+    // а не только в success-ветке Sheets; иначе при сбое/отсутствии шаблона теряется.
+    if (warnings.length > 0) {
+      readyLines.push(`⚠️ ${warnings.length} KR стоит дозаполнить (база/цель/владелец).`);
     }
     await ctx.reply(readyLines.join('\n')).catch(() => {});
 
@@ -3830,14 +3872,27 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
         { step: 'f0.voice_transcribed', chatId, sessionId: session.id, phase: session.phase, len: transcript.length },
         'voice transcribed',
       );
-      await ctx
-        .reply(
-          `🎤 Распознано:\n«${transcript}»\n\nПодтвердить?`,
-          { reply_markup: buildVoiceConfirmKeyboard() },
-        )
-        .catch(() => {});
+      // Ревью эпика 9: длинный транскрипт (голос до 5 мин) > 4096 симв. ронял reply
+      // (MESSAGE_TOO_LONG проглатывался) → кнопки подтверждения не приходили.
+      // Режем на части, клавиатуру вешаем на последнюю.
+      const confirmText = `🎤 Распознано:\n«${transcript}»\n\nПодтвердить?`;
+      const parts = splitForTelegram(confirmText, TELEGRAM_SAFE_MARGIN, '🎤 Распознано (продолжение)');
+      for (let i = 0; i < parts.length; i++) {
+        const isLast = i === parts.length - 1;
+        await ctx
+          .reply(parts[i]!, isLast ? { reply_markup: buildVoiceConfirmKeyboard() } : {})
+          .catch(() => {});
+      }
     } catch (err) {
       f0Log.error({ step: 'f0.voice_error', chatId, err }, 'voice transcription failed');
+      // Ревью эпика 9: сбои голоса — в ops-канал (как все прочие транскрипции).
+      alertOps({
+        pipeline: 'F1',
+        step: 'f0.voice_error',
+        clientId: 'onboarding',
+        error: err,
+        context: { chatId, phase: session.phase },
+      });
       await ctx.reply('🔴 Не удалось распознать голосовое сообщение. Попробуй ещё раз или введи текстом.').catch(() => {});
     } finally {
       session.processing = false;

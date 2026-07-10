@@ -1,6 +1,7 @@
 // Story 9.2 (WP-39 Ф2): grounding — профиль клиента как единственный источник имён.
-// Чистые функции без I/O. Сверка имён: case-insensitive + trim, без fuzzy-match.
-// Намеренно: лучше увидеть 🔴 и исправить, чем молчаливо разрешить неоднозначное.
+// Чистые функции без I/O. Сверка имён: точное (case-insensitive + trim), затем
+// fuzzy по подмножеству токенов (ревью эпика 9: «Петров» ⊂ «Иван Петров»).
+// Неоднозначность (2+ топа-кандидата, напр. однофамильцы) → 🔴 (нужен человек).
 
 import type { ClientTop } from './types.js';
 import type { F0FullExtraction } from './types.js';
@@ -12,8 +13,20 @@ export interface GroundOwnerResult {
   matched: boolean;
 }
 
+function nameTokens(name: string): string[] {
+  return name
+    .trim()
+    .toLowerCase()
+    .split(/\s+/)
+    .filter((t) => t.length > 0);
+}
+
 /**
- * Сверяет извлечённое имя с профильными топами (case-insensitive + trim).
+ * Сверяет извлечённое имя с профильными топами.
+ * 1) Точное совпадение (case-insensitive + trim) — приоритет.
+ * 2) Ревью эпика 9: fuzzy по подмножеству токенов — «Петров» ⊂ «Иван Петров»
+ *    (импорт xlsx часто содержит только фамилию). Принимаем ТОЛЬКО единственного
+ *    кандидата: если под fuzzy подходит 2+ топа (однофамильцы) — неоднозначно → 🔴.
  * Возвращает {name: канонический из профиля, matched: true} или {name: extracted, matched: false}.
  */
 export function groundOwnerName(extracted: string, tops: ClientTop[]): GroundOwnerResult {
@@ -22,6 +35,18 @@ export function groundOwnerName(extracted: string, tops: ClientTop[]): GroundOwn
     if (top.name.trim().toLowerCase() === normalised) {
       return { name: top.name, matched: true };
     }
+  }
+  const extractedTokens = nameTokens(extracted);
+  if (extractedTokens.length === 0) return { name: extracted, matched: false };
+  const fuzzy = tops.filter((top) => {
+    const topTokens = nameTokens(top.name);
+    if (topTokens.length === 0) return false;
+    const extractedSubsetOfTop = extractedTokens.every((t) => topTokens.includes(t));
+    const topSubsetOfExtracted = topTokens.every((t) => extractedTokens.includes(t));
+    return extractedSubsetOfTop || topSubsetOfExtracted;
+  });
+  if (fuzzy.length === 1) {
+    return { name: fuzzy[0]!.name, matched: true };
   }
   return { name: extracted, matched: false };
 }
@@ -57,17 +82,22 @@ export function groundedStakeholderRows(
 ): Array<{ name: string; role: string | null; department: string | null; contact: string | null }> {
   if (!tops || tops.length === 0) return extraction.participants;
 
-  const profileRows = tops.map((t) => ({
-    name: t.name,
-    role: t.title ?? null,
-    department: t.area ?? null,
-    contact: null as string | null,
-  }));
+  // Ревью эпика 9: пополевый merge, а не замена целиком. Профиль побеждает только
+  // непустыми полями; role/department/contact, собранные из документов и диалога
+  // дозаполнения (gap participant_contact), сохраняются, если у топа поле пустое.
+  const profileRows = tops.map((t) => {
+    const match = extraction.participants.find((p) => groundOwnerName(p.name, [t]).matched);
+    return {
+      name: t.name,
+      role: t.title ?? match?.role ?? null,
+      department: t.area ?? match?.department ?? null,
+      contact: match?.contact ?? null,
+    };
+  });
 
-  const seenNormalised = new Set(tops.map((t) => t.name.trim().toLowerCase()));
-
+  // Участники extraction, не совпавшие ни с одним топом (точно или fuzzy).
   const extraRows = extraction.participants.filter(
-    (p) => !seenNormalised.has(p.name.trim().toLowerCase()),
+    (p) => !tops.some((t) => groundOwnerName(p.name, [t]).matched),
   );
 
   return [...profileRows, ...extraRows];

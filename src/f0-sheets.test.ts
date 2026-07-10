@@ -265,12 +265,15 @@ describe('mapStakeholderRows (story 9.2: grounding с tops)', () => {
     expect(names).toContain('Жанель');
   });
 
-  it('дедупликация: «Дамир» в extraction ≠ «Дамир Сайлов» в профиле — оба остаются', () => {
-    // extraction().participants: Дамир, Жанель; профиль: Дамир Сайлов, Азиза Асланова
+  it('fuzzy-merge (ревью эпика 9): «Дамир» ⊂ «Дамир Сайлов» → одна строка, контакт сохранён', () => {
+    // extraction().participants: Дамир (contact @damir), Жанель; профиль: Дамир Сайлов, Азиза Асланова.
+    // Fuzzy: «Дамир» подмножество «Дамир Сайлов» → сливаются; контакт из extraction переживает merge.
     const rows = mapStakeholderRows(extraction(), profileTops);
     const names = rows.map((r) => r.full_name);
     expect(names).toContain('Дамир Сайлов');
-    expect(names).toContain('Дамир'); // не совпадает с профилем (разные имена)
+    expect(names).not.toContain('Дамир'); // слился в профильного топа, не задваивается
+    const damir = rows.find((r) => r.full_name === 'Дамир Сайлов');
+    expect(damir?.telegram).toBe('@damir'); // #6: собранный контакт не затёрт
   });
 
   it('без tops → participants без изменений (старые сессии)', () => {

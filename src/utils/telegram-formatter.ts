@@ -376,7 +376,13 @@ function truncatePlain(s: string, max: number): string {
 
 /** Обрезка с многоточием «…» для пользовательских текстов (F0-черновики и вопросы). */
 export function truncateEllipsis(text: string, max: number): string {
-  return text.length <= max ? text : `${text.slice(0, max - 1)}…`;
+  if (text.length <= max) return text;
+  let head = text.slice(0, max - 1);
+  // Ревью эпика 9: срез мог разрезать суррогатную пару (эмодзи на границе) —
+  // lone surrogate валит sendMessage. Отбрасываем висящий high-surrogate.
+  const lastCode = head.charCodeAt(head.length - 1);
+  if (lastCode >= 0xd800 && lastCode <= 0xdbff) head = head.slice(0, -1);
+  return `${head}…`;
 }
 
 function safeStringifyForOps(v: unknown): string {

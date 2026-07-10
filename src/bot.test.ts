@@ -1645,17 +1645,19 @@ describe('bot — F0 сборка черновика (Story 8.3, W2+W4)', () => 
     await bot.handleUpdate(commandUpdate('/draft'));
     await bot.handleUpdate(commandUpdate('/confirm'));
 
-    // (а) confirm reply не содержит per-KR деталей
+    // (а) confirm reply: счётчик KR теперь ЗДЕСЬ (ревью эпика 9 — виден и при сбое Sheets),
+    // но без per-KR деталей (нет цитат/reasons).
     const confirmReply = calls.find(
       (c) => c.method === 'sendMessage' && (c.payload.text as string).includes('✅ Онбординг подтверждён'),
     );
     expect(confirmReply).toBeDefined();
+    expect(confirmReply!.payload.text).toContain('1 KR стоит дозаполнить');
     expect(confirmReply!.payload.text).not.toContain('«');
     expect(confirmReply!.payload.text).not.toContain('reasons');
 
-    // (б) sheets-reply содержит счётчик KR и URL
+    // (б) sheets-reply: ссылка на таблицу для дозаполнения (без повторного счётчика)
     const sheetsReply = calls.find(
-      (c) => c.method === 'sendMessage' && (c.payload.text as string).includes('⚠️') && (c.payload.text as string).includes('1 KR стоит дозаполнить'),
+      (c) => c.method === 'sendMessage' && (c.payload.text as string).includes('дозаполни прямо в таблице'),
     );
     expect(sheetsReply).toBeDefined();
     expect(sheetsReply!.payload.text).toContain(spreadsheetUrl);
@@ -2784,8 +2786,9 @@ describe('bot — Story 9.5: вопросник с голосовыми отве
     await bot.handleUpdate(callbackUpdate('f0q_obj_done')); // → b2_kr
     await bot.handleUpdate(plainTextUpdate('с 5 до 10 млн к декабрю')); // B2.1: KR с числом → owner step
     const before = calls.length;
-    // B2.2: выбрать ответственного кнопкой (Айгерим — индекс 0)
-    await bot.handleUpdate(callbackUpdate('f0q_owner:0:Айгерим'));
+    // B2.2: выбрать ответственного кнопкой (Айгерим — индекс 0).
+    // Ревью эпика 9: callback_data теперь только индекс, имя — из профиля.
+    await bot.handleUpdate(callbackUpdate('f0q_owner:0'));
     const afterTexts = texts95(calls, before);
     // Единственный objective → advanceQnB2Kr переходит в hypo_collect, посылает B5.1
     expect(afterTexts.some((t) => t.includes('KR') || t.includes('гипотез') || t.includes('ЕСЛИ'))).toBe(true);
