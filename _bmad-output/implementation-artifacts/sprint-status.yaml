@@ -178,9 +178,9 @@ development_status:
   # Утверждён Тимуром 2026-07-10 (топы/decision-maker → /advanced, код НЕ удаляется). Proposal: sprint-change-proposal-2026-07-10-core-reframe.md (24 дефекта D1-D24, шаблоны geonline). Контекст: DS-strategy/inbox/wp-39/.
   # Guardrail эпика: инварианты Epic 7 + clientId==='geonline' fallback + GEONLINE_F0_SHEET_ID + canary/golden/vitest/tsc зелёные после каждой story. Отчёты 10.5/10.6 — под присмотром (golden-eval, не «зелёный по тестам»).
   # PENDING Тимур: прод-деплой (ни пилот, ни агент не деплоили — билд под тестом имел фичи 9.1/9.4, но D1/D2 = настоящие баги, не устаревший билд).
-  epic-10: backlog
-  10-1-priyom-audio-vstrechi-sushchestvuyushchego-klienta: backlog  # D20/D21/D22: аудио встречи активного клиента → Soniox → F1 persist → питает недельный отчёт 9.7 (спина)
-  10-2-proshchayushchiy-vkhod-tyazhelyy-profil-v-advanced: backlog  # реверс 9.1: 🔑-минимум = название+суть; топы/decision-maker/расширенный → /advanced (код сохранён); недостающее в таблице, не допрос
+  epic-10: in_progress  # 2026-07-10: 10-1+10-2 done; движок рестартован на 10-3+10-4 после спасения из auto-rollback
+  10-1-priyom-audio-vstrechi-sushchestvuyushchego-klienta: done  # 2026-07-10: реализовано (commit 5e18b65), спасено из auto-rollback движка (таймаут 3ч на ручной сессии); gate PASS (tsc + 683 vitest); untracked bot-audio-intake-10-1.test.ts удалён — мисмоделировал async-очередь (проверял sendMessage вместо editMessageText)  # D20/D21/D22: аудио встречи активного клиента → Soniox → F1 persist → питает недельный отчёт 9.7 (спина)
+  10-2-proshchayushchiy-vkhod-tyazhelyy-profil-v-advanced: done  # 2026-07-10: реализовано (commit 42d7771 + 53c2dd0), спасено из auto-rollback; gate PASS  # реверс 9.1: 🔑-минимум = название+суть; топы/decision-maker/расширенный → /advanced (код сохранён); недостающее в таблице, не допрос
   10-3-bagfiks-grounding-flag-smesheniya-klientov: backlog  # D2: имя профиля ≠ сущности документов → 🔴/вопрос, не молчаливая сборка OKR по чужому документу
   10-4-bagfiks-xlsx-realnyy-fayl-arb-v1-1: backlog  # D1: словарь синонимов на «ARB Solutions Стратегический трекер v1.1 (1).xlsx» (import_unmappable), файл в тесты
   10-5-treker-gipotez-tretiy-tip-otchyota: backlog  # НОВОЕ: гипотезы по департаментам, обновления статусов + новые + сводка + выводы (шаблон geonline нед.12), «прошлая неделя + дельта»
