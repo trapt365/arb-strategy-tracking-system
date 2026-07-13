@@ -155,7 +155,7 @@ describe('renderF0FullDraftMessage', () => {
   });
 });
 
-describe('renderF0DraftSummaryMessage (Story 8.3, W4)', () => {
+describe('renderF0DraftSummaryMessage (Story 8.3, W4; Story 11.6)', () => {
   it('компактно: счётчики + 🔴-блоки, без полных таблиц KR/гипотез/участников', () => {
     const ex = fullExtraction({
       objectives: [{ title: 'O1', krs: [countableKr, uncountableKr] }],
@@ -168,18 +168,20 @@ describe('renderF0DraftSummaryMessage (Story 8.3, W4)', () => {
       draftId: 'abc12345',
     });
     expect(msg).toContain('Извлечено: цели 1 · KR 2 · гипотезы 2 · участники 2');
-    expect(msg).toContain('🔴 Неполные KR — 1 из 2');
+    expect(msg).toContain('🔴 1 из 2 KR неполных');
     expect(msg).toContain('🔴 Гипотезы без метрики — 1 из 2: H2');
     // Полные таблицы не инлайнятся: нет по-строчных деталей KR и списка участников.
     expect(msg).not.toContain('база: ');
     expect(msg).not.toContain('👥 Участники');
     expect(msg).not.toContain('Дамир Самарханов');
-    // Обещание ссылки после /confirm.
+    expect(msg).not.toContain('O1.2');
+    // Footer: ссылка + упоминание списка неполных KR (когда issues > 0).
     expect(msg).toContain('/confirm');
+    expect(msg).toContain('список неполных KR');
     expect(msg).toContain('Черновик сохранён (abc12345)');
   });
 
-  it('🔴 KR обрезаются до 10, «Не распознано» до 5 — с хвостом «и ещё N»', () => {
+  it('🔴 KR — только счётчик, нет overflow-строки для KR', () => {
     const krs = Array.from({ length: 13 }, (_, i) => ({
       formulation: `KR номер ${i + 1}`,
       base: null,
@@ -198,11 +200,27 @@ describe('renderF0DraftSummaryMessage (Story 8.3, W4)', () => {
       sourceName: 'okr.md',
       draftId: 'abc12345',
     });
-    expect(msg).toContain('🔴 Неполные KR — 13 из 13');
-    expect(msg).toContain('… и ещё 3');
+    expect(msg).toContain('🔴 13 из 13 KR неполных');
+    expect(msg).not.toContain('KR номер 1'); // no per-item lines in compact format
+    expect(msg).toContain('список неполных KR'); // footer mentions KR list when issues > 0
     expect(msg).toContain('❓ Не распознано — 7:');
     expect(msg).toContain('… и ещё 2');
-    expect(msg).not.toContain('KR номер 11');
+  });
+
+  it('все KR считаемы → ✅-строка без перечня', () => {
+    const ex = fullExtraction({
+      objectives: [{ title: 'O1', krs: [countableKr] }],
+    });
+    const msg = renderF0DraftSummaryMessage({
+      extraction: ex,
+      krIssues: [],
+      hypothesisIssues: [],
+      sourceName: 'okr.md',
+      draftId: 'abc12345',
+    });
+    expect(msg).toContain('✅ Все 1 KR считаемы.');
+    expect(msg).not.toContain('🔴');
+    expect(msg).not.toContain('список неполных KR'); // footer omits KR note when no issues
   });
 
   it('OKR отсутствуют → явный сигнал, а не молчание', () => {

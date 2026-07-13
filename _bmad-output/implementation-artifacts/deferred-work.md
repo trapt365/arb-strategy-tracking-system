@@ -424,3 +424,13 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-11-5-llm-ekstrakciya-uchastnika-profilya-a3.md`
   summary: "Нет теста для пути parsed=null (callClaudeSafe 200 OK, но Zod-валидация провалилась) внутри default extractTopWithLlm"
   evidence: Все тесты Story 11.5 инжектируют mock extractTopWithLlm целиком; внутренний путь 'if (result.parsed !== null)' в default-реализации не покрыт ни одним тестом. Требует module-level mocking callClaudeSafe или отдельного unit-теста default функции.
+
+## Deferred from: review of story-11.6 (2026-07-13)
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-11-6-kompaktnaya-dostavka-chernovika-onbordinga.md`
+  summary: "Все 1 KR считаемы." — грамматическая ошибка number-agreement в Russian ("Все 1" вместо числового согласования)
+  evidence: Строка `✅ Все ${totalKrs} KR считаемы.` существовала до Story 11.6; при totalKrs=1 получается "Все 1 KR считаемы." — "все" требует множественного числа. Pre-existing паттерн, не введён этой историей.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-11-6-kompaktnaya-dostavka-chernovika-onbordinga.md`
+  summary: `expect(msg).not.toContain('🔴')` в тесте "все KR считаемы" — слишком широкий assertion; сломается если будущая ветка легитимно использует 🔴 для не-error сигнала
+  evidence: Тест проверяет только что при krIssues=[] и hypothesisIssues=[] нет 🔴. Если добавится новая категория (например, предупреждение с 🔴 о synthesized hypotheses при нулевых issues), тест упадёт ложно. Low risk на текущем codebase.

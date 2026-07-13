@@ -324,12 +324,7 @@ export function renderF0DraftSummaryMessage(args: RenderF0FullDraftArgs): string
   lines.push('');
 
   if (krIssues.length > 0) {
-    lines.push(`🔴 Неполные KR — ${krIssues.length} из ${totalKrs} (дозаполним в диалоге):`);
-    for (const issue of krIssues.slice(0, 10)) {
-      const reasons = issue.reasons.map((r) => F0_ISSUE_REASON_LABELS[r]).join(', ');
-      lines.push(`  – ${issue.ref} «${truncate(issue.formulation, 60)}»: ${reasons}`);
-    }
-    if (krIssues.length > 10) lines.push(`  … и ещё ${krIssues.length - 10}`);
+    lines.push(`🔴 ${krIssues.length} из ${totalKrs} KR неполных — дозаполним в диалоге, детали в таблице.`);
   } else if (totalKrs > 0) {
     lines.push(`✅ Все ${totalKrs} KR считаемы.`);
   }
@@ -356,7 +351,8 @@ export function renderF0DraftSummaryMessage(args: RenderF0FullDraftArgs): string
   }
 
   lines.push('');
-  lines.push('Полные таблицы (OKR, гипотезы, участники) будут в Google Sheets клиента после /confirm — пришлю ссылку.');
+  const krNote = krIssues.length > 0 ? ' и список неполных KR' : '';
+  lines.push(`Полные таблицы (OKR, гипотезы, участники)${krNote} — в Google Sheets клиента после /confirm — пришлю ссылку.`);
   lines.push(`Черновик сохранён (${draftId}).`);
   return lines.join('\n');
 }
