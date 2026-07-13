@@ -181,6 +181,20 @@ function documentUpdate(
   } as unknown as Update;
 }
 
+// Story 11.8: photo update helper for batch photo intake tests.
+function photoUpdate(chatId = TEST_TRACKER_CHAT_ID): Update {
+  return {
+    update_id: updateCounter++,
+    message: {
+      message_id: 2000 + updateCounter,
+      date: Math.floor(Date.now() / 1000),
+      chat: { id: chatId, type: 'private', first_name: 'Test' },
+      from: { id: chatId, is_bot: false, first_name: 'Test' },
+      photo: [{ file_id: 'photo-1', file_unique_id: 'pu-1', width: 100, height: 100, file_size: 1024 }],
+    },
+  } as unknown as Update;
+}
+
 // ─── Fixtures ───────────────────────────────────────────────────────────────
 const validTranscript: Transcript = {
   speakers: [
@@ -285,6 +299,9 @@ interface BuildOpts {
   // Story 11.7: text transcript processing и детект (тесты подменяют).
   transcribeFromPlainText?: BotDeps['transcribeFromPlainText'];
   isTranscriptDocument?: BotDeps['isTranscriptDocument'];
+  // Story 11.8: batch participant extraction (тесты подменяют).
+  extractAllTopsWithLlm?: BotDeps['extractAllTopsWithLlm'];
+  extractAllTopsWithLlmFromImage?: BotDeps['extractAllTopsWithLlmFromImage'];
 }
 
 function buildBot(opts: BuildOpts = {}) {
@@ -320,6 +337,10 @@ function buildBot(opts: BuildOpts = {}) {
       opts.transcribeFromPlainText ?? (async () => validTranscript),
     isTranscriptDocument:
       opts.isTranscriptDocument ?? (() => false),
+    extractAllTopsWithLlm:
+      opts.extractAllTopsWithLlm ?? (async () => []),
+    extractAllTopsWithLlmFromImage:
+      opts.extractAllTopsWithLlmFromImage ?? (async () => []),
     logger: silentLogger,
     token: 'TEST:TOKEN',
     botInfo: FALLBACK_BOT_INFO,
@@ -4230,5 +4251,210 @@ describe('bot — Story 11.7: приём текстового транскрип
       .filter((c) => c.method === 'editMessageText' && c.payload.message_id === FAKE_PROGRESS_MSG_ID)
       .map((c) => c.payload.text as string);
     expect(edits.some((t) => t.includes('Слишком короткий'))).toBe(true);
+  });
+});
+
+// ─── Story 11.8: пакетный приём команды A3.2 ─────────────────────────────────
+
+describe('bot — Story 11.8: пакетный приём команды A3.2', () => {
+  beforeEach(cleanOnboardingArtifacts);
+  afterEach(cleanOnboardingArtifacts);
+
+  /** Helper: bring session to A3.2 (extended profile) */
+  async function setupA32_118(bot: ReturnType<typeof buildBot>['bot']) {
+    await bot.handleUpdate(commandUpdate('/newclient'));
+    await bot.handleUpdate(plainTextUpdate('Ромашка'));
+    await bot.handleUpdate(plainTextUpdate('Продаём ромашки бизнесу'));
+    await bot.handleUpdate(callbackUpdate('f0p_ext')); // → extended profile → A3.2
+  }
+
+  /** Collect sendMessage texts starting from index `from`. */
+  function texts118(calls: ReturnType<typeof buildBot>['calls'], from = 0): string[] {
+    return calls
+      .slice(from)
+      .filter((c) => c.method === 'sendMessage')
+      .map((c) => c.payload.text as string);
+  }
+
+  it('(a) document в A3.2 → extractAllTopsWithLlm вызван → review-экран с кнопками', async () => {
+    const extractAllTopsWithLlm = vi.fn().mockResolvedValue([
+      { name: 'Иван', title: 'CEO', authority: null, area: null },
+    ]);
+    const { bot, calls } = buildBot({
+      downloadTelegramFile: async () => Buffer.from('x'),
+      extractTextFromDocument: async () => ({ sourceName: 'team.docx', kind: 'text', text: 'список команды' }),
+      extractAllTopsWithLlm,
+    });
+    await setupA32_118(bot);
+    const before = calls.length;
+    await bot.handleUpdate(documentUpdate('team.docx'));
+    expect(extractAllTopsWithLlm).toHaveBeenCalled();
+    const sentTexts = texts118(calls, before);
+    expect(sentTexts.some((t) => t.includes('👥 Извлёк 1'))).toBe(true);
+    // Last sendMessage payload should contain inline keyboard with f0p_batch_ok
+    const lastSend = [...calls].reverse().find((c) => c.method === 'sendMessage');
+    const markup = JSON.stringify(lastSend?.payload?.reply_markup ?? {});
+    expect(markup).toContain('f0p_batch_ok');
+  });
+
+  it('(b) фото в A3.2 → extractAllTopsWithLlmFromImage вызван → review-экран', async () => {
+    const extractAllTopsWithLlmFromImage = vi.fn().mockResolvedValue([
+      { name: 'Мария', title: 'CMO', authority: null, area: null },
+      { name: 'Жанель', title: 'CFO', authority: null, area: null },
+    ]);
+    const { bot, calls } = buildBot({
+      downloadTelegramFile: async () => Buffer.from('img'),
+      extractAllTopsWithLlmFromImage,
+    });
+    await setupA32_118(bot);
+    const before = calls.length;
+    await bot.handleUpdate(photoUpdate());
+    expect(extractAllTopsWithLlmFromImage).toHaveBeenCalled();
+    const sentTexts = texts118(calls, before);
+    expect(sentTexts.some((t) => t.includes('2 участников'))).toBe(true);
+  });
+
+  it('(c) f0p_batch_ok → все tops добавлены → переход к A3.3', async () => {
+    const extractAllTopsWithLlm = vi.fn().mockResolvedValue([
+      { name: 'Иван', title: 'CEO', authority: null, area: null },
+    ]);
+    const { bot, calls } = buildBot({
+      downloadTelegramFile: async () => Buffer.from('x'),
+      extractTextFromDocument: async () => ({ sourceName: 'team.docx', kind: 'text', text: 'список команды' }),
+      extractAllTopsWithLlm,
+    });
+    await setupA32_118(bot);
+    // Send document to set up topsBatchPending
+    await bot.handleUpdate(documentUpdate('team.docx'));
+    const before = calls.length;
+    // Accept batch
+    await bot.handleUpdate(callbackUpdate('f0p_batch_ok'));
+    const sentTexts = texts118(calls, before);
+    expect(sentTexts.some((t) => t.includes('Добавлено'))).toBe(true);
+    // Next question should be A3.3 (decision maker) — contains «decision» or «лицо» or «maker»
+    expect(sentTexts.some((t) => /decision|лицо|maker|принимает решени/i.test(t))).toBe(true);
+  });
+
+  it('(d) extractAllTopsWithLlm возвращает [] → fallback сообщение', async () => {
+    const { bot, calls } = buildBot({
+      downloadTelegramFile: async () => Buffer.from('x'),
+      extractTextFromDocument: async () => ({ sourceName: 'empty.docx', kind: 'text', text: '' }),
+      extractAllTopsWithLlm: async () => [],
+    });
+    await setupA32_118(bot);
+    const before = calls.length;
+    await bot.handleUpdate(documentUpdate('empty.docx'));
+    const sentTexts = texts118(calls, before);
+    expect(sentTexts.some((t) => t.includes('Не нашёл участников'))).toBe(true);
+  });
+
+  it('(e) фото вне A3.2 (A1.1, начало) → F0_PROFILE_FIRST_TEXT', async () => {
+    const { bot, calls } = buildBot();
+    // Start /newclient — session is at A1.1
+    await bot.handleUpdate(commandUpdate('/newclient'));
+    const before = calls.length;
+    await bot.handleUpdate(photoUpdate());
+    const sentTexts = texts118(calls, before);
+    expect(sentTexts.some((t) => t.includes('Сначала профиль клиента'))).toBe(true);
+  });
+
+  it('(f) front-load hint появляется при первом вопросе A3.2', async () => {
+    const { bot, calls } = buildBot();
+    const before = calls.length;
+    await setupA32_118(bot);
+    const sentTexts = texts118(calls, before);
+    // The hint should appear in the A3.2 question text
+    expect(sentTexts.some((t) => t.includes('фото 📸'))).toBe(true);
+    expect(sentTexts.some((t) => t.includes('документ 📎'))).toBe(true);
+  });
+
+  // Matrix row 4: f0p_batch_more → pending tops добавлены; клавиатура для ввода следующего
+  it('(g) f0p_batch_more → tops добавлены, остаётся в A3.2 с клавиатурой', async () => {
+    const extractAllTopsWithLlm = vi.fn().mockResolvedValue([
+      { name: 'Иван', title: 'CEO', authority: null, area: null },
+    ]);
+    const { bot, calls } = buildBot({
+      downloadTelegramFile: async () => Buffer.from('x'),
+      extractTextFromDocument: async () => ({ sourceName: 'team.docx', kind: 'text', text: 'список' }),
+      extractAllTopsWithLlm,
+    });
+    await setupA32_118(bot);
+    await bot.handleUpdate(documentUpdate('team.docx'));
+    const before = calls.length;
+    await bot.handleUpdate(callbackUpdate('f0p_batch_more'));
+    const sentTexts = texts118(calls, before);
+    expect(sentTexts.some((t) => t.includes('Добавлено 1'))).toBe(true);
+    // Should NOT advance to next question — stays at A3.2 keyboard
+    const lastSend = [...calls].reverse().find((c) => c.method === 'sendMessage');
+    const markup = JSON.stringify(lastSend?.payload?.reply_markup ?? {});
+    expect(markup).toContain('f0p_top_done');
+  });
+
+  // Matrix row 5: фото > 20 МБ → F0_TOO_LARGE_TEXT
+  it('(h) фото > 20 МБ в A3.2 → предупреждение о размере', async () => {
+    const { bot, calls } = buildBot();
+    await setupA32_118(bot);
+    const before = calls.length;
+    const largePhoto: Update = {
+      update_id: 9900,
+      message: {
+        message_id: 9901,
+        date: Math.floor(Date.now() / 1000),
+        chat: { id: TEST_TRACKER_CHAT_ID, type: 'private', first_name: 'Test' },
+        from: { id: TEST_TRACKER_CHAT_ID, is_bot: false, first_name: 'Test' },
+        photo: [{ file_id: 'big-1', file_unique_id: 'pu-big', width: 4000, height: 3000, file_size: 21 * 1024 * 1024 }],
+      },
+    } as unknown as Update;
+    await bot.handleUpdate(largePhoto);
+    const sentTexts = texts118(calls, before);
+    expect(sentTexts.some((t) => t.includes('20 МБ'))).toBe(true);
+  });
+
+  // Matrix row 7: unsupported document type в A3.2 → F0_UNSUPPORTED_TEXT
+  it('(i) unsupported документ в A3.2 → F0_UNSUPPORTED_TEXT', async () => {
+    const { bot, calls } = buildBot();
+    await setupA32_118(bot);
+    const before = calls.length;
+    const unsupportedDoc: Update = {
+      update_id: 9902,
+      message: {
+        message_id: 9903,
+        date: Math.floor(Date.now() / 1000),
+        chat: { id: TEST_TRACKER_CHAT_ID, type: 'private', first_name: 'Test' },
+        from: { id: TEST_TRACKER_CHAT_ID, is_bot: false, first_name: 'Test' },
+        document: { file_id: 'f-zip', file_unique_id: 'u-zip', file_name: 'archive.zip', mime_type: 'application/zip', file_size: 1024 },
+      },
+    } as unknown as Update;
+    await bot.handleUpdate(unsupportedDoc);
+    const sentTexts = texts118(calls, before);
+    expect(sentTexts.some((t) => t.includes('Поддерживаются'))).toBe(true);
+  });
+
+  // Matrix row 8: session.processing = true → F0_BUSY_TEXT for batch photo
+  it('(j) session.processing=true при фото → F0_BUSY_TEXT', async () => {
+    let downloadCalled!: () => void;
+    const downloadCalledPromise = new Promise<void>((res) => { downloadCalled = res; });
+    let resolveDownload!: (v: Buffer) => void;
+    const blockedDownload = new Promise<Buffer>((res) => { resolveDownload = res; });
+    const { bot, calls } = buildBot({
+      downloadTelegramFile: vi
+        .fn()
+        .mockImplementationOnce(() => { downloadCalled(); return blockedDownload; })
+        .mockResolvedValue(Buffer.from('img')),
+      extractAllTopsWithLlmFromImage: async () => [{ name: 'X', title: null, authority: null, area: null }],
+    });
+    await setupA32_118(bot);
+    const before = calls.length;
+    // Start first photo update — will block at downloadTelegramFile
+    const firstUpdate = bot.handleUpdate(photoUpdate());
+    // Wait until the first handler has set session.processing = true (download was called)
+    await downloadCalledPromise;
+    // Second photo → should see processing = true
+    await bot.handleUpdate(photoUpdate());
+    // Release the first download
+    resolveDownload(Buffer.from('img'));
+    await firstUpdate;
+    const sentTexts = texts118(calls, before);
+    expect(sentTexts.some((t) => t.includes('обрабатываю'))).toBe(true);
   });
 });

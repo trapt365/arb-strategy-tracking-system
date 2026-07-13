@@ -406,3 +406,126 @@ export async function callClaudeSafe<T>(
   }
   return { raw, parsed: null, validationErrors: result.validationErrors, usage };
 }
+
+// Story 11.8: Vision API call — image + text prompt → structured JSON.
+// Replicates executeClaudeCall retry/error logic with an image content block.
+// Intentionally a separate function to keep executeClaudeCall signature clean.
+export async function callClaudeWithImage<T>(
+  imageBuffer: Buffer,
+  imageMimeType: 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp',
+  textPrompt: string,
+  opts: CallClaudeOpts<T>,
+): Promise<CallClaudeSafeResult<T>> {
+  const baseLogger = opts.logger ?? rootLogger;
+  const log =
+    typeof (baseLogger as Logger).child === 'function'
+      ? (baseLogger as Logger).child({ step: `claude.${opts.stepName}` })
+      : baseLogger;
+  const model = opts.model ?? config.ANTHROPIC_MODEL;
+  const maxTokens = opts.maxTokens ?? config.CLAUDE_MAX_TOKENS;
+  const startMs = Date.now();
+
+  let attemptCount = 0;
+  let response: Awaited<ReturnType<Anthropic['messages']['create']>>;
+  try {
+    response = await withRetry(
+      async () => {
+        attemptCount++;
+        const client = getClient();
+        const requestOpts: { signal?: AbortSignal; timeout?: number } = {};
+        if (opts.signal) requestOpts.signal = opts.signal;
+        if (opts.timeoutMs !== undefined) requestOpts.timeout = opts.timeoutMs;
+        return client.messages.create(
+          {
+            model,
+            max_tokens: maxTokens,
+            messages: [
+              {
+                role: 'user',
+                content: [
+                  {
+                    type: 'image',
+                    source: {
+                      type: 'base64',
+                      media_type: imageMimeType,
+                      data: imageBuffer.toString('base64'),
+                    },
+                  },
+                  { type: 'text', text: textPrompt },
+                ],
+              },
+            ],
+          },
+          Object.keys(requestOpts).length > 0 ? requestOpts : undefined,
+        );
+      },
+      {
+        maxRetries: 3,
+        backoffMs: [1000, 3000, 9000],
+        shouldRetry: shouldRetryClaude,
+        logger: log,
+        signal: opts.signal,
+      },
+    );
+  } catch (err) {
+    if (err instanceof F1PipelineError) throw err;
+    const e = err as ClaudeErrorShape;
+    if (e?.name === 'AbortError') {
+      log.warn({ step: `claude.${opts.stepName}`, reason: 'aborted_by_caller' });
+      throw err;
+    }
+    throw new F1PipelineError(
+      'claude_api',
+      {
+        stepName: opts.stepName,
+        httpStatus: typeof e?.status === 'number' ? e.status : undefined,
+        anthropicErrorType: e?.error?.type,
+        attemptCount,
+        message: (err as Error)?.message,
+      },
+      { cause: err },
+    );
+  }
+
+  const textBlocks = response.content.filter((b) => b.type === 'text');
+  if (textBlocks.length === 0) {
+    throw new F1PipelineError('claude_response_invalid', {
+      reason: 'no_text_block',
+      stepName: opts.stepName,
+      response_id: (response as { id?: string }).id,
+    });
+  }
+  const raw = textBlocks.map((b) => (b as { text: string }).text).join('');
+  const usage = response.usage ?? { input_tokens: 0, output_tokens: 0 };
+  const durationMs = Date.now() - startMs;
+
+  if ((response as { stop_reason?: string | null }).stop_reason === 'max_tokens') {
+    log.warn(
+      { step: `claude.${opts.stepName}.max_tokens_truncated`, outputTokens: usage.output_tokens, maxTokens },
+      'claude image call output truncated at max_tokens ceiling',
+    );
+    throw new F1PipelineError('claude_response_invalid', {
+      reason: 'max_tokens_truncated',
+      stepName: opts.stepName,
+      outputTokens: usage.output_tokens,
+      maxTokens,
+    });
+  }
+
+  log.info(
+    {
+      step: `claude.${opts.stepName}.complete`,
+      durationMs,
+      model,
+      inputTokens: usage.input_tokens,
+      outputTokens: usage.output_tokens,
+    },
+    'claude image call complete',
+  );
+
+  const result = safeParseClaudeJSON(raw, opts.schema, usage);
+  if (result.parsed !== null) {
+    return { raw, parsed: result.parsed, usage };
+  }
+  return { raw, parsed: null, validationErrors: result.validationErrors, usage };
+}

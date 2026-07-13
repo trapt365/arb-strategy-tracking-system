@@ -448,3 +448,11 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-11-7-gotovyy-transkript-na-otchyot.md`
   summary: AC "F0-сессия остаётся нетронутой" has no integration test — no test writes an F0 session then verifies it is intact after transcript routing
   evidence: Code provably cannot modify the session (early return before getOrRestoreF0Session), but the AC is not pinned by any test. Low risk; code inspection sufficient.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-11-8-paketnyy-priyom-i-front-load-onbordinga.md`
+  summary: `callClaudeWithImage` has no unit tests at the adapter level — only injected mock coverage at bot layer
+  evidence: Verification Gap reviewer confirmed: all 11.8 tests substitute `extractAllTopsWithLlmFromImage` via BotDeps; `callClaudeWithImage` itself is never executed. Logic mirrors `callClaudeSafe` (which IS tested), but image content block construction and MIME passthrough are untested. Medium severity.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-11-8-paketnyy-priyom-i-front-load-onbordinga.md`
+  summary: `handleProfileA3BatchDocument` session.processing guard has no concurrency test (only photo path tested in test-j)
+  evidence: Removing the `if (session.processing)` check in the document handler would not break any test. The guard is identical to the photo path; test-j demonstrates the pattern for photo. Low risk but a test gap.

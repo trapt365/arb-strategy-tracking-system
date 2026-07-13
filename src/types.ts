@@ -403,6 +403,8 @@ export const ClientTopSchema = z.object({
   area: z.string().nullable(), // зона ответственности
 });
 export type ClientTop = z.infer<typeof ClientTopSchema>;
+// Story 11.8: batch array schema for extracting multiple participants at once.
+export const ClientTopArraySchema = z.array(ClientTopSchema);
 
 // Финансовая «Точка А» (A2) + желаемая цифра (A4.5). Все поля optional —
 // неотвеченные вопросы остаются незаполненными (инвариант 3).

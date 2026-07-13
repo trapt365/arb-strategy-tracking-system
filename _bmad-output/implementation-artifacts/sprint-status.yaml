@@ -203,6 +203,6 @@ development_status:
   11-5-llm-ekstrakciya-uchastnika-profilya-a3: done  # P1: разбор участника (A3) LLM-экстракцией {имя/должность/полномочия/зона} из естественной фразы, точечный доспрос вместо хард-ретрая a3_2
   11-6-kompaktnaya-dostavka-chernovika-onbordinga: done  # P2: резюме (счётчики + 1-2 строки «дозаполнить») + ссылка на Sheet вместо полотна неполных KR (f0.draft_sent, bot.js после runF0FullDraft)
   11-7-gotovyy-transkript-na-otchyot: done  # Фича/баг: /report принимает md/txt/docx-транскрипт; детект транскрипт vs онбординг-документ (сейчас md перехватывается онбордингом)
-  11-8-paketnyy-priyom-i-front-load-onbordinga: backlog  # Фича: детект типа входа (фото/OCR, аудио, файл) → маршрутизация; карта вопросов + предзаполнение + review-режим (принять/править) вместо строгого Q&A
+  11-8-paketnyy-priyom-i-front-load-onbordinga: done  # Фича: детект типа входа (фото/OCR, аудио, файл) → маршрутизация; карта вопросов + предзаполнение + review-режим (принять/править) вместо строгого Q&A
   11-9-polirovka-terminy-token-redaction-username: backlog  # P2/полировка: «топы»→«участники работы с трекером», убрать decision-maker a3_3, редакция bot-токена из логов (security), Manual TODO BotFather username
   epic-11-retrospective: optional

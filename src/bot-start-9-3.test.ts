@@ -2,7 +2,9 @@
  * Story 9.3: /start flow tests — отдельный файл, чтобы vi.mock hoisting не влиял
  * на существующие 621 тест в bot.test.ts.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { promises as fsp } from 'node:fs';
+import { join as joinPath } from 'node:path';
 import pino from 'pino';
 import type { Update } from 'grammy/types';
 import { createBot, FALLBACK_BOT_INFO, type BotDeps } from './bot.js';
@@ -56,7 +58,7 @@ vi.mock('./f0-client-card.js', () => ({
 // ── Test helpers ──────────────────────────────────────────────────────────────
 
 const silentLogger = pino({ level: 'silent' }) as unknown as BotDeps['logger'];
-const TEST_CHAT_ID = 7890;
+const TEST_CHAT_ID = 7893; // distinct from bot.test.ts (7890) and bot-weekly-9-7.test.ts (7891)
 
 let updateCounter = 1;
 
@@ -180,9 +182,20 @@ function buildBot() {
   return { ...created, calls };
 }
 
+// ── Session cleanup (prevents cross-file race with bot.test.ts chatId 7890) ──
+
+async function cleanSessionArtifacts(): Promise<void> {
+  await fsp
+    .rm(joinPath('data', '.onboarding', `session-${TEST_CHAT_ID}.json`), { force: true })
+    .catch(() => {});
+}
+
 // ── beforeEach: reset mocks to safe defaults ──────────────────────────────────
 
-beforeEach(() => {
+afterEach(cleanSessionArtifacts);
+
+beforeEach(async () => {
+  await cleanSessionArtifacts();
   vi.clearAllMocks();
   // Default: empty registry, no active client
   mockLoadRegistry.mockResolvedValue({});

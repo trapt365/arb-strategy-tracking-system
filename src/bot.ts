@@ -81,7 +81,7 @@ import {
   setActiveClient,
 } from './client-registry.js';
 import type { ClientProfile, ClientTop, F0FullExtraction } from './types.js';
-import { ClientTopSchema } from './types.js';
+import { ClientTopSchema, ClientTopArraySchema } from './types.js';
 import {
   PROFILE_MIN_COUNT,
   PROFILE_EXT_COUNT,
@@ -115,7 +115,7 @@ import {
   F0_MAX_DOC_CHARS,
 } from './utils/f0-input.js';
 import { F0OnboardingError, F0SheetsError, F1PipelineError } from './errors.js';
-import { classifyClaudeApiError, callClaudeSafe } from './adapters/claude.js';
+import { classifyClaudeApiError, callClaudeSafe, callClaudeWithImage } from './adapters/claude.js';
 import { assertTranscriptDuration } from './utils/transcript-duration-guard.js';
 import { createReportQueue, QueueOverflowError, type ReportQueue } from './utils/report-queue.js';
 import {
@@ -205,6 +205,10 @@ export interface BotDeps {
   transcribeFromPlainText?: typeof defaultTranscribeFromPlainText;
   /** Story 11.7: testable detection of transcript vs onboarding document. */
   isTranscriptDocument?: (text: string) => boolean;
+  /** Story 11.8: batch extraction from text for A3.2 team list (тесты подменяют). */
+  extractAllTopsWithLlm?: (text: string) => Promise<ClientTop[]>;
+  /** Story 11.8: batch extraction from image for A3.2 (тесты подменяют). */
+  extractAllTopsWithLlmFromImage?: (buf: Buffer, mimeType: string) => Promise<ClientTop[]>;
 }
 
 export interface CreatedBot {
@@ -254,6 +258,48 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
         /* silent — fallback below */
       }
       return topFromRawAnswer(phrase);
+    });
+
+  // Story 11.8: batch extraction from text document for A3.2 participant list.
+  const extractAllTopsWithLlm =
+    deps.extractAllTopsWithLlm ??
+    (async (text: string): Promise<ClientTop[]> => {
+      try {
+        const prompt = await defaultLoadPrompt('extract-all-tops', { text });
+        const result = await callClaudeSafe(prompt, {
+          stepName: 'f0.extract_all_tops',
+          schema: ClientTopArraySchema,
+          maxTokens: 800,
+          logger: f0Log,
+        });
+        return result.parsed ?? [];
+      } catch {
+        return [];
+      }
+    });
+
+  // Story 11.8: batch extraction from image for A3.2 participant list.
+  const extractAllTopsWithLlmFromImage =
+    deps.extractAllTopsWithLlmFromImage ??
+    (async (buf: Buffer, mimeType: string): Promise<ClientTop[]> => {
+      const imagePrompt =
+        'Extract ALL people from this image as a JSON array. Fields: name (string, required), title (string or null), authority (string or null), area (string or null). Return only the JSON array, no extra text.';
+      try {
+        const result = await callClaudeWithImage(
+          buf,
+          mimeType as 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp',
+          imagePrompt,
+          {
+            stepName: 'f0.extract_all_tops_image',
+            schema: ClientTopArraySchema,
+            maxTokens: 800,
+            logger: f0Log,
+          },
+        );
+        return result.parsed ?? [];
+      } catch {
+        return [];
+      }
     });
 
   const token = deps.token ?? config.TELEGRAM_BOT_TOKEN;
@@ -398,6 +444,8 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
     // Story 10.3: in-memory флаг смешения клиентов. Не персистируется.
     pendingMismatchDraft?: F0FullDraftResult;
     companyMismatchPending?: boolean;
+    // Story 11.8: pending batch-review список участников (только in-memory).
+    topsBatchPending?: ClientTop[];
   }
   const f0Sessions = new Map<number, F0Session>();
 
@@ -1304,11 +1352,18 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
     const total = inExt ? PROFILE_EXT_COUNT : PROFILE_MIN_COUNT;
     const prev = qIndex > 0 ? nextProfileQuestion(qIndex - 1) : undefined;
     const withHeader = prev === undefined || prev.block !== q.block || qIndex === PROFILE_MIN_COUNT;
-    const text = renderProfileQuestion(q, { index, total, withHeader });
+    let text = renderProfileQuestion(q, { index, total, withHeader });
     let keyboard: InlineKeyboard | undefined;
     if (q.id === 'a3_3') keyboard = profileDmKeyboard(session);
     else if (q.id === 'a4_6') keyboard = profilePrioKeyboard(session);
     else if (q.id === 'a3_2' && (profile.tops ?? []).length > 0) keyboard = f0ProfileTopsKeyboard;
+    // Story 11.8: front-load batch hint at A3.2 when no tops yet.
+    // Note: a3_2 is always in extended questions (inExt=true), so we omit the !inExt guard
+    // from the spec to make the hint actually appear per the AC.
+    if (q.id === 'a3_2' && (profile.tops ?? []).length === 0) {
+      text +=
+        '\n\n💡 Можешь прислать список разом — фото 📸, документ 📎 (PDF/DOCX/TXT) или голос 🎤 (добавляю по одному). Или вводи текстом по одному.';
+    }
     await ctx
       .reply(text, keyboard !== undefined ? { reply_markup: keyboard } : undefined)
       .catch(() => {});
@@ -1457,6 +1512,45 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
       return;
     }
     await advanceProfileQuestion(ctx, session, q, 'answered');
+  });
+
+  // Story 11.8: batch review — ✅ Принять: merge pending tops and advance to A3.3.
+  bot.callbackQuery('f0p_batch_ok', async (ctx) => {
+    const session = await getProfileSessionForCallback(ctx, 'a3_2');
+    if (session === undefined) return;
+    const pending = session.topsBatchPending;
+    if (!pending || pending.length === 0) {
+      await ctx.reply(F0_PROFILE_STALE_TEXT).catch(() => {});
+      return;
+    }
+    const q = currentProfileQuestion(session)!;
+    session.profile ??= {};
+    session.profile.tops = [...(session.profile.tops ?? []), ...pending];
+    session.topsBatchPending = undefined;
+    const total = session.profile.tops.length;
+    await ctx.reply(`✅ Добавлено ${pending.length} участников (всего: ${total}).`).catch(() => {});
+    await advanceProfileQuestion(ctx, session, q, 'answered');
+  });
+
+  // Story 11.8: batch review — ✏️ Добавить ещё: merge pending tops and stay at A3.2.
+  bot.callbackQuery('f0p_batch_more', async (ctx) => {
+    const session = await getProfileSessionForCallback(ctx, 'a3_2');
+    if (session === undefined) return;
+    const pending = session.topsBatchPending;
+    if (!pending || pending.length === 0) {
+      await ctx.reply(F0_PROFILE_STALE_TEXT).catch(() => {});
+      return;
+    }
+    const chatId = ctx.chat!.id;
+    session.profile ??= {};
+    session.profile.tops = [...(session.profile.tops ?? []), ...pending];
+    session.topsBatchPending = undefined;
+    await saveF0Session(chatId, session);
+    await ctx
+      .reply(`✅ Добавлено ${pending.length}. Пришли следующего участника свободной фразой.`, {
+        reply_markup: f0ProfileTopsKeyboard,
+      })
+      .catch(() => {});
   });
 
   bot.callbackQuery(/^f0p_dm:(\d+)$/, async (ctx) => {
@@ -2536,8 +2630,13 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
     }
     // Story 9.1: в фазе профиля документы стратегии не принимаются (AC1). Исключение —
     // A3.1 «оргструктура файлом»: сохраняем референс (имя файла), содержимое не парсим.
+    // Story 11.8: A3.2 batch document intake — document at a3_2 extracts full team list.
     if (session.phase === 'profile') {
       const q = currentProfileQuestion(session);
+      if (q?.id === 'a3_2' && !profileOfferPending(session)) {
+        await handleProfileA3BatchDocument(ctx, chatId, session);
+        return;
+      }
       if (q?.id === 'a3_1' && !profileOfferPending(session)) {
         const fileName = ctx.message.document.file_name ?? 'document';
         session.profile ??= {};
@@ -4193,6 +4292,21 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
     }
   });
 
+  // ───────── Story 11.8: batch photo intake at A3.2 ─────────
+
+  bot.on('message:photo', async (ctx) => {
+    const chatId = ctx.chat.id;
+    if (!trackerChatIds.has(chatId)) return;
+    const session = await getOrRestoreF0Session(chatId);
+    if (session === undefined || session.phase !== 'profile') return; // не в онбординге
+    const q = currentProfileQuestion(session);
+    if (q?.id !== 'a3_2' || profileOfferPending(session)) {
+      await ctx.reply(F0_PROFILE_FIRST_TEXT).catch(() => {});
+      return;
+    }
+    await handleProfileA3BatchPhoto(ctx, chatId, session);
+  });
+
   // ───────── Story 10.1: обработчик аудио/видео встречи существующего клиента ─────────
 
   async function handleMeetingFileIntake(ctx: Context, chatId: number): Promise<void> {
@@ -4478,6 +4592,116 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
   bot.on('message:video', async (ctx) => {
     await handleMeetingFileIntake(ctx, ctx.chat.id);
   });
+
+  // ───────── Story 11.8: batch participant intake helpers ─────────
+
+  /** Deliver batch review screen with inline Accept / Add-More buttons. */
+  async function deliverTopsBatchReview(
+    ctx: Context,
+    chatId: number,
+    session: F0Session,
+    tops: ClientTop[],
+    sourceName: string,
+  ): Promise<void> {
+    session.topsBatchPending = tops;
+    await saveF0Session(chatId, session);
+    const listLines = tops
+      .map((t, i) => {
+        const title = t.title ? `, ${t.title}` : '';
+        return `  ${i + 1}. ${t.name}${title}`;
+      })
+      .join('\n');
+    const reviewText = `👥 Извлёк ${tops.length} участников (из: ${sourceName}):\n${listLines}`;
+    const keyboard = new InlineKeyboard()
+      .text('✅ Принять', 'f0p_batch_ok')
+      .text('✏️ Добавить ещё', 'f0p_batch_more');
+    await ctx.reply(reviewText, { reply_markup: keyboard }).catch(() => {});
+  }
+
+  /** Handle document upload at profile/A3.2 — extract team list via LLM. */
+  async function handleProfileA3BatchDocument(
+    ctx: Context,
+    chatId: number,
+    session: F0Session,
+  ): Promise<void> {
+    const doc = ctx.message?.document;
+    if (doc === undefined) return;
+    if (!isSupportedF0Document(doc.file_name, doc.mime_type)) {
+      await ctx.reply(F0_UNSUPPORTED_TEXT).catch(() => {});
+      return;
+    }
+    if (doc.file_size !== undefined && doc.file_size > F0_MAX_FILE_BYTES) {
+      await ctx.reply(F0_TOO_LARGE_TEXT).catch(() => {});
+      return;
+    }
+    if (session.processing) {
+      await ctx.reply(F0_BUSY_TEXT).catch(() => {});
+      return;
+    }
+    session.processing = true;
+    try {
+      await ctx.reply('📄 Разбираю…').catch(() => {});
+      const file = await ctx.getFile();
+      if (file.file_path === undefined) throw new Error('no file_path for document');
+      const buf = await downloadTelegramFile(file.file_path);
+      const extracted = await extractTextFromDocument(buf, doc.file_name, doc.mime_type);
+      const tops = await extractAllTopsWithLlm(extracted.text);
+      if (tops.length === 0) {
+        f0Log.warn({ step: 'f0.batch_doc.empty', chatId, sessionId: session.id }, 'batch document: no tops extracted');
+        await ctx
+          .reply('⚠️ Не нашёл участников в документе — добавь вручную.')
+          .catch(() => {});
+        return;
+      }
+      await deliverTopsBatchReview(ctx, chatId, session, tops, extracted.sourceName);
+    } catch (err) {
+      f0Log.error({ step: 'f0.batch_doc.error', chatId, err }, 'batch document extraction failed');
+      await ctx.reply('🔴 Не удалось разобрать документ. Попробуй ещё раз или добавь участников вручную.').catch(() => {});
+    } finally {
+      session.processing = false;
+    }
+  }
+
+  /** Handle photo upload at profile/A3.2 — extract team list via Claude Vision. */
+  async function handleProfileA3BatchPhoto(
+    ctx: Context,
+    chatId: number,
+    session: F0Session,
+  ): Promise<void> {
+    const photos = ctx.message?.photo;
+    if (!photos || photos.length === 0) return;
+    // Take the largest variant (last element per Telegram spec).
+    const photo = photos[photos.length - 1]!;
+    if (photo.file_size !== undefined && photo.file_size > F0_MAX_FILE_BYTES) {
+      await ctx.reply(F0_TOO_LARGE_TEXT).catch(() => {});
+      return;
+    }
+    if (session.processing) {
+      await ctx.reply(F0_BUSY_TEXT).catch(() => {});
+      return;
+    }
+    session.processing = true;
+    try {
+      await ctx.reply('🔍 Анализирую фото…').catch(() => {});
+      const file = await ctx.getFile();
+      if (file.file_path === undefined) throw new Error('no file_path for photo');
+      const buf = await downloadTelegramFile(file.file_path);
+      const tops = await extractAllTopsWithLlmFromImage(buf, 'image/jpeg');
+      if (tops.length === 0) {
+        f0Log.warn({ step: 'f0.batch_photo.empty', chatId, sessionId: session.id }, 'batch photo: no tops extracted');
+        await ctx
+          .reply('⚠️ Не удалось извлечь участников из фото — добавь вручную.')
+          .catch(() => {});
+        return;
+      }
+      await deliverTopsBatchReview(ctx, chatId, session, tops, 'фото');
+    } catch (err) {
+      f0Log.error({ step: 'f0.batch_photo.error', chatId, err }, 'batch photo extraction failed');
+      await ctx.reply('🔴 Не удалось разобрать фото. Попробуй ещё раз или добавь участников вручную.').catch(() => {});
+    } finally {
+      session.processing = false;
+    }
+  }
 
   /** Dispatch transcript в нужный обработчик по текущей фазе. */
   async function dispatchVoiceTranscript(ctx: Context, session: F0Session, transcript: string): Promise<void> {
