@@ -111,6 +111,33 @@ export function shouldRetryClaude(error: unknown): boolean {
   return false;
 }
 
+export type ClaudeApiErrorKind = 'billing' | 'rate_limit' | 'too_large_context' | 'other';
+
+export function classifyClaudeApiError(err: F1PipelineError): ClaudeApiErrorKind {
+  const ctx = err.context as { httpStatus?: number; anthropicErrorType?: string; message?: string };
+  const { httpStatus, anthropicErrorType, message } = ctx;
+
+  // Check rate_limit first: status codes 429/529 are unambiguous.
+  if (
+    httpStatus === 429 ||
+    httpStatus === 529 ||
+    anthropicErrorType === 'rate_limit_error' ||
+    anthropicErrorType === 'overloaded_error'
+  ) {
+    return 'rate_limit';
+  }
+
+  if (httpStatus === 400) {
+    const lowerMsg = message?.toLowerCase() ?? '';
+    if (lowerMsg.includes('credit balance')) return 'billing';
+    if (lowerMsg.includes('prompt is too long') || lowerMsg.includes('context_length') || lowerMsg.includes('too long')) {
+      return 'too_large_context';
+    }
+  }
+
+  return 'other';
+}
+
 // Paired strip: only chop the trailing ``` when we also matched an opening fence.
 // The previous form sliced trailing backticks unconditionally, corrupting JSON
 // outputs that ended with `` ``` `` inside a citation string. Also: case-insensitive

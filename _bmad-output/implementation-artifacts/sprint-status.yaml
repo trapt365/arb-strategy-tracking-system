@@ -199,7 +199,7 @@ development_status:
   11-1-globalnyy-obrabotchik-oshibok-i-graceful-audio-20mb: done  # P0 блокер: bot.catch (нет обработчика → краш прода) + проверка file_size до getFile, graceful >20 МБ (handleMeetingFileIntake bot.js:3535)
   11-2-ustoychivyy-parser-otchyota-pustoy-owner: done  # P0 блокер: parseOkrs терпит пустой owner (дефолт «—»/warn, не throw); онбординг ставит owner-заглушку (sheets.js:486 → readClientContext → processJob)
   11-3-rasshit-klientskie-tablicy-na-servis-akkaunt: done  # P1 блокер: read/write identity разъезд — таблица под user-OAuth расшаривается на сервис-аккаунт (editor); все read-пайплайны F1/F5 на свежем клиенте без 403 (sheets.js:450)
-  11-4-klassifikaciya-oshibok-claude-api: backlog  # P1: ветвление по httpStatus/anthropicErrorType (credit/rate-limit/context); не советовать «убери файлы» при единственном файле (f0-onboarding.js:80 → bot.js:2380 → claude.js:209)
+  11-4-klassifikaciya-oshibok-claude-api: done  # P1: ветвление по httpStatus/anthropicErrorType (credit/rate-limit/context); не советовать «убери файлы» при единственном файле (f0-onboarding.js:80 → bot.js:2380 → claude.js:209)
   11-5-llm-ekstrakciya-uchastnika-profilya-a3: backlog  # P1: разбор участника (A3) LLM-экстракцией {имя/должность/полномочия/зона} из естественной фразы, точечный доспрос вместо хард-ретрая a3_2
   11-6-kompaktnaya-dostavka-chernovika-onbordinga: backlog  # P2: резюме (счётчики + 1-2 строки «дозаполнить») + ссылка на Sheet вместо полотна неполных KR (f0.draft_sent, bot.js после runF0FullDraft)
   11-7-gotovyy-transkript-na-otchyot: backlog  # Фича/баг: /report принимает md/txt/docx-транскрипт; детект транскрипт vs онбординг-документ (сейчас md перехватывается онбордингом)

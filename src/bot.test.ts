@@ -3715,3 +3715,76 @@ describe('bot — Story 11.1: graceful аудио/видео >20 МБ', () => {
     expect(getFileCalled).toBe(true);
   });
 });
+
+// ─── Story 11.4: классификация ошибок Claude API ────────────────────────────
+
+describe('bot — Story 11.4: claude_api error messages in buildF0Draft', () => {
+  beforeEach(cleanOnboardingArtifacts);
+  afterEach(cleanOnboardingArtifacts);
+
+  function buildF0ErrorBot(err: Error) {
+    return buildBot({
+      extractTextFromDocument: ((async (_buf: Buffer, name?: string) => ({
+        sourceName: name ?? 'doc.md',
+        kind: 'text' as const,
+        text: 'x'.repeat(5_000),
+      })) as unknown) as BotDeps['extractTextFromDocument'],
+      runF0FullDraft: ((async () => { throw err; }) as unknown) as BotDeps['runF0FullDraft'],
+    });
+  }
+
+  async function draftErrorMsg(err: Error, fileCount = 1): Promise<string> {
+    const { bot, calls } = buildF0ErrorBot(err);
+    await completeProfileMinimum(bot);
+    for (let i = 0; i < fileCount; i++) {
+      await bot.handleUpdate(documentUpdate(`file${i + 1}.md`));
+    }
+    await bot.handleUpdate(commandUpdate('/draft'));
+    const edits = calls.filter((c) => c.method === 'editMessageText');
+    const errEdit = edits.find((e) => (e.payload.text as string).startsWith('⚠️'));
+    return (errEdit?.payload.text as string) ?? '';
+  }
+
+  it('billing (400 + credit balance) → кредиты API, НЕ «Убери лишние файлы»', async () => {
+    const err = new F1PipelineError('claude_api', {
+      httpStatus: 400,
+      message: 'Your credit balance is too low to access the Claude API.',
+    });
+    const msg = await draftErrorMsg(err, 1);
+    expect(msg).toContain('кредиты API');
+    expect(msg).not.toContain('Убери лишние');
+  });
+
+  it('rate_limit (429) → повтори, НЕ «Убери лишние файлы»', async () => {
+    const err = new F1PipelineError('claude_api', { httpStatus: 429 });
+    const msg = await draftErrorMsg(err, 1);
+    expect(msg).toContain('повтори');
+    expect(msg).not.toContain('Убери лишние');
+  });
+
+  it('rate_limit (529) → повтори, НЕ «Убери лишние файлы»', async () => {
+    const err = new F1PipelineError('claude_api', { httpStatus: 529 });
+    const msg = await draftErrorMsg(err, 1);
+    expect(msg).toContain('повтори');
+    expect(msg).not.toContain('Убери лишние');
+  });
+
+  it('too_large_context + 2 файла → Убери лишние файлы', async () => {
+    const err = new F1PipelineError('claude_api', { httpStatus: 400, message: 'prompt is too long' });
+    const msg = await draftErrorMsg(err, 2);
+    expect(msg).toContain('Убери лишние файлы');
+  });
+
+  it('too_large_context + 1 файл → НЕ «Убери лишние», содержит «слишком большой»', async () => {
+    const err = new F1PipelineError('claude_api', { httpStatus: 400, message: 'prompt is too long' });
+    const msg = await draftErrorMsg(err, 1);
+    expect(msg).not.toContain('Убери лишние');
+    expect(msg).toContain('слишком большой');
+  });
+
+  it('other (500) + 1 файл → НЕ «Убери лишние файлы»', async () => {
+    const err = new F1PipelineError('claude_api', { httpStatus: 500 });
+    const msg = await draftErrorMsg(err, 1);
+    expect(msg).not.toContain('Убери лишние');
+  });
+});

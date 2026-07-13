@@ -4,6 +4,7 @@ import {
   callClaude,
   callClaudeSafe,
   shouldRetryClaude,
+  classifyClaudeApiError,
   _resetClaudeClientForTest,
   _setClaudeClientForTest,
 } from './claude.js';
@@ -303,5 +304,66 @@ describe('callClaudeSafe', () => {
     });
     queueMicrotask(() => ctrl.abort());
     await expect(promise).rejects.toMatchObject({ name: 'AbortError' });
+  });
+});
+
+describe('classifyClaudeApiError', () => {
+  it('billing — HTTP 400 with "credit balance" message', () => {
+    const err = new F1PipelineError('claude_api', {
+      httpStatus: 400,
+      message: 'Your credit balance is too low to access the Claude API.',
+    });
+    expect(classifyClaudeApiError(err)).toBe('billing');
+  });
+
+  it('rate_limit — HTTP 429', () => {
+    const err = new F1PipelineError('claude_api', { httpStatus: 429 });
+    expect(classifyClaudeApiError(err)).toBe('rate_limit');
+  });
+
+  it('rate_limit — HTTP 529', () => {
+    const err = new F1PipelineError('claude_api', { httpStatus: 529 });
+    expect(classifyClaudeApiError(err)).toBe('rate_limit');
+  });
+
+  it('rate_limit — anthropicErrorType overloaded_error', () => {
+    const err = new F1PipelineError('claude_api', { anthropicErrorType: 'overloaded_error' });
+    expect(classifyClaudeApiError(err)).toBe('rate_limit');
+  });
+
+  it('rate_limit — anthropicErrorType rate_limit_error', () => {
+    const err = new F1PipelineError('claude_api', { anthropicErrorType: 'rate_limit_error' });
+    expect(classifyClaudeApiError(err)).toBe('rate_limit');
+  });
+
+  it('too_large_context — HTTP 400 with "prompt is too long" message', () => {
+    const err = new F1PipelineError('claude_api', {
+      httpStatus: 400,
+      message: 'prompt is too long',
+    });
+    expect(classifyClaudeApiError(err)).toBe('too_large_context');
+  });
+
+  it('other — HTTP 500', () => {
+    const err = new F1PipelineError('claude_api', { httpStatus: 500 });
+    expect(classifyClaudeApiError(err)).toBe('other');
+  });
+
+  it('other — empty context', () => {
+    const err = new F1PipelineError('claude_api', {});
+    expect(classifyClaudeApiError(err)).toBe('other');
+  });
+
+  it('too_large_context — message contains "context_length"', () => {
+    const err = new F1PipelineError('claude_api', {
+      httpStatus: 400,
+      message: 'context_length exceeded for model',
+    });
+    expect(classifyClaudeApiError(err)).toBe('too_large_context');
+  });
+
+  it('other — HTTP 400 with no message field', () => {
+    const err = new F1PipelineError('claude_api', { httpStatus: 400 });
+    expect(classifyClaudeApiError(err)).toBe('other');
   });
 });

@@ -109,7 +109,8 @@ import {
   F0_MAX_FILE_BYTES,
   F0_MAX_DOC_CHARS,
 } from './utils/f0-input.js';
-import { F0OnboardingError, F0SheetsError } from './errors.js';
+import { F0OnboardingError, F0SheetsError, F1PipelineError } from './errors.js';
+import { classifyClaudeApiError } from './adapters/claude.js';
 import { assertTranscriptDuration } from './utils/transcript-duration-guard.js';
 import { createReportQueue, QueueOverflowError, type ReportQueue } from './utils/report-queue.js';
 import {
@@ -2923,6 +2924,28 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
         await finishProgress(
           `${F0_REPLY_BY_CODE[err.code]}\nПакет цел — поправь файлы и собери снова: /draft.`,
         );
+      } else if (err instanceof F1PipelineError && err.code === 'claude_api') {
+        f0Log.error({ err, step: 'f0.draft_failed', chatId }, 'f0 draft failed');
+        alertOps({
+          pipeline: 'F0',
+          step: 'f0.draft_failed',
+          error: err,
+          context: { chatId, sessionId: session.id, files: sourceNames.length },
+        });
+        const kind = classifyClaudeApiError(err);
+        let userMsg: string;
+        if (kind === 'billing') {
+          userMsg = '⚠️ Сервис временно недоступен — закончились кредиты API. Напиши администратору.';
+        } else if (kind === 'rate_limit') {
+          userMsg = '⚠️ AI временно перегружен, повтори запрос через несколько минут.';
+        } else if (kind === 'too_large_context' && sourceNames.length > 1) {
+          userMsg = '⚠️ Не удалось собрать черновик. Убери лишние файлы и собери снова: /draft.';
+        } else if (kind === 'too_large_context' && sourceNames.length === 1) {
+          userMsg = '⚠️ Не удалось собрать черновик — документ слишком большой. Попробуй уменьшить или разбить файл.';
+        } else {
+          userMsg = '⚠️ Не удалось собрать черновик. Повтори позже или напиши администратору.';
+        }
+        await finishProgress(userMsg);
       } else {
         // Не-F0 ошибка (напр. обрезка JSON по лимиту токенов, сбой Claude) — подсказываем
         // действие: пакет большой → убрать файлы. Пакет сохраняем для повторной попытки.

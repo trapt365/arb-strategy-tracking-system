@@ -400,3 +400,19 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-11-3-rasshit-klientskie-tablicy-na-servis-akkaunt.md`
   summary: Нет теста специфично для сбоя drive.permissions.create в SA-блоке — только tracker-failure path покрыт
   evidence: Существующий тест failPerm (line 655) делает makeDrive({ failPerm }) — но с vi.mock default (isGoogleOAuthConfigured=false) SA-блок пропускается, первый permissions.create — трекер. Если SA catch-блок заменить на swallow, тест не сломается.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-11-4-klassifikaciya-oshibok-claude-api.md`
+  summary: "'too long' в classifyClaudeApiError — широкая подстрока, потенциально совпадает с несвязанными 400-сообщениями (только при httpStatus=400, риск низкий)"
+  evidence: lowerMsg.includes('too long') совпадёт с любым 400-сообщением содержащим эти слова, не только с context-length. Текущий Anthropic API даёт 'prompt is too long' для context-limit, но это недокументированная строка.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-11-4-klassifikaciya-oshibok-claude-api.md`
+  summary: "Нет bot-level теста для пути anthropicErrorType (overloaded_error/rate_limit_error) — только unit-тест классификации"
+  evidence: bot.test.ts покрывает rate_limit через httpStatus 429/529, но не через anthropicErrorType-поле.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-11-4-klassifikaciya-oshibok-claude-api.md`
+  summary: "billing и overloaded_error/rate_limit не различаются в alertOps — оператор не видит разницу между кредитным блоком и rate-limit в ops-системе"
+  evidence: alertOps вызывается перед classifyClaudeApiError; в ops-alert всегда step='f0.draft_failed', kind не передаётся.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-11-4-klassifikaciya-oshibok-claude-api.md`
+  summary: "Forward-compatibility: billing определяется по substring в message, не по structured anthropicErrorType — если Anthropic добавит billing_error type, классификатор его не поймает"
+  evidence: Anthropic API не имеет специфического error.type для billing; классификация строится на message-строке (fragile по определению).
