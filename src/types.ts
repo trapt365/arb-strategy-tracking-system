@@ -280,6 +280,8 @@ export const ReportJobSchema = z.object({
   chatId: z.number().int(),
   url: z.string().optional(),
   filePath: z.string().optional(),
+  // Story 11.7: plain-text transcript passed directly (no audio file needed).
+  transcriptText: z.string().optional(),
   clientId: z.string().min(1),
   topName: z.string().min(1),
   meetingDate: z.string().min(1),

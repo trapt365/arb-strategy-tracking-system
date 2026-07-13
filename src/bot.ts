@@ -18,7 +18,12 @@ import {
 import {
   transcribeFromUrl as defaultTranscribeFromUrl,
   transcribeFromFilePath as defaultTranscribeFromFilePath,
+  transcribeFromPlainText as defaultTranscribeFromPlainText,
 } from './adapters/transcript.js';
+import {
+  isTranscriptDocument as defaultIsTranscriptDocument,
+  isTranscriptCandidateType,
+} from './utils/transcript-detect.js';
 import { readClientContext as defaultReadClientContext, appendOpsLog } from './adapters/sheets.js';
 import { runF1 as defaultRunF1, applyEditToReport as defaultApplyEditToReport } from './f1-report.js';
 import {
@@ -196,6 +201,10 @@ export interface BotDeps {
   transcribeFromFilePath?: typeof defaultTranscribeFromFilePath;
   /** Story 11.5: LLM-экстракция участника профиля A3.2 (тесты подменяют). */
   extractTopWithLlm?: (phrase: string) => Promise<ClientTop>;
+  /** Story 11.7: text transcript processing (тесты подменяют). */
+  transcribeFromPlainText?: typeof defaultTranscribeFromPlainText;
+  /** Story 11.7: testable detection of transcript vs onboarding document. */
+  isTranscriptDocument?: (text: string) => boolean;
 }
 
 export interface CreatedBot {
@@ -257,6 +266,8 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
   const runF1 = deps.runF1 ?? defaultRunF1;
   const transcribeFromUrl = deps.transcribeFromUrl ?? defaultTranscribeFromUrl;
   const transcribeFromFilePath = deps.transcribeFromFilePath ?? defaultTranscribeFromFilePath;
+  const transcribeFromPlainText = deps.transcribeFromPlainText ?? defaultTranscribeFromPlainText;
+  const isTranscriptDocument = deps.isTranscriptDocument ?? defaultIsTranscriptDocument;
   const readClientContext = deps.readClientContext ?? defaultReadClientContext;
   const alertOps = deps.alertOps ?? defaultAlertOps;
   const applyEditToReport = deps.applyEditToReport ?? defaultApplyEditToReport;
@@ -775,7 +786,14 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
 
       let transcript;
       try {
-        if (job.filePath) {
+        if (job.transcriptText !== undefined) {
+          // Story 11.7: plain-text transcript — no audio file needed.
+          transcript = await transcribeFromPlainText(job.transcriptText, {
+            clientId: job.clientId,
+            meetingDate: job.meetingDate,
+            meetingType: job.meetingType,
+          }, { logger: baseLogger });
+        } else if (job.filePath) {
           transcript = await transcribeFromFilePath(job.filePath, {
             clientId: job.clientId,
             meetingDate: job.meetingDate,
@@ -820,26 +838,29 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
       }
 
       // Defensive guard на коротких записях (FR / UX-DR66).
-      try {
-        assertTranscriptDuration(transcript);
-      } catch (err) {
-        if (job.progressMessageId !== undefined) {
-          await safeEditMessage(
-            job.chatId,
-            job.progressMessageId,
-            escapeMarkdownV2(formatErrorMessage('transcript_too_short')),
+      // Story 11.7: пропускаем для plain-text job (duration = 0 — это норма для parsePlainText).
+      if (job.transcriptText === undefined) {
+        try {
+          assertTranscriptDuration(transcript);
+        } catch (err) {
+          if (job.progressMessageId !== undefined) {
+            await safeEditMessage(
+              job.chatId,
+              job.progressMessageId,
+              escapeMarkdownV2(formatErrorMessage('transcript_too_short')),
+            );
+          }
+          jobLog.info(
+            {
+              durationSec: (err as TranscriptValidationError).context?.durationSec,
+            },
+            'bot.report.too_short',
           );
+          // info-level — без alertOps (UX-DR66).
+          job.status = 'failed';
+          job.completedAt = now().toISOString();
+          return;
         }
-        jobLog.info(
-          {
-            durationSec: (err as TranscriptValidationError).context?.durationSec,
-          },
-          'bot.report.too_short',
-        );
-        // info-level — без alertOps (UX-DR66).
-        job.status = 'failed';
-        job.completedAt = now().toISOString();
-        return;
       }
 
       await emitProgress(job, 'running_analysis');
@@ -2485,6 +2506,25 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
 
   bot.on('message:document', async (ctx) => {
     const chatId = ctx.chat.id;
+
+    // Story 11.7: text transcript → F1 routing (before F0 session check).
+    if (trackerChatIds.has(chatId) && isTranscriptCandidateType(ctx.message.document.file_name, ctx.message.document.mime_type)) {
+      const transcriptClientId = await getActiveClient(chatId);
+      if (transcriptClientId !== undefined && !(ctx.message.document.file_size !== undefined && ctx.message.document.file_size > F0_MAX_FILE_BYTES)) {
+        try {
+          const transcriptFile = await ctx.getFile();
+          if (transcriptFile.file_path !== undefined) {
+            const transcriptBuf = await downloadTelegramFile(transcriptFile.file_path);
+            const transcriptExtracted = await extractTextFromDocument(transcriptBuf, ctx.message.document.file_name, ctx.message.document.mime_type);
+            if (isTranscriptDocument(transcriptExtracted.text)) {
+              await handleMeetingTextTranscript(ctx, chatId, transcriptClientId, transcriptExtracted.text, transcriptExtracted.sourceName);
+              return;
+            }
+          }
+        } catch { /* silent: fall through to F0 flow */ }
+      }
+    }
+
     const session = await getOrRestoreF0Session(chatId);
     if (session === undefined) {
       await ctx.reply(F0_NO_SESSION_TEXT).catch(() => {});
@@ -4321,6 +4361,113 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
         queueSize: placement.queueSize,
       },
       'audio/video meeting job enqueued',
+    );
+  }
+
+  // Story 11.7: обработчик текстового транскрипта встречи → F1-конвейер.
+  async function handleMeetingTextTranscript(
+    ctx: Context,
+    chatId: number,
+    clientId: string,
+    text: string,
+    sourceName: string,
+  ): Promise<void> {
+    // Pre-check overflow
+    if (queue.size() >= queueMaxSize) {
+      log.warn(
+        { chatId, queueSize: queue.size(), maxSize: queueMaxSize },
+        'bot.queue_overflow (document_transcript)',
+      );
+      alertOps({
+        pipeline: 'F1',
+        step: 'bot.queue_overflow',
+        error: new QueueOverflowError(queueMaxSize, queue.size()),
+        context: { queueSize: queue.size(), maxSize: queueMaxSize },
+      });
+      await ctx.reply(formatErrorMessage('queue_overflow')).catch(() => {});
+      return;
+    }
+
+    const topName =
+      (await getClientTopName(clientId)) ??
+      (await getClientName(clientId)) ??
+      'Клиент';
+
+    try {
+      assertClientId(clientId);
+    } catch (err) {
+      log.error(
+        { err, step: 'bot.document_transcript.invalid_client_id', clientId },
+        'invalid clientId — refusing to enqueue document transcript job',
+      );
+      alertOps({
+        pipeline: 'F1',
+        step: 'bot.document_transcript.invalid_client_id',
+        error: err,
+        context: { clientId },
+      });
+      await ctx.reply(formatErrorMessage('pipeline_failed')).catch(() => {});
+      return;
+    }
+
+    const job: ReportJob = {
+      id: randomUUID().slice(0, 8),
+      chatId,
+      url: undefined,
+      filePath: undefined,
+      transcriptText: text,
+      clientId,
+      topName,
+      meetingDate: now().toISOString(),
+      status: 'queued',
+      queuedAt: now().toISOString(),
+      retryCount: 0,
+    };
+
+    const estimatedPosition = queue.size() + 1;
+    let ackMessageId: number | undefined;
+    try {
+      const ack = await ctx.reply(formatQueueAck(estimatedPosition, estimatedPosition));
+      ackMessageId = ack.message_id;
+    } catch (err) {
+      log.error({ err }, 'ack reply failed for document transcript job');
+    }
+    job.progressMessageId = ackMessageId;
+
+    let placement: { position: number; queueSize: number };
+    try {
+      placement = queue.enqueue(job);
+    } catch (err) {
+      if (err instanceof QueueOverflowError) {
+        log.warn({ chatId }, 'bot.queue_overflow.race (document_transcript)');
+        alertOps({
+          pipeline: 'F1',
+          step: 'bot.queue_overflow',
+          error: err,
+          context: { queueSize: err.currentSize, maxSize: err.maxSize },
+        });
+        if (ackMessageId !== undefined) {
+          await bot.api
+            .editMessageText(job.chatId, ackMessageId, formatErrorMessage('queue_overflow'))
+            .catch(() => {});
+        }
+        return;
+      }
+      throw err;
+    }
+
+    scheduleTimeout(job.id);
+
+    log.info(
+      {
+        step: 'bot.document_transcript.queued',
+        jobId: job.id,
+        chatId,
+        sourceName,
+        position: placement.position,
+        queueSize: placement.queueSize,
+      },
+      'document transcript job enqueued',
     );
   }
 

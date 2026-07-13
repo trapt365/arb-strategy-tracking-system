@@ -434,3 +434,17 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-11-6-kompaktnaya-dostavka-chernovika-onbordinga.md`
   summary: `expect(msg).not.toContain('🔴')` в тесте "все KR считаемы" — слишком широкий assertion; сломается если будущая ветка легитимно использует 🔴 для не-error сигнала
   evidence: Тест проверяет только что при krIssues=[] и hypothesisIssues=[] нет 🔴. Если добавится новая категория (например, предупреждение с 🔴 о synthesized hypotheses при нулевых issues), тест упадёт ложно. Low risk на текущем codebase.
+
+## Deferred from: code review of story-11-7 (2026-07-13)
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-11-7-gotovyy-transkript-na-otchyot.md`
+  summary: `transcriptText` has no upper-bound length validation before enqueueing — a 20 MB .txt file (within F0_MAX_FILE_BYTES) could be stored in-memory as job.transcriptText
+  evidence: The routing block reuses F0_MAX_FILE_BYTES as the size guard; a file near that limit produces a large in-memory string in the job queue. Design choice inherited from F0_MAX_FILE_BYTES; low risk on current data volumes.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-11-7-gotovyy-transkript-na-otchyot.md`
+  summary: `estimatedPosition` in `handleMeetingTextTranscript` is sampled before ctx.reply, so the shown queue position may be stale by the time enqueue runs
+  evidence: Pre-existing pattern from `handleMeetingFileIntake` (audio/video intake); same race exists there. Not introduced by Story 11.7.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-11-7-gotovyy-transkript-na-otchyot.md`
+  summary: AC "F0-сессия остаётся нетронутой" has no integration test — no test writes an F0 session then verifies it is intact after transcript routing
+  evidence: Code provably cannot modify the session (early return before getOrRestoreF0Session), but the AC is not pinned by any test. Low risk; code inspection sufficient.

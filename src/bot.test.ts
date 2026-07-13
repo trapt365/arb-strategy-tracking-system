@@ -282,6 +282,9 @@ interface BuildOpts {
   transcribeFromFilePath?: BotDeps['transcribeFromFilePath'];
   // Story 11.5: LLM-экстракция участника A3.2 (тесты подменяют).
   extractTopWithLlm?: BotDeps['extractTopWithLlm'];
+  // Story 11.7: text transcript processing и детект (тесты подменяют).
+  transcribeFromPlainText?: BotDeps['transcribeFromPlainText'];
+  isTranscriptDocument?: BotDeps['isTranscriptDocument'];
 }
 
 function buildBot(opts: BuildOpts = {}) {
@@ -313,6 +316,10 @@ function buildBot(opts: BuildOpts = {}) {
     extractTopWithLlm:
       opts.extractTopWithLlm ??
       (async (phrase: string) => ({ name: phrase.trim(), title: null, authority: null, area: null })),
+    transcribeFromPlainText:
+      opts.transcribeFromPlainText ?? (async () => validTranscript),
+    isTranscriptDocument:
+      opts.isTranscriptDocument ?? (() => false),
     logger: silentLogger,
     token: 'TEST:TOKEN',
     botInfo: FALLBACK_BOT_INFO,
@@ -3933,5 +3940,295 @@ describe('bot — Story 11.5: LLM-экстракция участника A3.2',
     const replies = texts115(calls, before);
     expect(replies.some((t) => t.includes('хотя бы один участник'))).toBe(true);
     expect(replies.some((t) => t.includes('Имя —'))).toBe(false); // нет старого формат-хинта
+  });
+});
+
+// ─── Story 11.7: приём текстового транскрипта ────────────────────────────────
+
+describe('bot — Story 11.7: приём текстового транскрипта', () => {
+  const registryPath117 = joinPath(CLIENTS_DIR, 'registry.json');
+  const activePath117 = joinPath(CLIENTS_DIR, 'active-clients.json');
+  let registryBackup117: string | null = null;
+  let activeBackup117: string | null = null;
+
+  beforeEach(async () => {
+    registryBackup117 = await backupFile(registryPath117);
+    activeBackup117 = await backupFile(activePath117);
+    await fsp.mkdir(CLIENTS_DIR, { recursive: true });
+    await fsp.writeFile(
+      registryPath117,
+      JSON.stringify({
+        [TEST_CLIENT_ID]: {
+          sheetId: 'sheet-RX',
+          name: 'Ромашка',
+          createdAt: '2026-07-08T00:00:00.000Z',
+        },
+      }),
+      'utf8',
+    );
+    await fsp.rm(activePath117, { force: true }).catch(() => {});
+  });
+
+  afterEach(async () => {
+    await restoreFile(registryPath117, registryBackup117);
+    await restoreFile(activePath117, activeBackup117);
+  });
+
+  it('(a) трекер + активный клиент + isTranscriptDocument=true → job c transcriptText в очереди', async () => {
+    const enqueued: ReportJob[] = [];
+    const realQueue = createReportQueue({ maxSize: 20, logger: silentLogger });
+    const spyQueue = {
+      ...realQueue,
+      enqueue: (job: ReportJob) => {
+        enqueued.push(job);
+        return realQueue.enqueue(job);
+      },
+    } as typeof realQueue;
+
+    const { bot } = buildBot({
+      queue: spyQueue,
+      isTranscriptDocument: () => true,
+      extractTextFromDocument: (async () => ({
+        sourceName: 'meeting.md',
+        kind: 'text' as const,
+        text: 'transcript',
+      })) as unknown as BotDeps['extractTextFromDocument'],
+      downloadTelegramFile: async () => Buffer.from('x'),
+    });
+
+    await fsp.writeFile(
+      activePath117,
+      JSON.stringify({ [String(TEST_TRACKER_CHAT_ID)]: TEST_CLIENT_ID }),
+      'utf8',
+    );
+
+    await bot.handleUpdate(documentUpdate('meeting.md'));
+
+    expect(enqueued).toHaveLength(1);
+    expect(enqueued[0]!.transcriptText).toBeDefined();
+    expect(enqueued[0]!.filePath).toBeUndefined();
+  });
+
+  it('(b) isTranscriptDocument=false → fallthrough к F0 (нет сессии → F0_NO_SESSION_TEXT)', async () => {
+    const enqueued: ReportJob[] = [];
+    const realQueue = createReportQueue({ maxSize: 20, logger: silentLogger });
+    const spyQueue = {
+      ...realQueue,
+      enqueue: (job: ReportJob) => {
+        enqueued.push(job);
+        return realQueue.enqueue(job);
+      },
+    } as typeof realQueue;
+
+    const { bot, calls } = buildBot({
+      queue: spyQueue,
+      isTranscriptDocument: () => false,
+      extractTextFromDocument: (async () => ({
+        sourceName: 'strategy.md',
+        kind: 'text' as const,
+        text: 'some strategy text',
+      })) as unknown as BotDeps['extractTextFromDocument'],
+      downloadTelegramFile: async () => Buffer.from('x'),
+    });
+
+    await fsp.writeFile(
+      activePath117,
+      JSON.stringify({ [String(TEST_TRACKER_CHAT_ID)]: TEST_CLIENT_ID }),
+      'utf8',
+    );
+
+    const before = calls.length;
+    await bot.handleUpdate(documentUpdate('strategy.md'));
+
+    // Should fall through to F0 handler — since no F0 session exists reply contains /newclient
+    const sentTexts = calls
+      .slice(before)
+      .filter((c) => c.method === 'sendMessage')
+      .map((c) => c.payload.text as string);
+    expect(sentTexts.some((t) => t.includes('/newclient'))).toBe(true);
+    expect(enqueued).toHaveLength(0);
+  });
+
+  it('(c) нет активного клиента → fallthrough к F0 (нет сессии)', async () => {
+    const enqueued: ReportJob[] = [];
+    const realQueue = createReportQueue({ maxSize: 20, logger: silentLogger });
+    const spyQueue = {
+      ...realQueue,
+      enqueue: (job: ReportJob) => {
+        enqueued.push(job);
+        return realQueue.enqueue(job);
+      },
+    } as typeof realQueue;
+
+    const { bot } = buildBot({
+      queue: spyQueue,
+      isTranscriptDocument: () => true,
+      downloadTelegramFile: async () => Buffer.from('x'),
+    });
+
+    // activePath117 не существует — нет активного клиента
+    await bot.handleUpdate(documentUpdate('meeting.md'));
+
+    // No job enqueued (falls through to F0 flow)
+    expect(enqueued).toHaveLength(0);
+  });
+
+  it('(d) processJob с transcriptText: transcribeFromPlainText вызван → отчёт доставлен', async () => {
+    // Use duration:30 (< 120s threshold) to pin that assertTranscriptDuration is SKIPPED for transcriptText jobs.
+    // If the guard (job.transcriptText === undefined) were removed, the job would fail as 'too_short'.
+    const shortDurationTranscript: Transcript = {
+      ...validTranscript,
+      metadata: { ...validTranscript.metadata, duration: 30 },
+    };
+    const transcribeFromPlainTextSpy = vi.fn(async () => shortDurationTranscript);
+
+    const { processJob, bot, queue, calls } = buildBot({
+      transcribeFromPlainText: transcribeFromPlainTextSpy as unknown as BotDeps['transcribeFromPlainText'],
+    });
+
+    // Enqueue a synthetic job with transcriptText
+    const job: ReportJob = {
+      id: 'abc12345',
+      chatId: TEST_TRACKER_CHAT_ID,
+      url: undefined,
+      filePath: undefined,
+      transcriptText: 'x'.repeat(200),
+      clientId: 'geonline',
+      topName: 'Жанель',
+      meetingDate: '2026-05-19T10:00:00.000Z',
+      status: 'queued',
+      queuedAt: '2026-05-19T10:00:00.000Z',
+      retryCount: 0,
+    };
+
+    // Suppress unused-var warnings
+    void bot; void queue;
+
+    await processJob(job);
+
+    expect(transcribeFromPlainTextSpy).toHaveBeenCalledOnce();
+
+    // Report delivered → assertTranscriptDuration was skipped (duration:30 would have failed it)
+    const sentTexts = calls
+      .filter((c) => c.method === 'editMessageText' || c.method === 'sendMessage')
+      .map((c) => c.payload.text as string);
+    expect(sentTexts.some((t) => t && t.includes('Конверсия 28%'))).toBe(true);
+    expect(job.status).not.toBe('failed');
+  });
+
+  // Matrix row 4: не-трекер → routing block не запускается
+  it('(e) не-трекер → isTranscriptDocument не вызван, whitelist middleware блокирует', async () => {
+    const isTranscriptDocSpy = vi.fn(() => true);
+    const { bot, calls } = buildBot({ isTranscriptDocument: isTranscriptDocSpy });
+    const NON_TRACKER_CHAT_ID = 11111;
+    const before = calls.length;
+    await bot.handleUpdate(documentUpdate('meeting.md', NON_TRACKER_CHAT_ID));
+    // isTranscriptDocument должен НЕ быть вызван — routing block пропускается для не-трекеров
+    expect(isTranscriptDocSpy).not.toHaveBeenCalled();
+    // Whitelist middleware перехватывает запрос ДО message:document handler — не-трекер получает 'Доступ ограничен'
+    const sentTexts = calls
+      .slice(before)
+      .filter((c) => c.method === 'sendMessage')
+      .map((c) => c.payload.text as string);
+    expect(sentTexts.some((t) => t.includes('Доступ ограничен'))).toBe(true);
+  });
+
+  // Matrix row 5: файл > 20 МБ → size guard срабатывает, скачивание пропускается
+  it('(f) файл > 20 МБ → isTranscriptDocument не вызван, fallthrough к F0', async () => {
+    await fsp.writeFile(
+      activePath117,
+      JSON.stringify({ [String(TEST_TRACKER_CHAT_ID)]: TEST_CLIENT_ID }),
+      'utf8',
+    );
+    const isTranscriptDocSpy = vi.fn(() => true);
+    const { bot } = buildBot({ isTranscriptDocument: isTranscriptDocSpy });
+    // Construct update with oversized file
+    const bigDocUpdate = {
+      update_id: updateCounter++,
+      message: {
+        message_id: 2000 + updateCounter,
+        date: Math.floor(Date.now() / 1000),
+        chat: { id: TEST_TRACKER_CHAT_ID, type: 'private', first_name: 'Test' },
+        from: { id: TEST_TRACKER_CHAT_ID, is_bot: false, first_name: 'Test' },
+        document: {
+          file_id: 'big-file-1',
+          file_unique_id: 'bu-1',
+          file_name: 'big.md',
+          mime_type: 'text/markdown',
+          file_size: 21 * 1024 * 1024, // > F0_MAX_FILE_BYTES
+        },
+      },
+    } as unknown as Update;
+    await bot.handleUpdate(bigDocUpdate);
+    // isTranscriptDocument должен НЕ быть вызван — size guard пропускает скачивание
+    expect(isTranscriptDocSpy).not.toHaveBeenCalled();
+  });
+
+  // Matrix row 6: ошибка скачивания при детекте → тихий fallthrough к F0
+  it('(g) ошибка downloadTelegramFile при детекте → тихий fallthrough к F0 (нет сессии)', async () => {
+    await fsp.writeFile(
+      activePath117,
+      JSON.stringify({ [String(TEST_TRACKER_CHAT_ID)]: TEST_CLIENT_ID }),
+      'utf8',
+    );
+    const isTranscriptDocSpy = vi.fn(() => true);
+    const enqueued: ReportJob[] = [];
+    const realQueue = createReportQueue({ maxSize: 20, logger: silentLogger });
+    const spyQueue = {
+      ...realQueue,
+      enqueue: (job: ReportJob) => {
+        enqueued.push(job);
+        return realQueue.enqueue(job);
+      },
+    } as typeof realQueue;
+    const { bot, calls } = buildBot({
+      queue: spyQueue,
+      isTranscriptDocument: isTranscriptDocSpy,
+      downloadTelegramFile: async () => { throw new Error('download failed'); },
+    });
+    const before = calls.length;
+    await bot.handleUpdate(documentUpdate('meeting.md'));
+    // isTranscriptDocument должен НЕ быть вызван (ошибка произошла до него)
+    expect(isTranscriptDocSpy).not.toHaveBeenCalled();
+    // Ничего в очереди
+    expect(enqueued).toHaveLength(0);
+    // Fallthrough к F0 → нет сессии → F0_NO_SESSION_TEXT
+    const sentTexts = calls
+      .slice(before)
+      .filter((c) => c.method === 'sendMessage')
+      .map((c) => c.payload.text as string);
+    expect(sentTexts.some((t) => t.includes('/newclient'))).toBe(true);
+  });
+
+  // Matrix row 7: transcriptText-job с коротким текстом → transcript_too_short
+  it('(h) processJob с коротким transcriptText → transcript_too_short отправлен, job failed', async () => {
+    const { processJob, bot, queue, calls } = buildBot({
+      transcribeFromPlainText: vi.fn().mockRejectedValue(
+        new TranscriptValidationError('too_short', { length: 5 }),
+      ) as unknown as BotDeps['transcribeFromPlainText'],
+    });
+    void bot; void queue;
+    const FAKE_PROGRESS_MSG_ID = 77777;
+    const job: ReportJob = {
+      id: 'sh123456',
+      chatId: TEST_TRACKER_CHAT_ID,
+      url: undefined,
+      filePath: undefined,
+      transcriptText: 'short',
+      clientId: 'geonline',
+      topName: 'Жанель',
+      meetingDate: '2026-05-19T10:00:00.000Z',
+      status: 'queued',
+      queuedAt: '2026-05-19T10:00:00.000Z',
+      retryCount: 0,
+      progressMessageId: FAKE_PROGRESS_MSG_ID,
+    };
+    await processJob(job);
+    expect(job.status).toBe('failed');
+    // safeEditMessage должен был вызван с текстом transcript_too_short
+    const edits = calls
+      .filter((c) => c.method === 'editMessageText' && c.payload.message_id === FAKE_PROGRESS_MSG_ID)
+      .map((c) => c.payload.text as string);
+    expect(edits.some((t) => t.includes('Слишком короткий'))).toBe(true);
   });
 });
