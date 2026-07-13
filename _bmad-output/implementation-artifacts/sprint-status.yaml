@@ -195,7 +195,7 @@ development_status:
   # ТЗ: correct-course-tz-2026-07-13-live-run.md (12 находок с местами в коде). Онбординг end-to-end подтверждён рабочим; ни один из 3 отчётов ядра не собрался на свежем клиенте (краш >20МБ / 403 read-права / ZodError пустой owner).
   # Guardrail эпика: инварианты Epic 7 + clientId==='geonline' fallback + GEONLINE_F0_SHEET_ID + canary/golden/vitest/tsc зелёные после каждой story; боевая таблица Geonline не затрагивается.
   # PENDING Тимур (не код): пополнить баланс Anthropic API (на прогоне =0, ядро вживую не протестировать); BotFather-ребрендинг @username (geonline_report_bot → нейтральный, FR127/11.9).
-  epic-11: backlog
+  epic-11: done  # 2026-07-13: все 9 stories done через bmad-loop (run 1350); 3 блокера ядра + 6 остальных. PENDING Тимур: баланс Anthropic, BotFather username
   11-1-globalnyy-obrabotchik-oshibok-i-graceful-audio-20mb: done  # P0 блокер: bot.catch (нет обработчика → краш прода) + проверка file_size до getFile, graceful >20 МБ (handleMeetingFileIntake bot.js:3535)
   11-2-ustoychivyy-parser-otchyota-pustoy-owner: done  # P0 блокер: parseOkrs терпит пустой owner (дефолт «—»/warn, не throw); онбординг ставит owner-заглушку (sheets.js:486 → readClientContext → processJob)
   11-3-rasshit-klientskie-tablicy-na-servis-akkaunt: done  # P1 блокер: read/write identity разъезд — таблица под user-OAuth расшаривается на сервис-аккаунт (editor); все read-пайплайны F1/F5 на свежем клиенте без 403 (sheets.js:450)
