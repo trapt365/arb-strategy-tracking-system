@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi, afterEach } from 'vitest';
 import type { sheets_v4, drive_v3 } from 'googleapis';
 import {
   createClientSpreadsheet,
@@ -671,5 +671,77 @@ describe('F0SheetsError', () => {
     const err = new F0SheetsError('populate_failed', { spreadsheetId: 'abc' });
     expect(err.code).toBe('populate_failed');
     expect(err.spreadsheetId).toBe('abc');
+  });
+});
+
+// === story 11.3: SA sharing ===
+
+vi.mock('./utils/google-auth.js', () => ({
+  isGoogleOAuthConfigured: vi.fn().mockReturnValue(false),
+  loadServiceAccountCredentials: vi.fn().mockResolvedValue({ client_email: '', private_key: '' }),
+}));
+
+describe('createClientSpreadsheet — story 11.3: SA sharing', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('saEmailFactory возвращает email → permissions[0] — СА writer, shared[0] — SA email', async () => {
+    const saEmail = 'sa@test.gserviceaccount.com';
+    const sheets = makeSheets({ titles: allTitles, headers: allHeaders });
+    const drive = makeDrive();
+    const result = await createClientSpreadsheet({
+      extraction: extraction(),
+      spreadsheetName: 'x',
+      sheetsClientFactory: async () => sheets.client,
+      driveClientFactory: async () => drive.client,
+      saEmailFactory: async () => saEmail,
+    });
+    expect(drive.calls.permissions).toHaveLength(2);
+    expect(drive.calls.permissions[0]).toMatchObject({
+      requestBody: { emailAddress: saEmail, role: 'writer', type: 'user' },
+    });
+    expect(result.shared[0]).toBe(saEmail);
+    expect(result.shared[1]).toBe('tracker@example.com');
+    expect(result.shared).toHaveLength(2);
+  });
+
+  it('saEmailFactory возвращает null → шаринг с СА пропущен, shared — только трекеры', async () => {
+    const sheets = makeSheets({ titles: allTitles, headers: allHeaders });
+    const drive = makeDrive();
+    const result = await createClientSpreadsheet({
+      extraction: extraction(),
+      spreadsheetName: 'x',
+      sheetsClientFactory: async () => sheets.client,
+      driveClientFactory: async () => drive.client,
+      saEmailFactory: async () => null,
+    });
+    expect(drive.calls.permissions).toHaveLength(1);
+    expect(result.shared).toEqual(['tracker@example.com']);
+  });
+
+  it('production-путь: isGoogleOAuthConfigured() = true, saEmailFactory не задан → permissions[0] — client_email из loadServiceAccountCredentials', async () => {
+    const { isGoogleOAuthConfigured, loadServiceAccountCredentials } = await import('./utils/google-auth.js');
+    vi.mocked(isGoogleOAuthConfigured).mockReturnValue(true);
+    vi.mocked(loadServiceAccountCredentials).mockResolvedValue({
+      client_email: 'sa@test.gserviceaccount.com',
+      private_key: '',
+    });
+
+    const sheets = makeSheets({ titles: allTitles, headers: allHeaders });
+    const drive = makeDrive();
+    const result = await createClientSpreadsheet({
+      extraction: extraction(),
+      spreadsheetName: 'x',
+      sheetsClientFactory: async () => sheets.client,
+      driveClientFactory: async () => drive.client,
+    });
+
+    expect(drive.calls.permissions[0]).toMatchObject({
+      requestBody: { emailAddress: 'sa@test.gserviceaccount.com' },
+    });
+    expect(result.shared[0]).toBe('sa@test.gserviceaccount.com');
+    expect(result.shared[1]).toBe('tracker@example.com');
+    expect(result.shared).toHaveLength(2);
   });
 });

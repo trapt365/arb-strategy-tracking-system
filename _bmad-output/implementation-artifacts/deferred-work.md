@@ -388,3 +388,15 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-11-2-ustoychivyy-parser-otchyota-pustoy-owner.md`
   summary: Тест на parseOkrs не проверяет, что log.warn вызывается при пустом owner — операционная наблюдаемость не покрыта тестом
   evidence: Тест проверяет только итоговое значение ctx.okrs[0]?.owner === '—'; удаление log.warn из parseOkrs не сломает тест.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-11-3-rasshit-klientskie-tablicy-na-servis-akkaunt.md`
+  summary: loadServiceAccountCredentials() в createClientSpreadsheet выбрасывает TranscriptConfigError без обёртки в mapGoogleError — ошибка JSON-файла SA не оборачивается в share_failed
+  evidence: В production-пути при isGoogleOAuthConfigured()===true: если SA JSON отсутствует/некорректен, loadServiceAccountCredentials() бросает TranscriptConfigError напрямую; catch в блоке permissions.create не достигается; вызывающий код видит TranscriptConfigError вместо F0SheetsError('share_failed').
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-11-3-rasshit-klientskie-tablicy-na-servis-akkaunt.md`
+  summary: Read-пайплайны F1/F5 не верифицированы интеграционно после расшивки — fix на write-side не имеет сквозного теста, подтверждающего отсутствие 403
+  evidence: Все тесты story 11.3 работают на unit-уровне (mock Drive); реальная проверка что SA получает доступ и readClientContext/readHypothesesSheet проходят без 403 на новом клиенте — только в live-run.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-11-3-rasshit-klientskie-tablicy-na-servis-akkaunt.md`
+  summary: Нет теста специфично для сбоя drive.permissions.create в SA-блоке — только tracker-failure path покрыт
+  evidence: Существующий тест failPerm (line 655) делает makeDrive({ failPerm }) — но с vi.mock default (isGoogleOAuthConfigured=false) SA-блок пропускается, первый permissions.create — трекер. Если SA catch-блок заменить на swallow, тест не сломается.

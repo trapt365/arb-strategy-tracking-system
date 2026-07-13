@@ -11,6 +11,7 @@ import {
   groundedStakeholderRows,
   profileTopNames,
 } from './f0-grounding.js';
+import { isGoogleOAuthConfigured, loadServiceAccountCredentials } from './utils/google-auth.js';
 
 export { F0SheetsError } from './errors.js';
 
@@ -222,6 +223,8 @@ export interface CreateClientSpreadsheetOpts {
   // Инъекции для тестов.
   sheetsClientFactory?: () => Promise<sheets_v4.Sheets>;
   driveClientFactory?: () => Promise<drive_v3.Drive>;
+  /** Story 11.3: тест-инъекция email сервис-аккаунта; null — пропустить шаринг с СА. */
+  saEmailFactory?: () => Promise<string | null>;
 }
 
 export interface CreateClientSpreadsheetResult {
@@ -421,6 +424,35 @@ export async function createClientSpreadsheet(
   // 6. Доступ трекеру (writer). Сбой здесь оставляет таблицу заполненной — retry с
   // existingSpreadsheetId только перепройдёт шаринг.
   const shared: string[] = [];
+
+  // Story 11.3: шаринг с сервис-аккаунтом перед трекерами.
+  // При OAuth-режиме файл принадлежит OAuth-пользователю — СА нужно выдать доступ.
+  // При SA-режиме (isGoogleOAuthConfigured() === false) файл уже принадлежит СА — пропускаем.
+  let saEmail: string | null = null;
+  if (opts.saEmailFactory !== undefined) {
+    saEmail = await opts.saEmailFactory();
+  } else if (isGoogleOAuthConfigured()) {
+    const creds = await loadServiceAccountCredentials();
+    saEmail = creds.client_email;
+  }
+  if (saEmail !== null) {
+    try {
+      await withRetry(
+        () =>
+          drive.permissions.create({
+            fileId: sid,
+            supportsAllDrives: true,
+            sendNotificationEmail: false,
+            requestBody: { type: 'user', role: 'writer', emailAddress: saEmail },
+          }),
+        { ...RETRY, logger: log },
+      );
+      shared.push(saEmail);
+    } catch (err) {
+      throw mapGoogleError(err, 'share_failed', sid);
+    }
+  }
+
   const emails = config.F0_SHEETS_SHARE_EMAILS.split(',')
     .map((e) => e.trim())
     .filter((e) => e.length > 0);
