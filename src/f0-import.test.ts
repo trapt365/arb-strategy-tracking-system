@@ -160,6 +160,23 @@ describe('f0-import: формат A («наша» таблица)', () => {
   });
 });
 
+describe('story 11.2: sentinel «—» не создаёт фантомного участника', () => {
+  it('owner === «—» в _okr без _stakeholder_map → participants === []', () => {
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(
+      wb,
+      sheetOf([
+        ['kr_number', 'key_result', 'owner', 'target'],
+        ['KR-1.1', 'Выручка', '—', '20 млн'],
+      ]),
+      '_okr',
+    );
+    const result = importStrategyXlsx(toBuffer(wb), 'sentinel.xlsx');
+    expect(result.format).toBe('template');
+    expect(result.extraction.participants).toEqual([]);
+  });
+});
+
 describe('f0-import: формат B (произвольная таблица)', () => {
   it('находит шапку не в первой строке, маппит синонимы и смешанные типы ячеек', () => {
     const result = importStrategyXlsx(toBuffer(genericWorkbook()), 'клиент.xlsx');

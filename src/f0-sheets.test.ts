@@ -224,6 +224,42 @@ describe('uniqueOwners (story 8.1)', () => {
   });
 });
 
+// === story 11.2: null owner sentinel ===
+
+describe('mapOkrRows (story 11.2: null owner)', () => {
+  it('null owner без tops → owner === «—»', () => {
+    const ext = extraction({
+      objectives: [{
+        title: 'Рост',
+        krs: [{ formulation: 'KR1', base: '0', target: '100', owner: null, deadline: null }],
+      }],
+    });
+    const rows = mapOkrRows(ext);
+    expect(rows[0]!.owner).toBe('—');
+  });
+
+  it('null owner с непустым tops → owner === «—» (не «🔴 —»)', () => {
+    const ext = extraction({
+      objectives: [{
+        title: 'Рост',
+        krs: [{ formulation: 'KR1', base: '0', target: '100', owner: null, deadline: null }],
+      }],
+    });
+    const tops: ClientTop[] = [
+      { name: 'Дамир Сайлов', title: 'CEO', authority: null, area: 'Финансы' },
+    ];
+    const rows = mapOkrRows(ext, tops);
+    expect(rows[0]!.owner).toBe('—');
+  });
+});
+
+describe('uniqueOwners (story 11.2: sentinel «—»)', () => {
+  it('«—» фильтруется — персональный лист не создаётся', () => {
+    const owners = uniqueOwners([{ owner: '—' }]);
+    expect(owners).toEqual([]);
+  });
+});
+
 // === story 9.2: grounding через tops ===
 
 const profileTops: ClientTop[] = [

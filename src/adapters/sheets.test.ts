@@ -181,6 +181,35 @@ describe('readClientContext — happy path', () => {
   });
 });
 
+describe('readClientContext — parseOkrs (story 11.2)', () => {
+  it('empty owner → defaults to «—» and does not throw', async () => {
+    const okrRowsEmptyOwner = [
+      ['kr_number', 'short_name', 'key_result', 'owner', 'owner_position', 'current_status', 'target', 'progress', 'deadline', 'okr_group', 'quarter'],
+      ['1.1', '6 ключевых ролей', '6 ключевых ролей закрыты', '', 'CEO', '4 из 6', '6 из 6', '', 'май 2026', 'OKR-1', 'Q2 2026'],
+    ];
+    mockBatchGetOk([stakeholderRows, okrRowsEmptyOwner, f5HeaderOnly]);
+    const ctx = await readClientContext({ clientId: 'geonline' });
+    expect(ctx.okrs[0]?.owner).toBe('—');
+  });
+
+  it('non-empty owner → unchanged, no warn', async () => {
+    mockBatchGetOk([stakeholderRows, okrRows, f5HeaderOnly]);
+    const ctx = await readClientContext({ clientId: 'geonline' });
+    expect(ctx.okrs[0]?.owner).toBe('Самарханов');
+  });
+
+  it('empty krNumber → throws invalid_value', async () => {
+    const okrRowsEmptyKr = [
+      ['kr_number', 'short_name', 'key_result', 'owner', 'owner_position', 'current_status', 'target', 'progress', 'deadline', 'okr_group', 'quarter'],
+      ['', '6 ключевых ролей', '6 ключевых ролей закрыты', 'Самарханов', 'CEO', '4 из 6', '6 из 6', '', 'май 2026', 'OKR-1', 'Q2 2026'],
+    ];
+    mockBatchGetOk([stakeholderRows, okrRowsEmptyKr, f5HeaderOnly]);
+    const err = await readClientContext({ clientId: 'geonline' }).catch((e) => e);
+    expect(err).toBeInstanceOf(SheetsAdapterError);
+    expect((err as SheetsAdapterError).code).toBe('invalid_value');
+  });
+});
+
 describe('readClientContext — F5 ranges parsing', () => {
   it('rejects invalid JSON in ranges with invalid_value', async () => {
     const f5Bad = [

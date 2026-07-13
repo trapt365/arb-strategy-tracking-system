@@ -348,7 +348,7 @@ export async function readClientContext(opts: ReadClientContextOpts): Promise<Cl
     }
 
     const stakeholders = parseStakeholders(valueRanges[0]?.values ?? []);
-    const okrs = parseOkrs(valueRanges[1]?.values ?? []);
+    const okrs = parseOkrs(valueRanges[1]?.values ?? [], log);
     const f5Metrics = parseF5Metrics(valueRanges[2]?.values ?? [], log);
 
     let context: ClientContext;
@@ -610,11 +610,20 @@ function parseStakeholders(values: string[][]): unknown[] {
   }
 }
 
-function parseOkrs(values: string[][]): unknown[] {
+function parseOkrs(values: string[][], log: Pick<Logger, 'warn'>): unknown[] {
   if (values.length === 0) {
     throw new SheetsAdapterError('sheet_not_found', { sheet: '_okr' });
   }
   const rows = parseSheetRange(values, '_okr', EXPECTED_HEADERS.okr);
+  for (const row of rows) {
+    if (row.owner === '') {
+      log.warn(
+        { step: 'sheets.parseOkrs', sheet: '_okr', field: 'owner', krNumber: row.krNumber },
+        'OKR row has empty owner — defaulting to «—»',
+      );
+      row.owner = '—';
+    }
+  }
   try {
     return OkrKrSchema.array().parse(rows);
   } catch (err) {

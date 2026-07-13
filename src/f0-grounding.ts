@@ -61,7 +61,7 @@ export function groundedOkrRows(rows: Row[], tops?: ClientTop[]): Row[] {
   if (!tops || tops.length === 0) return rows;
   return rows.map((row) => {
     const owner = (row.owner ?? '').trim();
-    if (owner.length === 0) return row;
+    if (owner.length === 0 || owner === '—') return row;
     const result = groundOwnerName(owner, tops);
     if (result.matched) {
       return { ...row, owner: result.name };

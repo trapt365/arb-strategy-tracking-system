@@ -375,3 +375,16 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-11-1-globalnyy-obrabotchik-oshibok-i-graceful-audio-20mb.md`
   summary: `err.ctx.reply` failure в `bot.catch` полностью поглощается без warn — ops не узнают о двойном сбое (ошибка хендлера + невозможность уведомить пользователя).
   evidence: `.catch(() => {})` без log внутри. Паттерн унаследован из codebase, но именно в `bot.catch` это особенно ощутимо: если и reply падает, пользователь видит зависание без ответа, а ops получает только первичный alertOps без упоминания reply failure.
+
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-11-2-ustoychivyy-parser-otchyota-pustoy-owner.md`
+  summary: parseStakeholders не имеет logger-параметра в отличие от parseOkrs и parseF5Metrics — асимметрия накопилась после добавления log в parseOkrs (story 11.2)
+  evidence: parseF5Metrics (строка 632) и parseOkrs (после 11.2) принимают log; parseStakeholders — нет. Если потребуется warn-логирование при парсинге stakeholders, придётся добавлять log ещё раз.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-11-2-ustoychivyy-parser-otchyota-pustoy-owner.md`
+  summary: Сентинел «—» используется как строковый литерал в трёх местах (f0-sheets.ts, f0-grounding.ts, sheets.ts) без общей константы — риск расхождения при опечатке
+  evidence: Три места: mapOkrRows (write), parseOkrs (read), groundedOkrRows (guard) — все сравнивают/присваивают '—' независимо; en-dash vs hyphen не проверяется.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-11-2-ustoychivyy-parser-otchyota-pustoy-owner.md`
+  summary: Тест на parseOkrs не проверяет, что log.warn вызывается при пустом owner — операционная наблюдаемость не покрыта тестом
+  evidence: Тест проверяет только итоговое значение ctx.okrs[0]?.owner === '—'; удаление log.warn из parseOkrs не сломает тест.

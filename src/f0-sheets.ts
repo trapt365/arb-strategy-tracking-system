@@ -63,7 +63,7 @@ export function mapOkrRows(extraction: F0FullExtraction, tops?: ClientTop[]): Ro
         kr_number: `KR-${o + 1}.${k + 1}`,
         short_name: '',
         key_result: kr.formulation,
-        owner: kr.owner ?? '',
+        owner: kr.owner ?? '—',
         owner_position: '',
         // На неделе 0 текущее значение = стартовая база «с X».
         current_status: kr.base ?? '',
@@ -477,7 +477,7 @@ export function uniqueOwners(okrRows: Row[]): string[] {
     ...new Set(
       okrRows
         .map((r) => (r.owner ?? '').trim())
-        .filter((o) => o.length > 0 && !o.startsWith('🔴 ')),
+        .filter((o) => o.length > 0 && !o.startsWith('🔴 ') && o !== '—'),
     ),
   ];
 }

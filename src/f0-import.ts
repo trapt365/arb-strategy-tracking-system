@@ -284,7 +284,7 @@ function participantsFromOwners(objectives: F0ObjectiveDraft[]): F0ParticipantDr
   for (const objective of objectives) {
     for (const kr of objective.krs) {
       const owner = kr.owner?.trim();
-      if (owner === undefined || owner.length === 0) continue;
+      if (owner === undefined || owner.length === 0 || owner === '—') continue;
       const key = owner.toLowerCase();
       if (seen.has(key)) continue;
       seen.add(key);
