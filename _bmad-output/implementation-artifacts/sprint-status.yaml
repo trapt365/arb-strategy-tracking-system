@@ -196,7 +196,7 @@ development_status:
   # Guardrail эпика: инварианты Epic 7 + clientId==='geonline' fallback + GEONLINE_F0_SHEET_ID + canary/golden/vitest/tsc зелёные после каждой story; боевая таблица Geonline не затрагивается.
   # PENDING Тимур (не код): пополнить баланс Anthropic API (на прогоне =0, ядро вживую не протестировать); BotFather-ребрендинг @username (geonline_report_bot → нейтральный, FR127/11.9).
   epic-11: backlog
-  11-1-globalnyy-obrabotchik-oshibok-i-graceful-audio-20mb: backlog  # P0 блокер: bot.catch (нет обработчика → краш прода) + проверка file_size до getFile, graceful >20 МБ (handleMeetingFileIntake bot.js:3535)
+  11-1-globalnyy-obrabotchik-oshibok-i-graceful-audio-20mb: done  # P0 блокер: bot.catch (нет обработчика → краш прода) + проверка file_size до getFile, graceful >20 МБ (handleMeetingFileIntake bot.js:3535)
   11-2-ustoychivyy-parser-otchyota-pustoy-owner: backlog  # P0 блокер: parseOkrs терпит пустой owner (дефолт «—»/warn, не throw); онбординг ставит owner-заглушку (sheets.js:486 → readClientContext → processJob)
   11-3-rasshit-klientskie-tablicy-na-servis-akkaunt: backlog  # P1 блокер: read/write identity разъезд — таблица под user-OAuth расшаривается на сервис-аккаунт (editor); все read-пайплайны F1/F5 на свежем клиенте без 403 (sheets.js:450)
   11-4-klassifikaciya-oshibok-claude-api: backlog  # P1: ветвление по httpStatus/anthropicErrorType (credit/rate-limit/context); не советовать «убери файлы» при единственном файле (f0-onboarding.js:80 → bot.js:2380 → claude.js:209)

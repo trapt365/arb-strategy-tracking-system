@@ -1,4 +1,4 @@
-import { Bot, GrammyError, InlineKeyboard, InputFile, type Context } from 'grammy';
+import { Bot, BotError, GrammyError, InlineKeyboard, InputFile, type Context } from 'grammy';
 import { randomUUID } from 'node:crypto';
 import { writeFile, unlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -271,6 +271,19 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
   // In tests, pass deps.botInfo explicitly to skip getMe(). In production, omit so grammY
   // calls getMe() on start — required for /cmd@username matching in group chats.
   const bot = new Bot(token, deps.botInfo !== undefined ? { botInfo: deps.botInfo } : undefined);
+
+  // Story 11.1: глобальный обработчик ошибок — перехватывает любое необработанное
+  // исключение из хендлеров, предотвращая unhandledRejection → process.exit(1).
+  bot.catch((err: BotError) => {
+    log.error({ err: err.error, step: 'bot.catch', updateId: err.ctx.update.update_id }, 'unhandled handler error');
+    alertOps({
+      pipeline: 'bot',
+      step: 'bot.catch',
+      error: err.error,
+      context: { updateId: err.ctx.update.update_id },
+    });
+    err.ctx.reply('⚠️ Что-то пошло не так. Попробуй снова — если ошибка повторится, напиши администратору.').catch(() => {});
+  });
 
   // Story 1.9: ops-channel watchdog (separate from per-job timeouts below).
   // Lifecycle: started in createBot.start() (production only), stopped in createBot.stop().
@@ -4161,6 +4174,15 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
         context: { clientId },
       });
       await ctx.reply(formatErrorMessage('pipeline_failed')).catch(() => {});
+      return;
+    }
+
+    // Story 11.1: проверка размера файла до вызова ctx.getFile() — Telegram не отдаёт файлы >20 МБ.
+    const MEETING_TOO_LARGE_TEXT =
+      '⚠️ Запись больше 20 МБ — Telegram не отдаёт такие боту. Сожми запись или разбей на части.';
+    const fileSize = (ctx.message?.audio ?? ctx.message?.video)?.file_size;
+    if (fileSize !== undefined && fileSize > F0_MAX_FILE_BYTES) {
+      await ctx.reply(MEETING_TOO_LARGE_TEXT).catch(() => {});
       return;
     }
 

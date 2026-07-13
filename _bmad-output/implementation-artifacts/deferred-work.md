@@ -361,3 +361,17 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-10-7-kosmetika-marker-klienta-privetstvie-dliny.md`
   summary: `f0_cancel_stuck_no` callback (кнопка «↩️ Продолжить» в предупреждении о залипшей сессии) не имеет теста — тривиальный handler, только `answerCallbackQuery`.
   evidence: Handler добавлен для предотвращения ошибки «no handlers» при нажатии кнопки; единственное наблюдаемое поведение — spinner исчезает. Низкий риск, stub-функциональность. Триггер: если handler когда-либо изменится. Решение: добавить тест при расширении функциональности кнопки.
+
+## Deferred from: review of story-11.1 (2026-07-13)
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-11-1-globalnyy-obrabotchik-oshibok-i-graceful-audio-20mb.md`
+  summary: Тест `bot.catch` вызывает `created.bot.errorHandler` как приватное API grammY — при переименовании в версии grammY тест скомпилируется, но упадёт в рантайме.
+  evidence: `(created.bot as unknown as { errorHandler: ... }).errorHandler(err)` — грязный каст к внутреннему свойству. Альтернатива: добавить отдельный assertion `expect(typeof (created.bot as any).errorHandler).toBe('function')` сразу после createBot, либо убедиться, что grammY экспортирует публичный метод доступа к зарегистрированному обработчику.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-11-1-globalnyy-obrabotchik-oshibok-i-graceful-audio-20mb.md`
+  summary: В `bot.catch` нет теста сценария, когда `err.ctx.reply` сам бросает исключение — guard `.catch(()=>{})` поглощает ошибку без следа в логах.
+  evidence: Производственный хендлер вызывает `err.ctx.reply(...).catch(() => {})`. Если reply падает (нет чата, rate-limit, ошибка grammY) — ни лога, ни alertOps. Риск низкий (silencing по паттерну всего codebase), но для полноты стоит верифицировать что warn-лог в `.catch()` добавлен при следующей правке хендлера.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-11-1-globalnyy-obrabotchik-oshibok-i-graceful-audio-20mb.md`
+  summary: `err.ctx.reply` failure в `bot.catch` полностью поглощается без warn — ops не узнают о двойном сбое (ошибка хендлера + невозможность уведомить пользователя).
+  evidence: `.catch(() => {})` без log внутри. Паттерн унаследован из codebase, но именно в `bot.catch` это особенно ощутимо: если и reply падает, пользователь видит зависание без ответа, а ops получает только первичный alertOps без упоминания reply failure.

@@ -3107,7 +3107,7 @@ function videoUpdate(chatId: number = TEST_TRACKER_CHAT_ID): Update {
         height: 720,
         duration: 1200,
         mime_type: 'video/mp4',
-        file_size: 50 * 1024 * 1024,
+        file_size: 10 * 1024 * 1024,
       },
     },
   } as unknown as Update;
@@ -3456,5 +3456,262 @@ describe('bot — Story 10.3: grounding mismatch флаг', () => {
     // Черновик должен быть доставлен
     const edits = calls2.slice(before).filter((c) => c.method === 'editMessageText');
     expect(edits.some((e) => (e.payload.text as string).includes('Черновик'))).toBe(true);
+  });
+});
+
+// ─── Story 11.1: bot.catch глобальный обработчик ошибок ──────────────────────
+
+describe('bot — Story 11.1: bot.catch глобальный обработчик ошибок', () => {
+  it('хендлер бросает → bot.catch перехватывает → reply пользователю, alertOps вызван, процесс не падает', async () => {
+    const alertOpsSpy = vi.fn();
+    const created = createBot({
+      runF1: (async () => fullF1Result()) as unknown as BotDeps['runF1'],
+      transcribeFromUrl: (async () => validTranscript) as unknown as BotDeps['transcribeFromUrl'],
+      readClientContext: (async () => validClientContext) as unknown as BotDeps['readClientContext'],
+      alertOps: alertOpsSpy as unknown as BotDeps['alertOps'],
+      appendApproval: async () => {},
+      downloadTelegramFile: async () => Buffer.from('doc'),
+      transcribeFromFilePath: (async () => validTranscript) as unknown as BotDeps['transcribeFromFilePath'],
+      logger: silentLogger,
+      token: 'TEST:TOKEN',
+      botInfo: FALLBACK_BOT_INFO,
+      trackerChatIds: new Set([TEST_TRACKER_CHAT_ID]),
+      progressUpdatesEnabled: true,
+      queueMaxSize: 20,
+      now: () => new Date('2026-05-19T10:00:00.000Z'),
+    });
+    const calls: ApiCall[] = [];
+    created.bot.api.config.use(async (_prev, method, payload) => {
+      calls.push({ method, payload: payload as Record<string, unknown> });
+      if (method === 'sendMessage') {
+        return {
+          ok: true,
+          result: {
+            message_id: 99,
+            date: Math.floor(Date.now() / 1000),
+            chat: { id: (payload as { chat_id: number }).chat_id, type: 'private' },
+            text: (payload as { text: string }).text,
+          },
+        } as never;
+      }
+      return { ok: true, result: true } as never;
+    });
+
+    // Используем message:dice — тип не обрабатываемый ни одним существующим хендлером.
+    created.bot.on('message:dice', async (_ctx) => {
+      throw new Error('boom from dice handler');
+    });
+
+    const diceUpdate: Update = {
+      update_id: updateCounter++,
+      message: {
+        message_id: 1000 + updateCounter,
+        date: Math.floor(Date.now() / 1000),
+        chat: { id: TEST_TRACKER_CHAT_ID, type: 'private' as const, first_name: 'Test' },
+        from: { id: TEST_TRACKER_CHAT_ID, is_bot: false, first_name: 'Test' },
+        dice: { emoji: '🎲', value: 4 },
+      },
+    } as unknown as Update;
+
+    // В grammY bot.handleUpdate бросает BotError — errorHandler (bot.catch) вызывается
+    // из handleUpdates (long-polling). Симулируем это поведение вручную.
+    const before = calls.length;
+    try {
+      await created.bot.handleUpdate(diceUpdate);
+    } catch (err: unknown) {
+      // grammY бросит BotError — передаём в errorHandler (зарегистрированный через bot.catch)
+      await (created.bot as unknown as { errorHandler: (e: unknown) => Promise<void> }).errorHandler(err);
+    }
+
+    // alertOps должен был быть вызван с pipeline: 'bot', step: 'bot.catch'
+    expect(alertOpsSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ pipeline: 'bot', step: 'bot.catch' }),
+    );
+
+    // Пользователь должен получить reply с '⚠️ Что-то пошло не так'
+    const sentTexts = calls
+      .slice(before)
+      .filter((c) => c.method === 'sendMessage')
+      .map((c) => c.payload.text as string);
+    expect(sentTexts.some((t) => t.includes('⚠️ Что-то пошло не так'))).toBe(true);
+  });
+});
+
+// ─── Story 11.1: graceful аудио >20 МБ ───────────────────────────────────────
+
+describe('bot — Story 11.1: graceful аудио/видео >20 МБ', () => {
+  const registryPath11 = joinPath(CLIENTS_DIR, 'registry.json');
+  const activePath11 = joinPath(CLIENTS_DIR, 'active-clients.json');
+  let registryBackup11: string | null = null;
+  let activeBackup11: string | null = null;
+
+  beforeEach(async () => {
+    registryBackup11 = await backupFile(registryPath11);
+    activeBackup11 = await backupFile(activePath11);
+    await fsp.mkdir(CLIENTS_DIR, { recursive: true });
+    await fsp.writeFile(
+      registryPath11,
+      JSON.stringify({
+        [TEST_CLIENT_ID]: {
+          sheetId: 'sheet-RX',
+          name: 'Ромашка',
+          createdAt: '2026-07-08T00:00:00.000Z',
+        },
+      }),
+      'utf8',
+    );
+    await fsp.writeFile(
+      activePath11,
+      JSON.stringify({ [String(TEST_TRACKER_CHAT_ID)]: TEST_CLIENT_ID }),
+      'utf8',
+    );
+  });
+
+  afterEach(async () => {
+    await restoreFile(registryPath11, registryBackup11);
+    await restoreFile(activePath11, activeBackup11);
+  });
+
+  function oversizedAudioUpdate(chatId: number = TEST_TRACKER_CHAT_ID): Update {
+    const message_id = 1000 + updateCounter;
+    return {
+      update_id: updateCounter++,
+      message: {
+        message_id,
+        date: Math.floor(Date.now() / 1000),
+        chat: { id: chatId, type: 'private', first_name: 'Test' },
+        from: { id: chatId, is_bot: false, first_name: 'Test' },
+        audio: {
+          file_id: 'audio-big-1',
+          file_unique_id: 'abu-1',
+          duration: 1800,
+          mime_type: 'audio/mp4',
+          file_size: 21 * 1024 * 1024,
+        },
+      },
+    } as unknown as Update;
+  }
+
+  function oversizedVideoUpdate(chatId: number = TEST_TRACKER_CHAT_ID): Update {
+    const message_id = 1000 + updateCounter;
+    return {
+      update_id: updateCounter++,
+      message: {
+        message_id,
+        date: Math.floor(Date.now() / 1000),
+        chat: { id: chatId, type: 'private', first_name: 'Test' },
+        from: { id: chatId, is_bot: false, first_name: 'Test' },
+        video: {
+          file_id: 'video-big-1',
+          file_unique_id: 'vbu-1',
+          width: 1280,
+          height: 720,
+          duration: 2400,
+          mime_type: 'video/mp4',
+          file_size: 25 * 1024 * 1024,
+        },
+      },
+    } as unknown as Update;
+  }
+
+  it('(a) audio file_size=21 МБ → reply с сообщением о лимите, getFile не вызывался', async () => {
+    let getFileCalled = false;
+    const { bot, calls } = buildBot({
+      downloadTelegramFile: async () => Buffer.from('audio-data'),
+    });
+    // Добавляем spy на getFile поверх существующего transformer
+    bot.api.config.use(async (_prev, method, payload, signal) => {
+      if (method === 'getFile') {
+        getFileCalled = true;
+      }
+      return _prev(method, payload, signal);
+    });
+
+    const before = calls.length;
+    await bot.handleUpdate(oversizedAudioUpdate());
+
+    const sentTexts = calls
+      .slice(before)
+      .filter((c) => c.method === 'sendMessage')
+      .map((c) => c.payload.text as string);
+
+    // Должен ответить сообщением о лимите
+    expect(sentTexts.some((t) => t.includes('20 МБ') || t.includes('Сожми') || t.includes('разбей'))).toBe(true);
+    // ctx.getFile() не должен был вызываться
+    expect(getFileCalled).toBe(false);
+  });
+
+  it('(b) video file_size=25 МБ → reply с сообщением о лимите, getFile не вызывался', async () => {
+    let getFileCalled = false;
+    const { bot, calls } = buildBot({
+      downloadTelegramFile: async () => Buffer.from('video-data'),
+    });
+    bot.api.config.use(async (_prev, method, payload, signal) => {
+      if (method === 'getFile') {
+        getFileCalled = true;
+      }
+      return _prev(method, payload, signal);
+    });
+
+    const before = calls.length;
+    await bot.handleUpdate(oversizedVideoUpdate());
+
+    const sentTexts = calls
+      .slice(before)
+      .filter((c) => c.method === 'sendMessage')
+      .map((c) => c.payload.text as string);
+
+    expect(sentTexts.some((t) => t.includes('20 МБ') || t.includes('Сожми') || t.includes('разбей'))).toBe(true);
+    expect(getFileCalled).toBe(false);
+  });
+
+  it('(c) audio file_size≤20 МБ → getFile вызывается (нормальный путь)', async () => {
+    let getFileCalled = false;
+    const { bot } = buildBot({
+      downloadTelegramFile: async () => Buffer.from('audio-data'),
+    });
+    bot.api.config.use(async (_prev, method, payload, signal) => {
+      if (method === 'getFile') {
+        getFileCalled = true;
+      }
+      return _prev(method, payload, signal);
+    });
+
+    await bot.handleUpdate(audioUpdate());
+    expect(getFileCalled).toBe(true);
+  });
+
+  it('(d) audio без file_size → getFile вызывается (нет размера — пропускаем проверку)', async () => {
+    let getFileCalled = false;
+    const { bot } = buildBot({
+      downloadTelegramFile: async () => Buffer.from('audio-data'),
+    });
+    bot.api.config.use(async (_prev, method, payload, signal) => {
+      if (method === 'getFile') {
+        getFileCalled = true;
+      }
+      return _prev(method, payload, signal);
+    });
+
+    // Аудио-сообщение без поля file_size (Telegram иногда не присылает его)
+    const noSizeUpdate: Update = {
+      update_id: updateCounter++,
+      message: {
+        message_id: 1000 + updateCounter,
+        date: Math.floor(Date.now() / 1000),
+        chat: { id: TEST_TRACKER_CHAT_ID, type: 'private', first_name: 'Test' },
+        from: { id: TEST_TRACKER_CHAT_ID, is_bot: false, first_name: 'Test' },
+        audio: {
+          file_id: 'audio-no-size',
+          file_unique_id: 'ans-1',
+          duration: 300,
+          mime_type: 'audio/mp4',
+          // file_size намеренно отсутствует
+        },
+      },
+    } as unknown as Update;
+
+    await bot.handleUpdate(noSizeUpdate);
+    expect(getFileCalled).toBe(true);
   });
 });
