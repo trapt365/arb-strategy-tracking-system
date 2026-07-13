@@ -280,6 +280,8 @@ interface BuildOpts {
   sonioxClient?: BotDeps['sonioxClient'];
   // Story 10.1: транскрипция из локального файла (Telegram audio/video intake).
   transcribeFromFilePath?: BotDeps['transcribeFromFilePath'];
+  // Story 11.5: LLM-экстракция участника A3.2 (тесты подменяют).
+  extractTopWithLlm?: BotDeps['extractTopWithLlm'];
 }
 
 function buildBot(opts: BuildOpts = {}) {
@@ -308,6 +310,9 @@ function buildBot(opts: BuildOpts = {}) {
     transcribeFromFilePath:
       opts.transcribeFromFilePath ??
       ((async () => validTranscript) as unknown as BotDeps['transcribeFromFilePath']),
+    extractTopWithLlm:
+      opts.extractTopWithLlm ??
+      (async (phrase: string) => ({ name: phrase.trim(), title: null, authority: null, area: null })),
     logger: silentLogger,
     token: 'TEST:TOKEN',
     botInfo: FALLBACK_BOT_INFO,
@@ -2402,23 +2407,28 @@ describe('bot — профиль клиента: обязательный пер
     expect(startMarkup).toContain('f0_mode_synthesis');
   });
 
-  it('топы A3.2: не разложился на поля → один переспрос, повтор сохраняется как есть (Story 10.2)', async () => {
-    const { bot, calls } = buildProfileBot();
+  it('топы A3.2: LLM экстракция вызвана, топ сразу добавляется без ретрая (Story 11.5)', async () => {
+    const extractTopWithLlm = vi.fn(async (phrase: string) => ({
+      name: phrase.trim(),
+      title: null,
+      authority: null,
+      area: null,
+    }));
+    const { bot, calls } = buildProfileBot({ extractTopWithLlm });
     await bot.handleUpdate(commandUpdate('/newclient'));
     await bot.handleUpdate(plainTextUpdate('Ромашка'));
     await bot.handleUpdate(plainTextUpdate('Продаём ромашки бизнесу'));
-    // Story 10.2: A3.2 теперь в расширенном блоке — нужно нажать «Добавить топов».
+    // A3.2 — в расширенном блоке, нажимаем «Добавить топов».
     await bot.handleUpdate(callbackUpdate('f0p_ext'));
 
-    let before = calls.length;
+    const before = calls.length;
     await bot.handleUpdate(plainTextUpdate('Просто Дамир'));
-    expect(texts91(calls, before).some((t) => t.includes('Не разобрал'))).toBe(true);
-
-    before = calls.length;
-    await bot.handleUpdate(plainTextUpdate('Просто Дамир'));
+    expect(extractTopWithLlm).toHaveBeenCalledWith('Просто Дамир');
     const added = texts91(calls, before).find((t) => t.includes('Топ добавлен'));
     expect(added).toBeDefined();
-    expect(added).toContain('Просто Дамир'); // name = ответ, остальное null
+    expect(added).toContain('Просто Дамир');
+    // Сообщение «Не разобрал» не должно появиться
+    expect(texts91(calls, before).some((t) => t.includes('Не разобрал'))).toBe(false);
   });
 
   it('AC2: рестарт бота посреди профиля — следующий ответ продолжает с того же вопроса (Story 10.2)', async () => {
@@ -3786,5 +3796,142 @@ describe('bot — Story 11.4: claude_api error messages in buildF0Draft', () => 
     const err = new F1PipelineError('claude_api', { httpStatus: 500 });
     const msg = await draftErrorMsg(err, 1);
     expect(msg).not.toContain('Убери лишние');
+  });
+});
+
+// ─── Story 11.5: LLM-экстракция участника A3.2 ───────────────────────────────
+
+describe('bot — Story 11.5: LLM-экстракция участника A3.2', () => {
+  beforeEach(cleanOnboardingArtifacts);
+  afterEach(cleanOnboardingArtifacts);
+
+  /** Тексты sendMessage начиная с индекса from. */
+  function texts115(calls: ApiCall[], from = 0): string[] {
+    return calls
+      .slice(from)
+      .filter((c) => c.method === 'sendMessage')
+      .map((c) => c.payload.text as string);
+  }
+
+  function buildProfileBot115(opts: BuildOpts = {}) {
+    return buildBot({
+      extractTextFromDocument: ((async () => ({
+        sourceName: 'strategy.md',
+        kind: 'text',
+        text: 'x'.repeat(5_000),
+      })) as unknown) as BotDeps['extractTextFromDocument'],
+      runF0FullDraft: ((async () => ({
+        draftId: 'd-115',
+        extraction: {
+          document_type: 'strategy',
+          company: 'Ромашка',
+          objectives: [],
+          hypotheses: [],
+          participants: [],
+          unrecognized: [],
+        },
+        gaps: [],
+        warnings: [],
+        tokens: { input: 100, output: 100 },
+        rawResponses: { extraction: '{}', analysis: '{}', format: '{}' },
+      })) as unknown) as BotDeps['runF0FullDraft'],
+      ...opts,
+    });
+  }
+
+  async function setupA32(bot: ReturnType<typeof buildProfileBot115>['bot']) {
+    await bot.handleUpdate(commandUpdate('/newclient'));
+    await bot.handleUpdate(plainTextUpdate('Ромашка'));
+    await bot.handleUpdate(plainTextUpdate('Продаём ромашки бизнесу'));
+    await bot.handleUpdate(callbackUpdate('f0p_ext')); // → расширенный A3.2
+  }
+
+  it('(a) LLM fallback: extractTopWithLlm возвращает topFromRawAnswer-образный объект — топ добавлен', async () => {
+    const extractTopWithLlm = vi.fn(async (phrase: string) => ({
+      name: phrase.trim(),
+      title: null,
+      authority: null,
+      area: null,
+    }));
+    const { bot, calls } = buildProfileBot115({ extractTopWithLlm });
+    await setupA32(bot);
+    const before = calls.length;
+    await bot.handleUpdate(plainTextUpdate('Просто имя'));
+    expect(extractTopWithLlm).toHaveBeenCalledWith('Просто имя');
+    const added = texts115(calls, before).find((t) => t.includes('Топ добавлен'));
+    expect(added).toBeDefined();
+    expect(added).toContain('Просто имя');
+    expect(texts115(calls, before).some((t) => t.includes('Не разобрал'))).toBe(false);
+  });
+
+  it('(b) LLM success: мок возвращает полный ClientTop — все поля в profile.tops', async () => {
+    const extractTopWithLlm = vi.fn(async (_phrase: string) => ({
+      name: 'Дамир',
+      title: 'коммерческий директор',
+      authority: 'отвечает за P&L',
+      area: null,
+    }));
+    const { bot, calls } = buildProfileBot115({ extractTopWithLlm });
+    await setupA32(bot);
+    const before = calls.length;
+    await bot.handleUpdate(plainTextUpdate('Дамир, директор, отвечает за P&L'));
+    expect(extractTopWithLlm).toHaveBeenCalled();
+    const added = texts115(calls, before).find((t) => t.includes('Топ добавлен'));
+    expect(added).toBeDefined();
+    expect(added).toContain('Дамир (коммерческий директор)');
+    expect(texts115(calls, before).some((t) => t.includes('Не разобрал'))).toBe(false);
+  });
+
+  it('(c) регресс: Айгерим — CEO, все решения, зона: всё с default mock — топ добавлен, f0p_dm:0 работает', async () => {
+    // default mock возвращает name=phrase (buildProfileBot115 без extractTopWithLlm).
+    const { bot, calls } = buildProfileBot115();
+    await bot.handleUpdate(commandUpdate('/newclient'));
+    await bot.handleUpdate(plainTextUpdate('Ромашка'));
+    await bot.handleUpdate(plainTextUpdate('Продаём ромашки бизнесу'));
+    await bot.handleUpdate(callbackUpdate('f0p_ext'));
+    const before = calls.length;
+    await bot.handleUpdate(plainTextUpdate('Айгерим — CEO, все решения, зона: всё'));
+    const added = texts115(calls, before).find((t) => t.includes('Топ добавлен'));
+    expect(added).toBeDefined();
+    // После добавления топа — нажать «Готово» и выбрать DM по индексу 0.
+    await bot.handleUpdate(callbackUpdate('f0p_top_done'));
+    const b2 = calls.length;
+    await bot.handleUpdate(callbackUpdate('f0p_dm:0'));
+    expect(texts115(calls, b2).some((t) => t.includes('Decision maker'))).toBe(true);
+  });
+
+  it('(d) LLM бросил ошибку — fallback на topFromRawAnswer, топ всё равно добавлен', async () => {
+    const extractTopWithLlm = vi.fn(async (_phrase: string) => {
+      throw new Error('network error');
+    });
+    const { bot, calls } = buildProfileBot115({ extractTopWithLlm });
+    await setupA32(bot);
+    const before = calls.length;
+    await bot.handleUpdate(plainTextUpdate('Дамир директор'));
+    const added = texts115(calls, before).find((t) => t.includes('Топ добавлен'));
+    expect(added).toBeDefined();
+    expect(added).toContain('Дамир директор'); // name = полная фраза (topFromRawAnswer)
+    expect(texts115(calls, before).some((t) => t.includes('Не разобрал'))).toBe(false);
+  });
+
+  it('(e) f0p_top_more — текст без формат-хинта, содержит «свободной фразой»', async () => {
+    const { bot, calls } = buildProfileBot115();
+    await setupA32(bot);
+    await bot.handleUpdate(plainTextUpdate('Дамир директор')); // добавляем первого топа
+    const before = calls.length;
+    await bot.handleUpdate(callbackUpdate('f0p_top_more'));
+    const replies = texts115(calls, before);
+    expect(replies.some((t) => t.includes('свободной фразой'))).toBe(true);
+    expect(replies.some((t) => t.includes('Имя —'))).toBe(false); // нет старого формат-хинта
+  });
+
+  it('(f) f0p_top_done без топов — предупреждение «хотя бы один участник»', async () => {
+    const { bot, calls } = buildProfileBot115();
+    await setupA32(bot);
+    const before = calls.length;
+    await bot.handleUpdate(callbackUpdate('f0p_top_done')); // нажать «Готово» до добавления топа
+    const replies = texts115(calls, before);
+    expect(replies.some((t) => t.includes('хотя бы один участник'))).toBe(true);
+    expect(replies.some((t) => t.includes('Имя —'))).toBe(false); // нет старого формат-хинта
   });
 });

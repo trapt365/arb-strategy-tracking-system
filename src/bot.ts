@@ -75,7 +75,8 @@ import {
   getActiveClient,
   setActiveClient,
 } from './client-registry.js';
-import type { ClientProfile, F0FullExtraction } from './types.js';
+import type { ClientProfile, ClientTop, F0FullExtraction } from './types.js';
+import { ClientTopSchema } from './types.js';
 import {
   PROFILE_MIN_COUNT,
   PROFILE_EXT_COUNT,
@@ -85,7 +86,6 @@ import {
   nextProfileQuestion,
   applyProfileAnswer,
   isQuestionAnswered,
-  parseTopAnswer,
   topFromRawAnswer,
   renderProfileQuestion,
   renderProfileStatusMessage,
@@ -110,7 +110,7 @@ import {
   F0_MAX_DOC_CHARS,
 } from './utils/f0-input.js';
 import { F0OnboardingError, F0SheetsError, F1PipelineError } from './errors.js';
-import { classifyClaudeApiError } from './adapters/claude.js';
+import { classifyClaudeApiError, callClaudeSafe } from './adapters/claude.js';
 import { assertTranscriptDuration } from './utils/transcript-duration-guard.js';
 import { createReportQueue, QueueOverflowError, type ReportQueue } from './utils/report-queue.js';
 import {
@@ -136,6 +136,7 @@ import {
   type ProgressStep,
 } from './utils/telegram-formatter.js';
 import type { ReportJob } from './types.js';
+import { loadPrompt as defaultLoadPrompt } from './utils/prompt-loader.js';
 
 const DEFAULT_CLIENT_ID = 'geonline';
 // Story 8.2 (W8): имя топа Geonline — только для его же fallback-пути (пилот без записи
@@ -193,6 +194,8 @@ export interface BotDeps {
   sonioxClient?: SonioxClient;
   /** Story 10.1: транскрипция Telegram-файла встречи (тесты подменяют). */
   transcribeFromFilePath?: typeof defaultTranscribeFromFilePath;
+  /** Story 11.5: LLM-экстракция участника профиля A3.2 (тесты подменяют). */
+  extractTopWithLlm?: (phrase: string) => Promise<ClientTop>;
 }
 
 export interface CreatedBot {
@@ -225,6 +228,24 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
   // Story 7.3: отдельный child для F0-онбординга — иначе inline {pipeline:'F0'} даёт
   // дубль ключа pipeline поверх привязанного 'F1' в NDJSON.
   const f0Log = baseLogger.child({ pipeline: 'F0' });
+
+  const extractTopWithLlm =
+    deps.extractTopWithLlm ??
+    (async (phrase: string): Promise<ClientTop> => {
+      try {
+        const prompt = await defaultLoadPrompt('extract-top', { phrase });
+        const result = await callClaudeSafe(prompt, {
+          stepName: 'f0.extract_top',
+          schema: ClientTopSchema,
+          maxTokens: 300,
+          logger: f0Log,
+        });
+        if (result.parsed !== null) return result.parsed;
+      } catch {
+        /* silent — fallback below */
+      }
+      return topFromRawAnswer(phrase);
+    });
 
   const token = deps.token ?? config.TELEGRAM_BOT_TOKEN;
   const trackerChatIds =
@@ -1106,7 +1127,6 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
     '🔑 Этот вопрос — обязательный минимум профиля: без него онбординг стратегии не начнётся, пропустить нельзя.';
   const F0_PROFILE_FIRST_TEXT =
     'ℹ️ Сначала профиль клиента — документы стратегии приму после 🔑-минимума. Продолжить вопросы — /resume.';
-  const F0_PROFILE_TOP_FORMAT_HINT = '«Имя — должность, полномочия, зона: …»';
   const F0_PROFILE_STALE_TEXT =
     'ℹ️ Эта кнопка от прошлого диалога профиля. Актуальное состояние — /status, продолжить — /resume.';
 
@@ -1343,36 +1363,20 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
         .catch(() => {});
       return;
     }
-    // Топы A3.2: по одному сообщению; не разложился на поля → один переспрос,
-    // затем сохранить как есть (name = ответ, остальное null).
+    // Топы A3.2: LLM-экстракция участника из свободной фразы (Story 11.5).
+    // При ошибке LLM — fallback на topFromRawAnswer (name = фраза целиком).
     if (q.type === 'tops') {
-      let top = parseTopAnswer(text);
-      if (top === null && session.profileRetryQIndex !== qIndex) {
-        session.profileRetryQIndex = qIndex;
-        await saveF0Session(chatId, session);
-        f0Log.info(
-          { step: 'f0.profile_retry', chatId, sessionId: session.id, questionId: q.id },
-          'f0 profile top format retry',
-        );
-        await ctx
-          .reply(
-            `🔁 Не разобрал ответ на поля. Формат: ${F0_PROFILE_TOP_FORMAT_HINT}.\n` +
-              'Пришли в этом формате — или отправь тот же ответ ещё раз, сохраню как есть.',
-          )
-          .catch(() => {});
-        return;
+      let top: ClientTop;
+      try {
+        top = await extractTopWithLlm(text);
+      } catch {
+        top = topFromRawAnswer(text);
       }
-      if (top === null) top = topFromRawAnswer(text);
       profile.tops = [...(profile.tops ?? []), top];
       session.profileRetryQIndex = undefined;
       await saveF0Session(chatId, session);
       f0Log.info(
-        {
-          step: 'f0.profile_top_added',
-          chatId,
-          sessionId: session.id,
-          tops: profile.tops.length,
-        },
+        { step: 'f0.profile_top_added', chatId, sessionId: session.id, tops: profile.tops.length },
         'f0 profile top added',
       );
       await ctx
@@ -1417,7 +1421,7 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
     const session = await getProfileSessionForCallback(ctx, 'a3_2');
     if (session === undefined) return;
     await ctx
-      .reply(`Пришли следующего топа сообщением: ${F0_PROFILE_TOP_FORMAT_HINT}.`)
+      .reply('Пришли следующего участника свободной фразой.')
       .catch(() => {});
   });
 
@@ -1427,7 +1431,7 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
     const q = currentProfileQuestion(session)!;
     if ((session.profile?.tops ?? []).length === 0) {
       await ctx
-        .reply('🔑 Нужен хотя бы один топ — пришли сообщением: ' + F0_PROFILE_TOP_FORMAT_HINT + '.')
+        .reply('🔑 Нужен хотя бы один участник — напиши имя и должность.')
         .catch(() => {});
       return;
     }

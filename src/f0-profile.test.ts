@@ -8,7 +8,6 @@ import {
   PROFILE_PRIORITY_OPTIONS,
   nextProfileQuestion,
   isMinimumComplete,
-  parseTopAnswer,
   topFromRawAnswer,
   applyProfileAnswer,
   isQuestionAnswered,
@@ -79,34 +78,6 @@ describe('очередь вопросов Части A', () => {
       'выход собственника из операционки',
       'доля рынка',
     ]);
-  });
-});
-
-describe('parseTopAnswer (A3.2)', () => {
-  it('пример вопросника разбирается на все поля', () => {
-    const top = parseTopAnswer('Дамир — коммерческий директор, полный P&L продаж, зона: выручка и воронка');
-    expect(top).toEqual({
-      name: 'Дамир',
-      title: 'коммерческий директор',
-      authority: 'полный P&L продаж',
-      area: 'выручка и воронка',
-    });
-  });
-
-  it('частичный ответ: только имя и должность', () => {
-    const top = parseTopAnswer('Айгерим — CEO');
-    expect(top).toEqual({ name: 'Айгерим', title: 'CEO', authority: null, area: null });
-  });
-
-  it('без тире → null (не разложился); topFromRawAnswer сохраняет как есть', () => {
-    expect(parseTopAnswer('Просто Дамир')).toBeNull();
-    expect(parseTopAnswer('')).toBeNull();
-    expect(topFromRawAnswer(' Просто Дамир ')).toEqual({
-      name: 'Просто Дамир',
-      title: null,
-      authority: null,
-      area: null,
-    });
   });
 });
 

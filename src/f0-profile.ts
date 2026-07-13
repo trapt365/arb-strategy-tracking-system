@@ -215,37 +215,6 @@ export function isMinimumComplete(profile: ClientProfile): boolean {
   );
 }
 
-/**
- * Разбор ответа A3.2 по формату примера: «Имя — должность, полномочия, зона: …».
- * null — не разложился (bot: один переспрос, затем принять как есть: name = ответ).
- */
-export function parseTopAnswer(answer: string): ClientTop | null {
-  const value = answer.trim();
-  if (value.length === 0) return null;
-  const dash = value.match(/\s+[—–-]\s+/);
-  if (dash === null || dash.index === undefined) return null;
-  const name = value.slice(0, dash.index).trim();
-  const rest = value.slice(dash.index + dash[0].length).trim();
-  if (name.length === 0 || rest.length === 0) return null;
-  const segments = rest.split(',').map((s) => s.trim()).filter((s) => s.length > 0);
-  let title: string | null = null;
-  let authority: string | null = null;
-  let area: string | null = null;
-  const other: string[] = [];
-  for (const seg of segments) {
-    const areaMatch = seg.match(/^зона(?:\s+ответственности)?\s*:\s*(.+)$/iu);
-    if (areaMatch !== null) {
-      area = areaMatch[1]!.trim();
-    } else if (title === null) {
-      title = seg;
-    } else {
-      other.push(seg);
-    }
-  }
-  if (other.length > 0) authority = other.join(', ');
-  return { name, title, authority, area };
-}
-
 /** Топ «как есть» после неудачного переспроса: name = весь ответ, остальное null. */
 export function topFromRawAnswer(answer: string): ClientTop {
   return { name: answer.trim(), title: null, authority: null, area: null };

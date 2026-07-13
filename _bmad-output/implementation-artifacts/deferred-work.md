@@ -416,3 +416,11 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-11-4-klassifikaciya-oshibok-claude-api.md`
   summary: "Forward-compatibility: billing определяется по substring в message, не по structured anthropicErrorType — если Anthropic добавит billing_error type, классификатор его не поймает"
   evidence: Anthropic API не имеет специфического error.type для billing; классификация строится на message-строке (fragile по определению).
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-11-5-llm-ekstrakciya-uchastnika-profilya-a3.md`
+  summary: "extractTopWithLlm: parsed=null (Zod-ошибка) и prompt_load failure поглощаются без лога — систематический сбой промпта был бы невидим в продакшне"
+  evidence: В default extractTopWithLlm при callClaudeSafe → parsed:null нет warn/info; при prompt_load failure catch { silent } не логирует F1PipelineError('prompt_load'). Fallback работает корректно, но диагностика отсутствует.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-11-5-llm-ekstrakciya-uchastnika-profilya-a3.md`
+  summary: "Нет теста для пути parsed=null (callClaudeSafe 200 OK, но Zod-валидация провалилась) внутри default extractTopWithLlm"
+  evidence: Все тесты Story 11.5 инжектируют mock extractTopWithLlm целиком; внутренний путь 'if (result.parsed !== null)' в default-реализации не покрыт ни одним тестом. Требует module-level mocking callClaudeSafe или отдельного unit-теста default функции.
