@@ -6,6 +6,7 @@ dist/
 *.log
 .DS_Store
 *.code-workspace
+.vscode/
 
 # Credentials / service-account keys (never commit secrets)
 data/google-service-account.json
