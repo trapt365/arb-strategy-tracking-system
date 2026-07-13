@@ -304,7 +304,7 @@ export function formatWelcomeMessage(firstName?: string): string {
   return [
     `👋 ${greeting} Я — AI-трекинг бот.`,
     '',
-    'Веду клиентов практики: онбординг стратегии и отчёты по встречам с топами.',
+    'Веду клиентов практики: онбординг стратегии и отчёты по встречам с участниками.',
     '',
     'Основное:',
     '/newclient — онбординг нового клиента (пришли документы стратегии)',
@@ -328,7 +328,7 @@ export function formatShortWelcome(firstName?: string, activeClientName?: string
   const greeting = trimmed && trimmed.length > 0 ? `Привет, ${trimmed}!` : 'Привет!';
   const lines = [
     `👋 ${greeting} Я — AI-трекинг бот практики.`,
-    'Веду онбординг стратегий и отчёты по встречам с топами.',
+    'Веду онбординг стратегий и отчёты по встречам с участниками.',
     'Выбери клиента или онбордируй нового.',
   ];
   if (activeClientName !== undefined && activeClientName.trim().length > 0) {

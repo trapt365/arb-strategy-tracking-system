@@ -203,7 +203,7 @@ export function renderClientCardMessage(card: ClientCard): string {
     `Участники: ${card.participants.length}${names.length > 0 ? ` — ${names}` : ''}` +
       (card.participants.length > 6 ? ' …' : ''),
   );
-  // Story 9.1: компактный профиль (суть, топы, DM, счётчик расширенной части).
+  // Story 9.1/11.9: компактный профиль (суть, участники, счётчик расширенной части).
   if (card.profile !== undefined) lines.push(...renderProfileCardLines(card.profile));
   lines.push(`Расписание: ${card.schedule ?? '—'}`);
   lines.push(`Старт: ${card.startDate.slice(0, 10)}`);

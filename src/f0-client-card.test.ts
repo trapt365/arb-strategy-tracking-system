@@ -148,7 +148,6 @@ const profileFixture: ClientProfile = {
     { name: 'Дамир', title: 'CEO', authority: 'все решения', area: 'всё' },
     { name: 'Мақсат', title: 'CMO', authority: null, area: 'маркетинг' },
   ],
-  decisionMaker: 'Дамир',
 };
 
 describe('профиль клиента в карточке (Story 9.1)', () => {
@@ -162,8 +161,8 @@ describe('профиль клиента в карточке (Story 9.1)', () => 
     const msg = renderClientCardMessage(card({ profile: profileFixture }));
     expect(msg).toContain('Суть: Продаём ромашки бизнесу');
     expect(msg).toContain('Дамир (CEO)');
-    expect(msg).toContain('DM: Дамир');
-    expect(msg).toContain('расширенный 3/16'); // заполнены a3_2 (tops), a3_3 (DM), a1_3 (history)
+    expect(msg).not.toContain('DM:');
+    expect(msg).toContain('расширенный 2/15'); // заполнены a3_2 (tops), a1_3 (history)
     expect(msg.split('\n').length).toBeLessThanOrEqual(15);
   });
 
@@ -178,7 +177,7 @@ describe('профиль клиента в карточке (Story 9.1)', () => 
     const dir = join(tmpdir(), `card-${randomUUID()}`);
     await persistClientCard(card({ profile: profileFixture }), { rootDir: dir });
     const loaded = await loadClientCard('romashka', { rootDir: dir });
-    expect(loaded?.profile?.decisionMaker).toBe('Дамир');
+    expect(loaded?.profile?.tops).toHaveLength(2);
 
     // Старый формат (до 9.1): без поля profile — валиден без миграции.
     const dir2 = join(tmpdir(), `card-${randomUUID()}`);

@@ -456,3 +456,21 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-11-8-paketnyy-priyom-i-front-load-onbordinga.md`
   summary: `handleProfileA3BatchDocument` session.processing guard has no concurrency test (only photo path tested in test-j)
   evidence: Removing the `if (session.processing)` check in the document handler would not break any test. The guard is identical to the photo path; test-j demonstrates the pattern for photo. Low risk but a test gap.
+
+## Deferred from: code review of story-11-9 (2026-07-13)
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-11-9-polirovka-terminy-token-redaction-username.md`
+  summary: Строка «из списка топов» в `qnB2_2Text` (f0-questionnaire.ts) не была переименована — попадает в B2.2 owner-selection вопросник.
+  evidence: Пользовательская строка вне Code Map спеки; последовательное переименование «топов» → «участников» по всему F0 включает и questionnaire-фазу.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-11-9-polirovka-terminy-token-redaction-username.md`
+  summary: Текст вопроса A3.2 не закреплён точечным тестом — регресс может пройти незамеченным.
+  evidence: Интеграционные тесты содержат `.toContain('участников')`, но это слово встречается и в кнопках; ни один тест не проверяет `a3_2.text` дословно.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-11-9-polirovka-terminy-token-redaction-username.md`
+  summary: Pino err-сериализатор не маскирует кастомные свойства ошибки (err.url и др.) — потенциальная утечка токена через нестандартные поля.
+  evidence: Теоретически: undici/fetch могут добавлять url-поле к network-ошибкам; текущий код не создаёт таких ошибок, но будущие изменения могут.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-11-9-polirovka-terminy-token-redaction-username.md`
+  summary: Magic number 14 в skip-loop (bot.test.ts:~3083) — хрупкий счётчик, не привязан к PROFILE_EXT_COUNT.
+  evidence: После изменения числа расширенных вопросов тест будет тихо over/under-skipать без явной ошибки.

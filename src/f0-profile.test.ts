@@ -31,16 +31,16 @@ describe('очередь вопросов Части A', () => {
     expect(PROFILE_MIN_COUNT).toBe(2);
   });
 
-  it('расширенная часть: 16 вопросов; a3_2 и a3_3 первыми, затем A1→A2→A3→A4 (Story 10.2)', () => {
+  it('расширенная часть: 15 вопросов; a3_2 первым, затем A1→A2→A3→A4 (Story 10.2)', () => {
     expect(PROFILE_EXT_QUESTIONS.map((q) => q.id)).toEqual([
-      'a3_2', 'a3_3',
+      'a3_2',
       'a1_3', 'a1_4',
       'a2_1', 'a2_2', 'a2_3', 'a2_4', 'a2_5',
       'a3_1',
       'a4_1', 'a4_2', 'a4_3', 'a4_4', 'a4_5', 'a4_6',
     ]);
     expect(PROFILE_EXT_QUESTIONS.every((q) => !q.key)).toBe(true);
-    expect(PROFILE_EXT_COUNT).toBe(16);
+    expect(PROFILE_EXT_COUNT).toBe(15);
   });
 
   it('формулировки — дословно по вопроснику (выборочно)', () => {
@@ -53,13 +53,12 @@ describe('очередь вопросов Части A', () => {
     );
   });
 
-  it('типы: числовые A2.1/A2.2/A2.5, топы A3.2, choice A3.3/A4.6, файл A3.1', () => {
+  it('типы: числовые A2.1/A2.2/A2.5, топы A3.2, choice A4.6, файл A3.1', () => {
     const byId = (id: string) => PROFILE_QUESTIONS.find((q) => q.id === id)!;
     expect(byId('a2_1').type).toBe('number');
     expect(byId('a2_2').type).toBe('number');
     expect(byId('a2_5').type).toBe('number');
     expect(byId('a3_2').type).toBe('tops');
-    expect(byId('a3_3').type).toBe('choice');
     expect(byId('a4_6').type).toBe('choice');
     expect(byId('a3_1').type).toBe('file-ok');
   });
@@ -91,7 +90,6 @@ describe('applyProfileAnswer / isQuestionAnswered', () => {
     expect(applyProfileAnswer(p, q('a2_1'), '120 млн ₸')).toBe(true);
     expect(applyProfileAnswer(p, q('a2_4'), 'кредит 40 млн')).toBe(true);
     expect(applyProfileAnswer(p, q('a2_5'), '35')).toBe(true);
-    expect(applyProfileAnswer(p, q('a3_3'), 'Дамир')).toBe(true);
     expect(applyProfileAnswer(p, q('a4_1'), 'Стагнация выручки')).toBe(true);
     expect(applyProfileAnswer(p, q('a4_5'), '×2 за год')).toBe(true);
     expect(p.companyName).toBe('Ромашка');
@@ -100,7 +98,6 @@ describe('applyProfileAnswer / isQuestionAnswered', () => {
     expect(p.financials?.start?.debts).toBe('кредит 40 млн');
     expect(p.financials?.target).toBe('×2 за год');
     expect(p.headcount).toBe('35');
-    expect(p.decisionMaker).toBe('Дамир');
     expect(p.request?.problem).toBe('Стагнация выручки');
   });
 
@@ -154,29 +151,29 @@ describe('рендер вопроса и счётчики', () => {
   it('без заголовка — только вопрос; A3.1 подсказывает 📎', () => {
     const a13 = renderProfileQuestion(PROFILE_QUESTIONS.find((q) => q.id === 'a1_3')!, {
       index: 3,
-      total: 16,
+      total: 15,
       withHeader: false,
     });
     expect(a13).not.toContain('📋');
     expect(a13).not.toContain('🔑');
     const a31 = renderProfileQuestion(PROFILE_QUESTIONS.find((q) => q.id === 'a3_1')!, {
       index: 8,
-      total: 16,
+      total: 15,
       withHeader: true,
     });
     expect(a31).toContain('📎 файлом');
   });
 
-  it('countExtendedFilled считает только расширенные поля (Story 10.2: total=16)', () => {
+  it('countExtendedFilled считает только расширенные поля (Story 11.9: total=15)', () => {
     const p: ClientProfile = {
       companyName: 'Ромашка', // минимум — не в счёт
       history: 'Основана в 2018',
       headcount: '35',
     };
-    expect(countExtendedFilled(p)).toEqual({ filled: 2, total: 16 });
+    expect(countExtendedFilled(p)).toEqual({ filled: 2, total: 15 });
   });
 
-  it('renderProfileCardLines: суть + топы/DM + счётчик (компактно, ≤3 строки)', () => {
+  it('renderProfileCardLines: суть + топы + счётчик (компактно, ≤3 строки)', () => {
     const p: ClientProfile = {
       companyName: 'Ромашка',
       businessSummary: 'Продаём ромашки бизнесу',
@@ -184,14 +181,13 @@ describe('рендер вопроса и счётчики', () => {
         { name: 'Дамир', title: 'коммерческий директор', authority: null, area: null },
         { name: 'Айгерим', title: null, authority: null, area: null },
       ],
-      decisionMaker: 'Дамир',
     };
     const lines = renderProfileCardLines(p);
     expect(lines.length).toBeLessThanOrEqual(3);
     expect(lines[0]).toBe('Суть: Продаём ромашки бизнесу');
     expect(lines[1]).toContain('Дамир (коммерческий директор)');
-    expect(lines[1]).toContain('DM: Дамир');
-    expect(lines[2]).toBe('Профиль: минимум ✓ · расширенный 2/16');
+    expect(lines[1]).not.toContain('DM:');
+    expect(lines[2]).toBe('Профиль: минимум ✓ · расширенный 1/15');
   });
 
   it('renderProfileStatusMessage: компания, прогресс минимума и расширенной части', () => {
@@ -201,7 +197,7 @@ describe('рендер вопроса и счётчики', () => {
     });
     expect(msg).toContain('👤 Профиль клиента — Ромашка');
     expect(msg).toContain('Минимум 🔑: 2/2');
-    expect(msg).toContain('расширенный: 0/16');
+    expect(msg).toContain('расширенный: 0/15');
     expect(msg).toContain('/resume');
   });
 });

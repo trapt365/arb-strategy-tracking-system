@@ -441,7 +441,6 @@ export const ClientProfileSchema = z.object({
   orgStructure: z.string().optional(), // A3.1 (текст или референс 📎 на файл)
   request: ClientProfileRequestSchema.optional(), // A4
   tops: z.array(ClientTopSchema).optional(), // A3.2 🔑
-  decisionMaker: z.string().optional(), // A3.3 🔑
 });
 export type ClientProfile = z.infer<typeof ClientProfileSchema>;
 

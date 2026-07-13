@@ -30,7 +30,7 @@ export const PROFILE_BLOCK_HEADERS: Record<ProfileQuestion['block'], string> = {
   A4: 'A4. Запрос и ожидания (проблематизация первого прохода)',
 };
 
-// 🔑-минимум: только название + суть; топы/DM — в начале расширенного.
+// 🔑-минимум: только название + суть; участники — в начале расширенного.
 export const PROFILE_MIN_QUESTIONS: ProfileQuestion[] = [
   {
     id: 'a1_1',
@@ -51,7 +51,7 @@ export const PROFILE_MIN_QUESTIONS: ProfileQuestion[] = [
 ];
 
 // Расширенный профиль — опционален, порядок блоков как в Части A.
-// a3_2 и a3_3 — всегда первыми (a3_2 перед a3_3: profileDmKeyboard строит список из tops).
+// a3_2 — всегда первым.
 export const PROFILE_EXT_QUESTIONS: ProfileQuestion[] = [
   {
     id: 'a3_2',
@@ -59,15 +59,8 @@ export const PROFILE_EXT_QUESTIONS: ProfileQuestion[] = [
     key: false,
     type: 'tops',
     text:
-      'Кто из топов участвует в исполнении стратегии? По каждому: имя, должность, полномочия, зона ответственности. По одному сообщением.',
+      'Кто из участников работы с трекером участвует в исполнении стратегии? По каждому: имя, должность, полномочия, зона ответственности. По одному сообщением.',
     example: 'Дамир — коммерческий директор, полный P&L продаж, зона: выручка и воронка',
-  },
-  {
-    id: 'a3_3',
-    block: 'A3',
-    key: false,
-    type: 'choice',
-    text: 'Кто принимает финальные решения по стратегии (decision maker)?',
   },
   {
     id: 'a1_3',
@@ -223,8 +216,8 @@ export function topFromRawAnswer(answer: string): ClientTop {
 /**
  * Применяет текстовый ответ к профилю (мутирует). Возвращает true, если поле
  * записано; false — пустой ответ или неизвестный вопрос (очередь не двигать).
- * Вопросы 'tops' и кнопочные ветки A3.3/A4.6 обрабатываются в bot.ts отдельно,
- * но текстовый ответ на a3_3/a4_6 применяется здесь (вопросник: «выбор / текст»).
+ * Вопросы 'tops' и кнопочная ветка A4.6 обрабатываются в bot.ts отдельно,
+ * но текстовый ответ на a4_6 применяется здесь (вопросник: «выбор / текст»).
  */
 export function applyProfileAnswer(
   profile: ClientProfile,
@@ -267,9 +260,6 @@ export function applyProfileAnswer(
       return true;
     case 'a3_1':
       profile.orgStructure = value;
-      return true;
-    case 'a3_3':
-      profile.decisionMaker = value;
       return true;
     case 'a4_1':
       profile.request = { ...(profile.request ?? {}), problem: value };
@@ -320,8 +310,6 @@ export function isQuestionAnswered(profile: ClientProfile, question: ProfileQues
       return filled(profile.orgStructure);
     case 'a3_2':
       return (profile.tops ?? []).length > 0;
-    case 'a3_3':
-      return filled(profile.decisionMaker);
     case 'a4_1':
       return filled(profile.request?.problem);
     case 'a4_2':
@@ -388,12 +376,10 @@ export function renderProfileCardLines(profile: ClientProfile): string[] {
   const tops = profile.tops ?? [];
   const topsPart =
     tops.length > 0
-      ? `Топы: ${tops.slice(0, 3).map(renderTopShort).join(', ')}${tops.length > 3 ? ' …' : ''}`
+      ? `Участники: ${tops.slice(0, 3).map(renderTopShort).join(', ')}${tops.length > 3 ? ' …' : ''}`
       : null;
-  const dmPart =
-    (profile.decisionMaker ?? '').length > 0 ? `DM: ${profile.decisionMaker}` : null;
-  if (topsPart !== null || dmPart !== null) {
-    lines.push([topsPart, dmPart].filter((p) => p !== null).join(' · '));
+  if (topsPart !== null) {
+    lines.push(topsPart);
   }
   const ext = countExtendedFilled(profile);
   lines.push(

@@ -1203,7 +1203,7 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
     .text('➕ Добавить ещё', 'f0p_top_more')
     .text('✅ Готово', 'f0p_top_done');
   const f0ProfileOfferKeyboard = new InlineKeyboard()
-    .text('➕ Добавить топов', 'f0p_ext')
+    .text('➕ Добавить участников', 'f0p_ext')
     .text('Дальше', 'f0p_go');
 
   function currentProfileQuestion(session: F0Session): ProfileQuestion | undefined {
@@ -1217,17 +1217,6 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
       session.profileExtended !== true &&
       session.profileCardClientId === undefined
     );
-  }
-
-  /** Кнопки decision maker (A3.3) — только из введённых топов A3.2. */
-  function profileDmKeyboard(session: F0Session): InlineKeyboard | undefined {
-    const tops = session.profile?.tops ?? [];
-    if (tops.length === 0) return undefined;
-    const kb = new InlineKeyboard();
-    tops.slice(0, 10).forEach((top, i) => {
-      kb.text(top.name, `f0p_dm:${i}`).row();
-    });
-    return kb;
   }
 
   /** Кнопки приоритетов A4.6 — ещё не выбранные варианты. */
@@ -1247,7 +1236,7 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
   async function sendProfileOffer(ctx: Context, _session: F0Session): Promise<void> {
     await ctx
       .reply(
-        '✅ Название и суть зафиксированы. Добавить топов и детали сейчас — или сразу к стратегии?',
+        '✅ Название и суть зафиксированы. Добавить участников и детали сейчас — или сразу к стратегии?',
         { reply_markup: f0ProfileOfferKeyboard },
       )
       .catch(() => {});
@@ -1354,8 +1343,7 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
     const withHeader = prev === undefined || prev.block !== q.block || qIndex === PROFILE_MIN_COUNT;
     let text = renderProfileQuestion(q, { index, total, withHeader });
     let keyboard: InlineKeyboard | undefined;
-    if (q.id === 'a3_3') keyboard = profileDmKeyboard(session);
-    else if (q.id === 'a4_6') keyboard = profilePrioKeyboard(session);
+    if (q.id === 'a4_6') keyboard = profilePrioKeyboard(session);
     else if (q.id === 'a3_2' && (profile.tops ?? []).length > 0) keyboard = f0ProfileTopsKeyboard;
     // Story 11.8: front-load batch hint at A3.2 when no tops yet.
     // Note: a3_2 is always in extended questions (inExt=true), so we omit the !inExt guard
@@ -1456,7 +1444,7 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
         'f0 profile top added',
       );
       await ctx
-        .reply(`✅ Топ добавлен: ${renderTopShort(top)} (всего: ${profile.tops.length}).`, {
+        .reply(`✅ Участник добавлен: ${renderTopShort(top)} (всего: ${profile.tops.length}).`, {
           reply_markup: f0ProfileTopsKeyboard,
         })
         .catch(() => {});
@@ -1514,7 +1502,7 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
     await advanceProfileQuestion(ctx, session, q, 'answered');
   });
 
-  // Story 11.8: batch review — ✅ Принять: merge pending tops and advance to A3.3.
+  // Story 11.8: batch review — ✅ Принять: merge pending tops and advance to next question.
   bot.callbackQuery('f0p_batch_ok', async (ctx) => {
     const session = await getProfileSessionForCallback(ctx, 'a3_2');
     if (session === undefined) return;
@@ -1551,21 +1539,6 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
         reply_markup: f0ProfileTopsKeyboard,
       })
       .catch(() => {});
-  });
-
-  bot.callbackQuery(/^f0p_dm:(\d+)$/, async (ctx) => {
-    const session = await getProfileSessionForCallback(ctx, 'a3_3');
-    if (session === undefined) return;
-    const q = currentProfileQuestion(session)!;
-    const top = session.profile?.tops?.[Number(ctx.match[1])];
-    if (top === undefined) {
-      await ctx.reply(F0_PROFILE_STALE_TEXT).catch(() => {});
-      return;
-    }
-    session.profile ??= {};
-    session.profile.decisionMaker = top.name;
-    await ctx.reply(`✅ Decision maker: ${top.name}.`).catch(() => {});
-    await advanceProfileQuestion(ctx, session, q, 'answered');
   });
 
   bot.callbackQuery(/^f0p_prio:(\d+)$/, async (ctx) => {
@@ -3363,7 +3336,7 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
       if (q.key) {
         const topsHint =
           q.id === 'a3_2' && (session.profile?.tops ?? []).length > 0
-            ? ' Закончить с топами — кнопка «✅ Готово».'
+            ? ' Закончить с участниками — кнопка «✅ Готово».'
             : '';
         await ctx.reply(`${F0_PROFILE_KEY_REQUIRED_TEXT}${topsHint}`).catch(() => {});
         await askNextProfileQuestion(ctx, session); // повтор того же вопроса
@@ -3489,7 +3462,7 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
           await ctx.reply('ℹ️ Профиль уже дополняется — продолжай отвечать на вопросы.').catch(() => {});
           await askNextProfileQuestion(ctx, session);
         } else {
-          await ctx.reply('ℹ️ Сначала заверши минимум (название и суть), потом добавим топов.').catch(() => {});
+          await ctx.reply('ℹ️ Сначала заверши минимум (название и суть), потом добавим участников.').catch(() => {});
           await askNextProfileQuestion(ctx, session);
         }
       } else {
@@ -3667,7 +3640,7 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
         '✅ Таблица клиента создана:',
         result.spreadsheetUrl,
         `Панель OKR: ${result.counts.okr} · гипотезы: ${result.counts.hypotheses} · участники: ${result.counts.stakeholders}` +
-          (result.counts.personalSheets > 0 ? ` · личные листы топов: ${result.counts.personalSheets}` : ''),
+          (result.counts.personalSheets > 0 ? ` · личные листы участников: ${result.counts.personalSheets}` : ''),
         // Story 7.6: слаг клиента нужен для /report <url> <clientId> — показываем явно.
         `ID клиента: ${clientId}  (для /report <ссылка> ${clientId})`,
       ];
@@ -4989,7 +4962,7 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
         { command: 'help',   description: 'Инструкция и список команд' },
         { command: 'report', description: 'Создать отчёт по встрече' },
         { command: 'newclient', description: 'Онбординг нового клиента' },
-        { command: 'advanced', description: 'Добавить топов и расширенный профиль клиента' },
+        { command: 'advanced', description: 'Добавить участников и расширенный профиль клиента' },
         { command: 'draft', description: 'Собрать черновик онбординга из пакета' },
         { command: 'confirm', description: 'Завершить онбординг клиента' },
         { command: 'status', description: 'Готовность клиента к неделе 1' },
