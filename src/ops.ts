@@ -253,7 +253,11 @@ export function tickWatchdog(state: WatchdogState, nowMs: number): TickWatchdogR
     lastRepeatMs === null || !Number.isFinite(lastRepeatMs)
       ? true
       : nowMs - lastRepeatMs >= FOUR_HOURS_MS;
-  const hasFailure = state.lastFailureAt !== null;
+  // «Инцидент активен» = сбой случился ПОСЛЕ последнего успеха. Сбой старше успеха —
+  // пайплайн восстановился; тихие ≥4ч без новых отчётов не считаются down (иначе
+  // watchdog алертит каждые 4ч простоя и через 24ч ложно эскалирует Айдару).
+  const lastFailureMs = state.lastFailureAt !== null ? Date.parse(state.lastFailureAt) : NaN;
+  const hasFailure = Number.isFinite(lastFailureMs) && lastFailureMs > lastSuccessMs;
   const shouldRepeatAlert = enough4h && cooldownPassed && hasFailure;
   const shouldEscalateAidar =
     enough24h && state.escalatedToAidarAt === null && hasFailure;

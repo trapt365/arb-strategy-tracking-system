@@ -399,6 +399,25 @@ describe('tickWatchdog (Story 1.9) — table-driven', () => {
     },
   );
 
+  it('сбой СТАРШЕ последнего успеха (пайплайн восстановился) → тишина ≥4ч НЕ считается down', () => {
+    // Live-run 14.07: сбой вчера, успех сегодня утром, затем 4.5ч без встреч →
+    // старый watchdog слал «Pipeline down > 4ч» и через 24ч эскалировал бы Айдару.
+    const state: WatchdogState = {
+      lastSuccessAt: minus(5),
+      lastFailureAt: minus(30),
+      lastFailureReason: 'bot.report.pipeline_failed',
+      lastRepeatAlertAt: null,
+      escalatedToAidarAt: null,
+    };
+    const result = tickWatchdog(state, baseTime);
+    expect(result.shouldRepeatAlert).toBe(false);
+    expect(result.shouldEscalateAidar).toBe(false);
+    // и через 25ч тишины — тоже тишина, эскалации нет
+    const result25h = tickWatchdog({ ...state, lastSuccessAt: minus(25) }, baseTime);
+    expect(result25h.shouldRepeatAlert).toBe(false);
+    expect(result25h.shouldEscalateAidar).toBe(false);
+  });
+
   it('boundary: ровно 4h - 1ms → НЕ повторяет, ровно 4h → повторяет', () => {
     const state: WatchdogState = {
       lastSuccessAt: new Date(baseTime - 4 * HOUR).toISOString(),
