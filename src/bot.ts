@@ -125,8 +125,10 @@ import {
   loadAllReports,
   groupReportsByWeek,
   formatWeeklyReport,
+  formatWeeklyCompact,
 } from './utils/weekly-report.js';
 import { saveHypoReport, listHypoReports, loadHypoReport } from './utils/hypo-history.js';
+import { loadExternalReports } from './utils/external-reports.js';
 import { runHypoTracker } from './f5-hypo-tracker.js';
 import { withRetry } from './utils/retry.js';
 import {
@@ -2338,6 +2340,7 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
       return;
     }
     const groups = groupReportsByWeek(all);
+    const external = await loadExternalReports(clientId);
     const currentCount =
       groups.find((g) => g.week === current.week && g.year === current.year)?.reports.length ?? 0;
     const lines = [
@@ -2345,20 +2348,29 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
       `Сейчас неделя ${current.week} · встреч обработано за неделю: ${currentCount}`,
     ];
     const kb = new InlineKeyboard();
-    if (groups.length === 0) {
+    // D12b: недели бота (callback) + внешние готовые отчёты (url) — единый список по убыванию.
+    const entries = [
+      ...groups.map((g) => ({ week: g.week, year: g.year, group: g, ext: undefined as undefined | { url: string; title?: string } })),
+      ...external.weekly.map((e) => ({ week: e.week, year: e.year, group: undefined, ext: e })),
+    ].sort((a, b) => b.year - a.year || b.week - a.week);
+    if (entries.length === 0) {
       lines.push('', 'Обработанных встреч пока нет — пришли запись или транскрипт встречи.');
     } else {
       lines.push('', 'Выбери неделю:');
-      for (const g of groups.slice(0, 12)) {
-        kb.text(
-          `Неделя ${g.week} · встреч: ${g.reports.length}`,
-          `weekly_wk:${clientId}:${g.year}:${g.week}`,
-        ).row();
+      for (const e of entries.slice(0, 12)) {
+        if (e.group !== undefined) {
+          kb.text(
+            `Неделя ${e.week} · встреч: ${e.group.reports.length}`,
+            `weekly_wk:${clientId}:${e.year}:${e.week}`,
+          ).row();
+        } else if (e.ext !== undefined) {
+          kb.url(e.ext.title ?? `Неделя ${e.week} · отчёт трекера ↗`, e.ext.url).row();
+        }
       }
     }
     await ctx.reply(lines.join('\n'), { reply_markup: kb }).catch(() => {});
     log.info(
-      { step: 'bot.weekly.menu', clientId, weeks: groups.length, currentCount },
+      { step: 'bot.weekly.menu', clientId, weeks: groups.length, external: external.weekly.length, currentCount },
       'weekly menu sent',
     );
   }
@@ -2379,23 +2391,33 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
       log.warn({ err, clientId }, 'weekly.load_failed');
       return null;
     });
-    const text =
-      all !== null
-        ? formatWeeklyReport(
-            groupReportsByWeek(all).find((g) => g.week === week && g.year === year)?.reports ?? [],
-            name,
-            week,
-            year,
-          )
-        : 'Не удалось загрузить данные за неделю.';
+    if (all === null) {
+      await ctx.reply('Не удалось загрузить данные за неделю.').catch(() => {});
+      return;
+    }
+    const reports =
+      groupReportsByWeek(all).find((g) => g.week === week && g.year === year)?.reports ?? [];
     const kb = new InlineKeyboard();
     if (sheetId !== undefined) {
       kb.url('📁 Таблица', `https://docs.google.com/spreadsheets/d/${sheetId}`);
     }
-    for (const msg of splitForTelegram(text)) {
+    // D14: полный отчёт (обязательства + алерты всех встреч) — вложением; в чат — сводка.
+    if (reports.length > 0) {
+      const full = formatWeeklyReport(reports, name, week, year);
+      await ctx
+        .replyWithDocument(
+          new InputFile(Buffer.from(full, 'utf8'), `weekly-${clientId}-w${week}-${year}.md`),
+          { caption: `Полный недельный отчёт · нед. ${week}/${year}` },
+        )
+        .catch(() => {});
+    }
+    for (const msg of splitForTelegram(formatWeeklyCompact(reports, name, week, year))) {
       await ctx.reply(msg, { reply_markup: kb }).catch(() => {});
     }
-    log.info({ step: 'bot.weekly.sent', clientId, week, year }, 'weekly report sent');
+    log.info(
+      { step: 'bot.weekly.sent', clientId, week, year, count: reports.length },
+      'weekly report sent',
+    );
   });
 
   // D8: слэш-команда — паритет с кнопкой «Недельные отчёты».
@@ -2423,9 +2445,10 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
       log.warn({ err, clientId }, 'hypo_history.list_failed');
       return [];
     });
+    const external = await loadExternalReports(clientId);
     const lines = [`🧪 Трекер гипотез — ${name}`];
     const kb = new InlineKeyboard();
-    if (saved.length === 0) {
+    if (saved.length === 0 && external.hypo.length === 0) {
       lines.push('Сохранённых отчётов пока нет.');
     } else {
       lines.push('Сохранённые отчёты:');
@@ -2433,10 +2456,17 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
         const d = item.generatedAt.slice(0, 10).split('-').reverse().slice(0, 2).join('.');
         kb.text(`Неделя ${item.week} · от ${d}`, `hypo_view:${clientId}:${item.id}`).row();
       }
+      // D12b: готовые трекеры гипотез (внешние Google Docs) — url-кнопками, свежие сверху.
+      for (const e of [...external.hypo].sort((a, b) => b.year - a.year || b.week - a.week).slice(0, 8)) {
+        kb.url(e.title ?? `Неделя ${e.week} · трекер ↗`, e.url).row();
+      }
     }
     kb.text('➕ Собрать новый (1-2 мин)', `hypo_run:${clientId}`).row();
     await ctx.reply(lines.join('\n'), { reply_markup: kb }).catch(() => {});
-    log.info({ step: 'bot.hypo_tracker.menu', clientId, saved: saved.length }, 'hypo menu sent');
+    log.info(
+      { step: 'bot.hypo_tracker.menu', clientId, saved: saved.length, external: external.hypo.length },
+      'hypo menu sent',
+    );
   });
 
   bot.callbackQuery(/^hypo_view:([^:]+):(\d+)$/, async (ctx) => {

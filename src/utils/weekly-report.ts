@@ -200,6 +200,32 @@ export function groupReportsByWeek(reports: DeliveryReadyReport[]): WeekGroup[] 
 }
 
 /**
+ * D14 (live-run 14.07): компактная сводка недели для чата — полный отчёт с
+ * обязательствами и алертами уходит вложением, иначе неделя из 9 встреч
+ * разворачивается в ~10 экранов нечитаемых сообщений.
+ */
+export function formatWeeklyCompact(
+  reports: DeliveryReadyReport[],
+  clientName: string,
+  week: number,
+  year: number,
+): string {
+  const header = `📅 Нед. ${week}/${year} — ${clientName}`;
+  if (reports.length === 0) {
+    return `${header}\n\nВстреч за неделю не обработано.`;
+  }
+  const commitments = reports.reduce((s, r) => s + r.commitments.length, 0);
+  const alerts = reports.reduce((s, r) => s + r.alerts.length, 0);
+  const lines = [header, `Встреч: ${reports.length} · обязательств: ${commitments} · алертов: ${alerts}`, ''];
+  for (const r of reports) {
+    const d = r.meetingDate.slice(0, 10).split('-').reverse().slice(0, 2).join('.');
+    lines.push(`${d} — ${r.topName}: ${r.summaryLine}`);
+  }
+  lines.push('', 'Полный отчёт (обязательства и алерты по встречам) — в приложенном файле.');
+  return lines.join('\n');
+}
+
+/**
  * Story 9.7: format weekly aggregate report (plain text, no MarkdownV2).
  * Header: 📅 Нед. {week}/{year} — {clientName}
  * No meetings: «\n\nВстреч за неделю не обработано.»
