@@ -1259,7 +1259,7 @@ describe('bot — onboarding /start (Story 1.8)', () => {
     expect(reply).toBeDefined();
     const payload = reply!.payload as { text: string; parse_mode?: string };
     expect(payload.text).toContain('Привет, Азиза!');
-    expect(payload.text).toContain('AI-трекинг бот');
+    expect(payload.text).toContain('бот ARB Solutions');
     // Story 9.3: полная справка переехала за «Что умеет бот»; short welcome — только 3 строки.
     expect(payload.parse_mode).toBeUndefined();
     expect(queue.size()).toBe(0);
@@ -1275,7 +1275,7 @@ describe('bot — onboarding /start (Story 1.8)', () => {
     expect(reply).toBeDefined();
     const payload = reply!.payload as { text: string; parse_mode?: string };
     // Story 9.3: /help показывает то же short welcome + keyboard, не длинную инструкцию.
-    expect(payload.text).toContain('AI-трекинг бот');
+    expect(payload.text).toContain('бот ARB Solutions');
     expect(payload.parse_mode).toBeUndefined();
   });
 

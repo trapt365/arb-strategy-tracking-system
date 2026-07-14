@@ -377,7 +377,7 @@ describe('formatWelcomeMessage (Story 1.8)', () => {
   it('с непустым firstName → "Привет, {Name}!"', () => {
     const out = formatWelcomeMessage('Азиза');
     expect(out).toContain('Привет, Азиза!');
-    expect(out).toContain('AI-трекинг бот');
+    expect(out).toContain('бот ARB Solutions');
   });
 
   it('без имени → "Привет!" без запятой', () => {
@@ -393,21 +393,17 @@ describe('formatWelcomeMessage (Story 1.8)', () => {
     expect(out).not.toContain('Привет, ,');
   });
 
-  it('содержит /report', () => {
-    const out = formatWelcomeMessage('Азиза');
-    expect(out).toContain('/report');
-  });
-
-  it('Story 8.2 (W1): упоминает онбординг и реализованные команды', () => {
+  it('D1: содержит основные команды /newclient и /status', () => {
     const out = formatWelcomeMessage('Азиза');
     expect(out).toContain('/newclient');
     expect(out).toContain('/status');
-    expect(out).toContain('/confirm');
   });
 
-  it('Story 8.2 (W7): /confirm описан как предупреждающий, не блокирующий', () => {
+  it('D1: онбординг-команды убраны из справки (минимум команд — текст пилота 14.07)', () => {
     const out = formatWelcomeMessage('Азиза');
-    expect(out).toContain('не блокируют');
+    expect(out).not.toContain('/confirm');
+    expect(out).not.toContain('/draft');
+    expect(out).not.toContain('/report');
   });
 
   it('Story 10.7: НЕ содержит «Скоро» (блок удалён)', () => {
@@ -427,12 +423,11 @@ describe('formatWelcomeMessage (Story 1.8)', () => {
     expect(out.split('\n').length).toBeLessThanOrEqual(25);
   });
 
-  it('D1: возможности идут раньше команд («Что умею:» перед «Команды:»)', () => {
+  it('D1: возможности идут раньше команд («Что умею:» перед «Основные команды:»)', () => {
     const out = formatWelcomeMessage('Азиза');
     expect(out).toContain('Что умею:');
-    expect(out).toContain('Команды:');
-    expect(out).toContain('В онбординге:');
-    expect(out.indexOf('Что умею:')).toBeLessThan(out.indexOf('Команды:'));
+    expect(out).toContain('Основные команды:');
+    expect(out.indexOf('Что умею:')).toBeLessThan(out.indexOf('Основные команды:'));
   });
 
   it('D1: перечисляет четыре возможности', () => {
@@ -451,10 +446,10 @@ describe('formatWelcomeMessage (Story 1.8)', () => {
 });
 
 describe('formatShortWelcome (Story 9.3)', () => {
-  it('с именем → "Привет, {Name}!" + AI-трекинг бот', () => {
+  it('с именем → "Привет, {Name}!" + бот ARB Solutions', () => {
     const out = formatShortWelcome('Азиза');
     expect(out).toContain('Привет, Азиза!');
-    expect(out).toContain('AI-трекинг бот');
+    expect(out).toContain('бот ARB Solutions');
   });
 
   it('без имени → "Привет!" без запятой', () => {
