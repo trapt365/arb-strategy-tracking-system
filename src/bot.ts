@@ -2340,18 +2340,31 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
   });
 
   // Story 10.5 / 10.8: трекер гипотез — третий тип отчёта.
+  // D9: защита от повторного запуска (вызов Claude ~70 с) + мгновенная квитанция прогресса.
+  const hypoTrackerInFlight = new Set<string>();
   bot.callbackQuery(/^hypo_tracker:(.+)$/, async (ctx) => {
-    await ctx.answerCallbackQuery().catch(() => {});
     const clientId = ctx.match[1]!;
+    if (hypoTrackerInFlight.has(clientId)) {
+      await ctx
+        .answerCallbackQuery({ text: 'Трекер уже собирается, подожди…' })
+        .catch(() => {});
+      return;
+    }
+    await ctx.answerCallbackQuery().catch(() => {});
+    hypoTrackerInFlight.add(clientId);
     const name = (await getClientName(clientId)) ?? clientId;
     const sheetId = await getClientSheetId(clientId).catch(() => undefined);
     const { week } = getISOWeekAndYear(new Date().toISOString().slice(0, 10));
+    await ctx.reply('⏳ Собираю трекер гипотез — это займёт 1-2 минуты…').catch(() => {});
+    await ctx.replyWithChatAction('typing').catch(() => {});
     let result: { compact: string; full: string };
     try {
       result = await runHypoTracker({ clientId, clientName: name });
     } catch (err) {
       log.warn({ step: 'bot.hypo_tracker.error', clientId, err }, 'hypo_tracker failed');
       result = { compact: 'Не удалось загрузить трекер гипотез.', full: '' };
+    } finally {
+      hypoTrackerInFlight.delete(clientId);
     }
     const kb = new InlineKeyboard();
     if (sheetId !== undefined) {
@@ -3651,6 +3664,11 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
       if (result.shared.length > 0) {
         lines.push(`Доступ выдан: ${result.shared.join(', ')}`);
       }
+      // D11 (временное решение): таблица создаётся под OAuth администратора, автошаринг
+      // на личные Google-аккаунты трекеров пока не настроен — просим написать администратору.
+      lines.push(
+        '🔑 Чтобы открыть таблицу под своим Google-аккаунтом — напиши Тимуру, он выдаст доступ вручную (временное решение).',
+      );
       await ctx.reply(lines.join('\n')).catch(() => {});
 
       // Story 7.5/7.6: карточка клиента + регистрация в реестре мультиклиентности.

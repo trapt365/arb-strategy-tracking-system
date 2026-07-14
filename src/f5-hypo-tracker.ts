@@ -176,6 +176,11 @@ function statusEmoji(status: string): string {
   return STATUS_EMOJI[norm] ?? '⬜';
 }
 
+// Порядок статусов для читаемой сводки в Telegram (D10).
+const EMOJI_ORDER = ['🟢', '🟡', '⏳', '🔴', '⛔', '🆕'] as const;
+const STATUS_LEGEND_LINE =
+  'Статусы: 🟢 работает · 🟡 в тесте · ⏳ план · 🔴 не работает · ⛔ стоп · 🆕 новая · ⬜ без статуса';
+
 function deptInitial(dept: string): string {
   // Take first character, uppercase
   return dept.charAt(0).toUpperCase();
@@ -335,7 +340,8 @@ export function formatHypoReportStructured(opts: {
   lines.push('| Департамент | 🟢 | 🟡 | ⏳ | 🔴 | ⛔ | 🆕 | Всего | Δ |');
   lines.push('|---|---|---|---|---|---|---|---|---|');
 
-  const matrixRows: string[] = [];
+  // Читаемая сводка по департаментам для Telegram (D10) — вместо сырой pipe-таблицы.
+  const compactDeptLines: string[] = [];
   for (const dept of depts) {
     const deptItems = deptMap.get(dept)!;
     const counts: Record<string, number> = {};
@@ -349,8 +355,20 @@ export function formatHypoReportStructured(opts: {
     const deltaStr = snapshot === null ? '' : (addedCount > 0 ? `+${addedCount}` : '0');
 
     const row = `| ${dept} | ${counts['🟢'] ?? 0} | ${counts['🟡'] ?? 0} | ${counts['⏳'] ?? 0} | ${counts['🔴'] ?? 0} | ${counts['⛔'] ?? 0} | ${counts['🆕'] ?? 0} | ${deptItems.length} | ${deltaStr} |`;
-    matrixRows.push(row);
     lines.push(row);
+
+    // Компактная строка: департамент — всего N: разбивка по ненулевым статусам (+ новые).
+    const knownSum = EMOJI_ORDER.reduce((s, e) => s + (counts[e] ?? 0), 0);
+    const unknownCount = deptItems.length - knownSum;
+    const parts: string[] = [];
+    for (const e of EMOJI_ORDER) {
+      if (counts[e]) parts.push(`${e}${counts[e]}`);
+    }
+    if (unknownCount > 0) parts.push(`⬜${unknownCount}`);
+    const addSuffix = snapshot !== null && addedCount > 0 ? ` (+${addedCount} нов.)` : '';
+    compactDeptLines.push(
+      `• ${dept} — ${deptItems.length}${parts.length > 0 ? ': ' + parts.join(' ') : ''}${addSuffix}`,
+    );
   }
   lines.push('');
 
@@ -374,11 +392,15 @@ export function formatHypoReportStructured(opts: {
   const compactLines: string[] = [];
   compactLines.push(`🧪 Трекер гипотез — ${clientName} — нед.${week}/${year}`);
   compactLines.push('');
-  compactLines.push('Сводка по департаментам:');
-  for (const row of matrixRows) {
-    compactLines.push(row);
+  if (compactDeptLines.length > 0) {
+    compactLines.push('Гипотезы по департаментам:');
+    for (const line of compactDeptLines) {
+      compactLines.push(line);
+    }
+    compactLines.push('');
+    compactLines.push(STATUS_LEGEND_LINE);
+    compactLines.push('');
   }
-  compactLines.push('');
 
   if (insights && insights.topInsights.length > 0) {
     const top3 = insights.topInsights.slice(0, 3);
