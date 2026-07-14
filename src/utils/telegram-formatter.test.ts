@@ -422,15 +422,25 @@ describe('formatWelcomeMessage (Story 1.8)', () => {
     expect(out).not.toContain('/help — повторить');
   });
 
-  it('Story 10.7: строк не более 15 (включая пустые)', () => {
+  it('D1 (live-run 14.07): строк не более 25 (включая пустые)', () => {
     const out = formatWelcomeMessage('Азиза');
-    expect(out.split('\n').length).toBeLessThanOrEqual(15);
+    expect(out.split('\n').length).toBeLessThanOrEqual(25);
   });
 
-  it('содержит «Основное:» и «В онбординге:»', () => {
+  it('D1: возможности идут раньше команд («Что умею:» перед «Команды:»)', () => {
     const out = formatWelcomeMessage('Азиза');
-    expect(out).toContain('Основное:');
+    expect(out).toContain('Что умею:');
+    expect(out).toContain('Команды:');
     expect(out).toContain('В онбординге:');
+    expect(out.indexOf('Что умею:')).toBeLessThan(out.indexOf('Команды:'));
+  });
+
+  it('D1: перечисляет четыре возможности', () => {
+    const out = formatWelcomeMessage('Азиза');
+    expect(out).toContain('Онбординг стратегии');
+    expect(out).toContain('Отчёты по встречам');
+    expect(out).toContain('Недельный отчёт');
+    expect(out).toContain('Трекер гипотез');
   });
 
   it('plain text — НЕ содержит MarkdownV2-escape backslashes', () => {

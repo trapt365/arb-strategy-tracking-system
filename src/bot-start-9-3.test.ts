@@ -261,7 +261,7 @@ describe('Story 9.3 — /start с клиентами в реестре', () => {
     expect(cbDatas.some((d) => d?.startsWith('start_client:'))).toBe(false);
   });
 
-  it('(3) Story 10.7: /help → полный мануал (содержит «Основное:» и «В онбординге:»), без inline keyboard', async () => {
+  it('(3) Story 10.7 + D1: /help → полный мануал (содержит «Что умею:», «Команды:» и «В онбординге:»), без inline keyboard', async () => {
     mockLoadRegistry.mockResolvedValue({
       qubiq: { sheetId: 'abc123', name: 'Qubiq', topName: 'Акбар' },
     });
@@ -272,7 +272,8 @@ describe('Story 9.3 — /start с клиентами в реестре', () => {
     expect(reply).toBeDefined();
 
     const text = reply!.payload.text as string;
-    expect(text).toContain('Основное:');
+    expect(text).toContain('Что умею:');
+    expect(text).toContain('Команды:');
     expect(text).toContain('В онбординге:');
     expect(text).not.toContain('Скоро');
     // reply_markup отсутствует (нет inline keyboard)
