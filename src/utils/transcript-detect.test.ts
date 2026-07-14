@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { isTranscriptDocument, isTranscriptCandidateType } from './transcript-detect.js';
+import {
+  isTranscriptDocument,
+  isTranscriptCandidateType,
+  parseTranscriptCreatedDate,
+} from './transcript-detect.js';
 
 describe('isTranscriptDocument', () => {
   it('returns true for text with ≥5 timestamp patterns', () => {
@@ -80,6 +84,67 @@ Speaker 3: Третий.
       'Конец: 12:45',
     ].join('\n');
     expect(isTranscriptDocument(text)).toBe(false);
+  });
+
+  // D7 (live-run 14.07): реальные расшифровки — жирный маркдаун и именованные говорящие.
+  it('returns true for bold-markdown numbered speakers («**Спикер 1:**»)', () => {
+    const text = Array.from({ length: 6 }, (_, i) => `**Спикер ${(i % 2) + 1}:** Реплика ${i}.`).join(
+      '\n\n',
+    );
+    expect(isTranscriptDocument(text)).toBe(true);
+  });
+
+  it('returns true for named-speaker dialogue («Дамир:» / «Тимур:») without timestamps', () => {
+    const lines: string[] = [];
+    for (let i = 0; i < 6; i++) {
+      lines.push(`Дамир: Реплика номер ${i} про продажи и команду.`);
+      lines.push(`Тимур: Ответная реплика ${i}.`);
+    }
+    expect(isTranscriptDocument(lines.join('\n'))).toBe(true);
+  });
+
+  it('returns true for bold named speakers with frontmatter (реальный формат Soniox)', () => {
+    const body: string[] = [];
+    for (let i = 0; i < 5; i++) {
+      body.push(`**Мерей:** Смотрите, по воронке ${i} у нас конверсия упала.`);
+      body.push(`**Айдар:** Согласен, надо разбирать ${i}.`);
+    }
+    const text = ['---', 'created: 2026-04-13', 'week: 9', '---', '# Транскрипт', ...body].join('\n');
+    expect(isTranscriptDocument(text)).toBe(true);
+  });
+
+  it('returns false for strategy doc with repeated «Цель:» key-value lines (не диалог)', () => {
+    const lines = ['# Стратегия компании', ''];
+    for (let i = 0; i < 10; i++) {
+      lines.push(`Раздел ${i}`);
+      lines.push(`Цель: увеличить показатель ${i}`);
+      lines.push(`Описание раздела ${i} без двоеточий в начале, длинный абзац текста.`);
+      lines.push(`Ещё строка контекста ${i}.`);
+    }
+    expect(isTranscriptDocument(lines.join('\n'))).toBe(false);
+  });
+});
+
+describe('parseTranscriptCreatedDate', () => {
+  it('extracts created date from YAML frontmatter', () => {
+    const text = ['---', 'created: 2026-04-13', 'source: Soniox', 'week: 9', '---', 'Текст'].join(
+      '\n',
+    );
+    expect(parseTranscriptCreatedDate(text)).toBe('2026-04-13');
+  });
+
+  it('accepts date: key as fallback', () => {
+    const text = ['---', 'date: 2026-05-07', '---', 'Текст'].join('\n');
+    expect(parseTranscriptCreatedDate(text)).toBe('2026-05-07');
+  });
+
+  it('returns undefined without frontmatter', () => {
+    expect(parseTranscriptCreatedDate('Просто текст без frontmatter')).toBeUndefined();
+  });
+
+  it('returns undefined when frontmatter has no created/date', () => {
+    const text = ['---', 'week: 9', '---', 'Текст'].join('\n');
+    expect(parseTranscriptCreatedDate(text)).toBeUndefined();
   });
 });
 

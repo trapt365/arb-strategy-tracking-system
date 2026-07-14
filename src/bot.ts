@@ -23,6 +23,7 @@ import {
 import {
   isTranscriptDocument as defaultIsTranscriptDocument,
   isTranscriptCandidateType,
+  parseTranscriptCreatedDate,
 } from './utils/transcript-detect.js';
 import { readClientContext as defaultReadClientContext, appendOpsLog } from './adapters/sheets.js';
 import { runF1 as defaultRunF1, applyEditToReport as defaultApplyEditToReport } from './f1-report.js';
@@ -121,8 +122,11 @@ import { createReportQueue, QueueOverflowError, type ReportQueue } from './utils
 import {
   getISOWeekAndYear,
   loadWeekReports,
+  loadAllReports,
+  groupReportsByWeek,
   formatWeeklyReport,
 } from './utils/weekly-report.js';
+import { saveHypoReport, listHypoReports, loadHypoReport } from './utils/hypo-history.js';
 import { runHypoTracker } from './f5-hypo-tracker.js';
 import { withRetry } from './utils/retry.js';
 import {
@@ -2292,6 +2296,16 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
     const name = (await getClientName(clientId)) ?? clientId;
     const sheetId = await getClientSheetId(clientId);
     const card = await loadClientCard(clientId);
+    // D13: трекер сразу видит, какая сейчас неделя и сколько встреч по ней обработано.
+    const nowDate = now();
+    const { week: currentWeek } = getISOWeekAndYear(nowDate.toISOString().slice(0, 10));
+    const currentWeekCount = await loadWeekReports(clientId, { now: nowDate })
+      .then((r) => r.length)
+      .catch(() => null);
+    const weekLine =
+      currentWeekCount === null
+        ? ''
+        : `\n📆 Сейчас неделя ${currentWeek} · встреч обработано за неделю: ${currentWeekCount}`;
     const kb = new InlineKeyboard();
     if (sheetId !== undefined) {
       kb.url('📁 Таблица', `https://docs.google.com/spreadsheets/d/${sheetId}`);
@@ -2299,32 +2313,80 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
     if (card !== null) {
       kb.row().text('➕ Дозаполнить профиль', `profile_fill:${clientId}`);
     }
-    kb.row().text('📅 Недельный отчёт', `weekly:${clientId}`);
+    kb.row().text('📅 Недельные отчёты', `weekly:${clientId}`);
     kb.row().text('🧪 Трекер гипотез', `hypo_tracker:${clientId}`);
     await ctx
       .reply(
-        `👤 Клиент: ${name}.\n📊 /report <ссылка> — отчёт по встрече\n📋 /status — готовность к неделе`,
+        `👤 Клиент: ${name}.${weekLine}\n📊 /report <ссылка> — отчёт по встрече\n📋 /status — готовность к неделе`,
         { reply_markup: kb },
       )
       .catch(() => {});
     log.info({ step: 'bot.start_client.selected', chatId, clientId }, 'start_client selected');
   });
 
-  // Story 9.7: недельный отчёт трекера по клиенту.
+  // Story 9.7 + D12: недельные отчёты — сначала меню доступных недель, затем отчёт за выбранную.
+  async function sendWeeklyMenu(ctx: Context, clientId: string): Promise<void> {
+    const name = (await getClientName(clientId)) ?? clientId;
+    const nowDate = now();
+    const current = getISOWeekAndYear(nowDate.toISOString().slice(0, 10));
+    const all = await loadAllReports(clientId).catch((err: unknown) => {
+      log.warn({ err, clientId }, 'weekly.load_failed');
+      return null;
+    });
+    if (all === null) {
+      await ctx.reply('Не удалось загрузить данные по встречам.').catch(() => {});
+      return;
+    }
+    const groups = groupReportsByWeek(all);
+    const currentCount =
+      groups.find((g) => g.week === current.week && g.year === current.year)?.reports.length ?? 0;
+    const lines = [
+      `📅 Недельные отчёты — ${name}`,
+      `Сейчас неделя ${current.week} · встреч обработано за неделю: ${currentCount}`,
+    ];
+    const kb = new InlineKeyboard();
+    if (groups.length === 0) {
+      lines.push('', 'Обработанных встреч пока нет — пришли запись или транскрипт встречи.');
+    } else {
+      lines.push('', 'Выбери неделю:');
+      for (const g of groups.slice(0, 12)) {
+        kb.text(
+          `Неделя ${g.week} · встреч: ${g.reports.length}`,
+          `weekly_wk:${clientId}:${g.year}:${g.week}`,
+        ).row();
+      }
+    }
+    await ctx.reply(lines.join('\n'), { reply_markup: kb }).catch(() => {});
+    log.info(
+      { step: 'bot.weekly.menu', clientId, weeks: groups.length, currentCount },
+      'weekly menu sent',
+    );
+  }
+
   bot.callbackQuery(/^weekly:(.+)$/, async (ctx) => {
     await ctx.answerCallbackQuery().catch(() => {});
+    await sendWeeklyMenu(ctx, ctx.match[1]!);
+  });
+
+  bot.callbackQuery(/^weekly_wk:([^:]+):(\d{4}):(\d{1,2})$/, async (ctx) => {
+    await ctx.answerCallbackQuery().catch(() => {});
     const clientId = ctx.match[1]!;
+    const year = Number(ctx.match[2]!);
+    const week = Number(ctx.match[3]!);
     const name = (await getClientName(clientId)) ?? clientId;
     const sheetId = await getClientSheetId(clientId);
-    const nowDate = now();
-    const { week, year } = getISOWeekAndYear(nowDate.toISOString().slice(0, 10));
-    const reports = await loadWeekReports(clientId, { now: nowDate }).catch((err: unknown) => {
+    const all = await loadAllReports(clientId).catch((err: unknown) => {
       log.warn({ err, clientId }, 'weekly.load_failed');
       return null;
     });
     const text =
-      reports !== null
-        ? formatWeeklyReport(reports, name, week, year)
+      all !== null
+        ? formatWeeklyReport(
+            groupReportsByWeek(all).find((g) => g.week === week && g.year === year)?.reports ?? [],
+            name,
+            week,
+            year,
+          )
         : 'Не удалось загрузить данные за неделю.';
     const kb = new InlineKeyboard();
     if (sheetId !== undefined) {
@@ -2333,16 +2395,74 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
     for (const msg of splitForTelegram(text)) {
       await ctx.reply(msg, { reply_markup: kb }).catch(() => {});
     }
-    log.info(
-      { step: 'bot.weekly.sent', clientId, count: reports?.length ?? 0 },
-      'weekly report sent',
-    );
+    log.info({ step: 'bot.weekly.sent', clientId, week, year }, 'weekly report sent');
+  });
+
+  // D8: слэш-команда — паритет с кнопкой «Недельные отчёты».
+  bot.command('weekly', async (ctx) => {
+    const chatId = ctx.chat.id;
+    if (!trackerChatIds.has(chatId)) return;
+    const clientId = await getActiveClient(chatId);
+    if (clientId === undefined) {
+      await ctx.reply('ℹ️ Сначала выбери клиента: /start.').catch(() => {});
+      return;
+    }
+    await sendWeeklyMenu(ctx, clientId);
   });
 
   // Story 10.5 / 10.8: трекер гипотез — третий тип отчёта.
   // D9: защита от повторного запуска (вызов Claude ~70 с) + мгновенная квитанция прогресса.
+  // D12: кнопка открывает меню — сохранённые отчёты по неделям + «собрать новый».
   const hypoTrackerInFlight = new Set<string>();
+
   bot.callbackQuery(/^hypo_tracker:(.+)$/, async (ctx) => {
+    await ctx.answerCallbackQuery().catch(() => {});
+    const clientId = ctx.match[1]!;
+    const name = (await getClientName(clientId)) ?? clientId;
+    const saved = await listHypoReports(clientId).catch((err: unknown) => {
+      log.warn({ err, clientId }, 'hypo_history.list_failed');
+      return [];
+    });
+    const lines = [`🧪 Трекер гипотез — ${name}`];
+    const kb = new InlineKeyboard();
+    if (saved.length === 0) {
+      lines.push('Сохранённых отчётов пока нет.');
+    } else {
+      lines.push('Сохранённые отчёты:');
+      for (const item of saved.slice(0, 8)) {
+        const d = item.generatedAt.slice(0, 10).split('-').reverse().slice(0, 2).join('.');
+        kb.text(`Неделя ${item.week} · от ${d}`, `hypo_view:${clientId}:${item.id}`).row();
+      }
+    }
+    kb.text('➕ Собрать новый (1-2 мин)', `hypo_run:${clientId}`).row();
+    await ctx.reply(lines.join('\n'), { reply_markup: kb }).catch(() => {});
+    log.info({ step: 'bot.hypo_tracker.menu', clientId, saved: saved.length }, 'hypo menu sent');
+  });
+
+  bot.callbackQuery(/^hypo_view:([^:]+):(\d+)$/, async (ctx) => {
+    await ctx.answerCallbackQuery().catch(() => {});
+    const clientId = ctx.match[1]!;
+    const id = ctx.match[2]!;
+    const entry = await loadHypoReport(clientId, id);
+    if (entry === null) {
+      await ctx.reply('ℹ️ Этот отчёт не найден (возможно, удалён).').catch(() => {});
+      return;
+    }
+    if (entry.full) {
+      await ctx
+        .replyWithDocument(
+          new InputFile(Buffer.from(entry.full, 'utf8'), `hypo-tracker-${clientId}-w${entry.week}.md`),
+          { caption: `Полный трекер гипотез · неделя ${entry.week} · ${entry.generatedAt.slice(0, 10)}` },
+        )
+        .catch(() => {});
+    }
+    for (const msg of splitForTelegram(entry.compact)) {
+      await ctx.reply(msg).catch(() => {});
+    }
+    log.info({ step: 'bot.hypo_tracker.view', clientId, id }, 'saved hypo report sent');
+  });
+
+  bot.callbackQuery(/^hypo_run:(.+)$/, async (ctx) => {
     const clientId = ctx.match[1]!;
     if (hypoTrackerInFlight.has(clientId)) {
       await ctx
@@ -2354,18 +2474,32 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
     hypoTrackerInFlight.add(clientId);
     const name = (await getClientName(clientId)) ?? clientId;
     const sheetId = await getClientSheetId(clientId).catch(() => undefined);
-    const { week } = getISOWeekAndYear(new Date().toISOString().slice(0, 10));
+    const runDate = now();
+    const { week, year } = getISOWeekAndYear(runDate.toISOString().slice(0, 10));
     await ctx.reply('⏳ Собираю трекер гипотез — это займёт 1-2 минуты…').catch(() => {});
     await ctx.replyWithChatAction('typing').catch(() => {});
-    let result: { compact: string; full: string };
+    let result: { compact: string; full: string } | null = null;
     try {
       result = await runHypoTracker({ clientId, clientName: name });
     } catch (err) {
       log.warn({ step: 'bot.hypo_tracker.error', clientId, err }, 'hypo_tracker failed');
-      result = { compact: 'Не удалось загрузить трекер гипотез.', full: '' };
     } finally {
       hypoTrackerInFlight.delete(clientId);
     }
+    if (result === null) {
+      await ctx.reply('Не удалось загрузить трекер гипотез.').catch(() => {});
+      return;
+    }
+    // D12: сохраняем прогон — он появится в меню трекера как отчёт этой недели.
+    await saveHypoReport(clientId, {
+      week,
+      year,
+      generatedAt: runDate.toISOString(),
+      compact: result.compact,
+      full: result.full,
+    }).catch((err: unknown) => {
+      log.warn({ err, clientId }, 'hypo_history.save_failed');
+    });
     const kb = new InlineKeyboard();
     if (sheetId !== undefined) {
       kb.url('📁 Таблица', `https://docs.google.com/spreadsheets/d/${sheetId}`);
@@ -2381,7 +2515,7 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
     for (const msg of splitForTelegram(result.compact)) {
       await ctx.reply(msg, { reply_markup: kb }).catch(() => {});
     }
-    log.info({ step: 'bot.hypo_tracker.sent', clientId, clientName: name }, 'hypo_tracker report sent');
+    log.info({ step: 'bot.hypo_tracker.sent', clientId, clientName: name, week }, 'hypo_tracker report sent');
   });
 
   // W10: статус любого клиента из карточки — не только активной сессии.
@@ -2587,7 +2721,19 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
   bot.on('message:document', async (ctx) => {
     const chatId = ctx.chat.id;
 
-    // Story 11.7: text transcript → F1 routing (before F0 session check).
+    // D7: вход файла всегда виден в логах — тихий сбой был неотличим от «файл не дошёл».
+    log.info(
+      {
+        step: 'bot.document.received',
+        chatId,
+        fileName: ctx.message.document.file_name,
+        mimeType: ctx.message.document.mime_type,
+        fileSize: ctx.message.document.file_size,
+      },
+      'document received',
+    );
+
+    // Story 11.7 + D7: text transcript → F1 routing (before F0 session check).
     if (trackerChatIds.has(chatId) && isTranscriptCandidateType(ctx.message.document.file_name, ctx.message.document.mime_type)) {
       const transcriptClientId = await getActiveClient(chatId);
       if (transcriptClientId !== undefined && !(ctx.message.document.file_size !== undefined && ctx.message.document.file_size > F0_MAX_FILE_BYTES)) {
@@ -2596,12 +2742,35 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
           if (transcriptFile.file_path !== undefined) {
             const transcriptBuf = await downloadTelegramFile(transcriptFile.file_path);
             const transcriptExtracted = await extractTextFromDocument(transcriptBuf, ctx.message.document.file_name, ctx.message.document.mime_type);
-            if (isTranscriptDocument(transcriptExtracted.text)) {
+            let routeAsTranscript = isTranscriptDocument(transcriptExtracted.text);
+            let routedBy = 'detector';
+            if (!routeAsTranscript) {
+              // D7 fallback: если онбординг файлы сейчас не ждёт (нет сессии либо фаза не приёма
+              // документов), текстовый файл при активном клиенте почти наверняка = транскрипт
+              // встречи. Раньше он падал в тупик «Черновик уже собран…».
+              const f0Probe = await getOrRestoreF0Session(chatId);
+              const f0AcceptsDocs =
+                f0Probe !== undefined && (f0Probe.phase === 'collecting' || f0Probe.phase === 'profile');
+              if (!f0AcceptsDocs) {
+                routeAsTranscript = true;
+                routedBy = 'fallback_no_f0';
+              }
+            }
+            if (routeAsTranscript) {
+              log.info(
+                { step: 'bot.document.transcript_route', chatId, clientId: transcriptClientId, routedBy },
+                'document routed to F1 as transcript',
+              );
               await handleMeetingTextTranscript(ctx, chatId, transcriptClientId, transcriptExtracted.text, transcriptExtracted.sourceName);
               return;
             }
           }
-        } catch { /* silent: fall through to F0 flow */ }
+        } catch (err) {
+          log.warn(
+            { step: 'bot.document.transcript_probe_failed', chatId, err },
+            'transcript probe failed — falling through to F0 flow',
+          );
+        }
       }
     }
 
@@ -4515,6 +4684,18 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
       return;
     }
 
+    // D12: расшифровки загружаются постфактум — дата встречи из frontmatter файла
+    // (created: YYYY-MM-DD), иначе отчёт лёг бы в день загрузки и попал не в ту неделю.
+    const createdDate = parseTranscriptCreatedDate(text);
+    const meetingDate =
+      createdDate !== undefined ? `${createdDate}T12:00:00.000Z` : now().toISOString();
+    if (createdDate !== undefined) {
+      log.info(
+        { step: 'bot.document_transcript.meeting_date_from_frontmatter', chatId, clientId, createdDate },
+        'meeting date taken from transcript frontmatter',
+      );
+    }
+
     const job: ReportJob = {
       id: randomUUID().slice(0, 8),
       chatId,
@@ -4523,7 +4704,7 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
       transcriptText: text,
       clientId,
       topName,
-      meetingDate: now().toISOString(),
+      meetingDate,
       status: 'queued',
       queuedAt: now().toISOString(),
       retryCount: 0,
@@ -4979,6 +5160,7 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
         { command: 'start',  description: 'Меню: онбординг, клиенты, инструкция' },
         { command: 'help',   description: 'Инструкция и список команд' },
         { command: 'report', description: 'Создать отчёт по встрече' },
+        { command: 'weekly', description: 'Недельные отчёты клиента' },
         { command: 'newclient', description: 'Онбординг нового клиента' },
         { command: 'advanced', description: 'Добавить участников и расширенный профиль клиента' },
         { command: 'draft', description: 'Собрать черновик онбординга из пакета' },

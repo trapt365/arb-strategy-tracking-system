@@ -1484,6 +1484,7 @@ describe('bot — setMyCommands payload (Story 1.8)', () => {
         'start',
         'help',
         'report',
+        'weekly',
         'newclient',
         'advanced',
         'draft',
@@ -4022,7 +4023,7 @@ describe('bot — Story 11.7: приём текстового транскрип
     expect(enqueued[0]!.filePath).toBeUndefined();
   });
 
-  it('(b) isTranscriptDocument=false → fallthrough к F0 (нет сессии → F0_NO_SESSION_TEXT)', async () => {
+  it('(b) D7: isTranscriptDocument=false, но F0 документы не ждёт → fallback-роутинг в транскрипт', async () => {
     const enqueued: ReportJob[] = [];
     const realQueue = createReportQueue({ maxSize: 20, logger: silentLogger });
     const spyQueue = {
@@ -4033,7 +4034,7 @@ describe('bot — Story 11.7: приём текстового транскрип
       },
     } as typeof realQueue;
 
-    const { bot, calls } = buildBot({
+    const { bot } = buildBot({
       queue: spyQueue,
       isTranscriptDocument: () => false,
       extractTextFromDocument: (async () => ({
@@ -4050,16 +4051,12 @@ describe('bot — Story 11.7: приём текстового транскрип
       'utf8',
     );
 
-    const before = calls.length;
     await bot.handleUpdate(documentUpdate('strategy.md'));
 
-    // Should fall through to F0 handler — since no F0 session exists reply contains /newclient
-    const sentTexts = calls
-      .slice(before)
-      .filter((c) => c.method === 'sendMessage')
-      .map((c) => c.payload.text as string);
-    expect(sentTexts.some((t) => t.includes('/newclient'))).toBe(true);
-    expect(enqueued).toHaveLength(0);
+    // D7 (live-run 14.07): раньше файл падал в тупик F0 «нет сессии → /newclient».
+    // Теперь: активный клиент + онбординг документы не ждёт → текстовый файл = транскрипт встречи.
+    expect(enqueued).toHaveLength(1);
+    expect(enqueued[0]!.transcriptText).toBeDefined();
   });
 
   it('(c) нет активного клиента → fallthrough к F0 (нет сессии)', async () => {

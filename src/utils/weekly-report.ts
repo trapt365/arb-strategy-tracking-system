@@ -126,6 +126,80 @@ export async function loadWeekReports(
 }
 
 /**
+ * D12: все отчёты клиента за всё время (без фильтра по текущей неделе).
+ * Объёмы малые (десятки .report.json) — читаем всё и группируем в памяти.
+ */
+export async function loadAllReports(
+  clientId: string,
+  opts?: { rootDir?: string },
+): Promise<DeliveryReadyReport[]> {
+  const rootDir = opts?.rootDir ?? 'data';
+  const log = rootLogger;
+  const root = join(rootDir, clientId);
+
+  let dirEntries: import('node:fs').Dirent[];
+  try {
+    dirEntries = await fs.readdir(root, { withFileTypes: true });
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return [];
+    throw err;
+  }
+
+  const reports: DeliveryReadyReport[] = [];
+  for (const entry of dirEntries) {
+    if (!entry.isDirectory() || !DATE_DIR_RE.test(entry.name)) continue;
+    const dirPath = join(root, entry.name);
+    let files: string[];
+    try {
+      files = await fs.readdir(dirPath);
+    } catch (err) {
+      log.warn({ err, dir: dirPath, clientId }, 'weekly.readdir_failed');
+      continue;
+    }
+    for (const fname of files.filter((f) => f.endsWith('.report.json'))) {
+      const fullPath = join(dirPath, fname);
+      try {
+        const parsed = DeliveryReadyReportSchema.safeParse(
+          JSON.parse(await fs.readFile(fullPath, 'utf8')),
+        );
+        if (!parsed.success) {
+          log.warn({ file: fullPath, clientId, issues: parsed.error.issues }, 'weekly.schema_skip');
+          continue;
+        }
+        reports.push(parsed.data);
+      } catch (err) {
+        log.warn({ err, file: fullPath, clientId }, 'weekly.read_failed');
+      }
+    }
+  }
+
+  reports.sort((a, b) => a.meetingDate.localeCompare(b.meetingDate));
+  return reports;
+}
+
+export interface WeekGroup {
+  week: number;
+  year: number;
+  reports: DeliveryReadyReport[];
+}
+
+/**
+ * D12: группировка отчётов по ISO-неделе (абсолютный номер недели года).
+ * Возвращает недели по убыванию (свежие сверху), отчёты внутри — по meetingDate asc.
+ */
+export function groupReportsByWeek(reports: DeliveryReadyReport[]): WeekGroup[] {
+  const map = new Map<string, WeekGroup>();
+  for (const r of reports) {
+    const { week, year } = getISOWeekAndYear(r.meetingDate);
+    const key = `${year}-${week}`;
+    const group = map.get(key) ?? { week, year, reports: [] };
+    group.reports.push(r);
+    map.set(key, group);
+  }
+  return [...map.values()].sort((a, b) => b.year - a.year || b.week - a.week);
+}
+
+/**
  * Story 9.7: format weekly aggregate report (plain text, no MarkdownV2).
  * Header: 📅 Нед. {week}/{year} — {clientName}
  * No meetings: «\n\nВстреч за неделю не обработано.»

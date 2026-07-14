@@ -22,7 +22,11 @@ const {
   mockUpsertClient,
   mockLoadClientCard,
   mockLoadWeekReports,
+  mockLoadAllReports,
   mockRunHypoTracker,
+  mockListHypoReports,
+  mockSaveHypoReport,
+  mockLoadHypoReport,
 } = vi.hoisted(() => ({
   mockLoadRegistry: vi.fn<[], Promise<ClientRegistry>>(),
   mockGetActiveClient: vi.fn<[number], Promise<string | undefined>>(),
@@ -34,7 +38,11 @@ const {
   mockUpsertClient: vi.fn<[string, { sheetId: string; name: string; topName?: string }], Promise<void>>(),
   mockLoadClientCard: vi.fn<[string], Promise<null>>(),
   mockLoadWeekReports: vi.fn<[string], Promise<DeliveryReadyReport[]>>(),
+  mockLoadAllReports: vi.fn<[string], Promise<DeliveryReadyReport[]>>(),
   mockRunHypoTracker: vi.fn<[{ clientId: string; clientName?: string }], Promise<{ compact: string; full: string }>>(),
+  mockListHypoReports: vi.fn<[string], Promise<{ id: string; week: number; year: number; generatedAt: string }[]>>(),
+  mockSaveHypoReport: vi.fn<[string, unknown], Promise<string>>(),
+  mockLoadHypoReport: vi.fn<[string, string], Promise<null>>(),
 }));
 
 vi.mock('./client-registry.js', () => ({
@@ -58,18 +66,27 @@ vi.mock('./f0-client-card.js', () => ({
   renderClientCardMessage: vi.fn().mockReturnValue('client card'),
 }));
 
-// Partial mock: loadWeekReports — мок, formatWeeklyReport и getISOWeekAndYear — реальные.
+// Partial mock: loadWeekReports/loadAllReports — моки, formatWeeklyReport,
+// groupReportsByWeek и getISOWeekAndYear — реальные.
 vi.mock('./utils/weekly-report.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./utils/weekly-report.js')>();
   return {
     ...actual,
     loadWeekReports: mockLoadWeekReports,
+    loadAllReports: mockLoadAllReports,
   };
 });
 
 // Full mock: runHypoTracker (Story 10.5)
 vi.mock('./f5-hypo-tracker.js', () => ({
   runHypoTracker: mockRunHypoTracker,
+}));
+
+// D12: история трекера гипотез — мок, чтобы тесты не писали в data/.
+vi.mock('./utils/hypo-history.js', () => ({
+  listHypoReports: mockListHypoReports,
+  saveHypoReport: mockSaveHypoReport,
+  loadHypoReport: mockLoadHypoReport,
 }));
 
 // ── Test helpers ──────────────────────────────────────────────────────────────
@@ -184,40 +201,56 @@ beforeEach(() => {
   mockUpsertClient.mockResolvedValue(undefined);
   mockLoadClientCard.mockResolvedValue(null);
   mockLoadWeekReports.mockResolvedValue([]);
+  mockLoadAllReports.mockResolvedValue([]);
   mockRunHypoTracker.mockResolvedValue({ compact: '🧪 Трекер гипотез — Qubiq — нед.28/2026\n\nИзменений за неделю нет.', full: '' });
+  mockListHypoReports.mockResolvedValue([]);
+  mockSaveHypoReport.mockResolvedValue('1752000000');
+  mockLoadHypoReport.mockResolvedValue(null);
 });
 
 // ── Tests ──────────────────────────────────────────────────────────────────────
 
-describe('Story 9.7 — weekly:clientId callback', () => {
-  it('(1) weekly:qubiq с 2 отчётами → ctx.reply содержит summaryLine обеих встреч', async () => {
+describe('Story 9.7 + D12 — weekly:clientId → меню недель → отчёт за неделю', () => {
+  it('(1) weekly:qubiq с 2 отчётами → меню содержит неделю, weekly_wk → summaryLine обеих встреч', async () => {
     mockGetClientName.mockImplementation(async (id) =>
       id === 'qubiq' ? 'Qubiq' : undefined,
     );
     mockGetClientSheetId.mockImplementation(async (id) =>
       id === 'qubiq' ? 'sheet1' : undefined,
     );
-    mockLoadWeekReports.mockResolvedValue([report1, report2]);
+    mockLoadAllReports.mockResolvedValue([report1, report2]);
 
     const { bot, calls } = buildBot();
     await bot.handleUpdate(callbackUpdate('weekly:qubiq'));
 
-    const replies = calls.filter((c) => c.method === 'sendMessage');
-    expect(replies.length).toBeGreaterThan(0);
+    // Меню: 7-8 июля 2026 = ISO-неделя 28 → кнопка «Неделя 28 · встреч: 2».
+    const menuReply = calls.find((c) => c.method === 'sendMessage');
+    expect(menuReply).toBeDefined();
+    expect(menuReply!.payload.text as string).toContain('Недельные отчёты');
+    const markup = menuReply!.payload.reply_markup as {
+      inline_keyboard: { text: string; callback_data?: string }[][];
+    };
+    const buttons = markup.inline_keyboard.flat();
+    expect(buttons.some((b) => b.callback_data === 'weekly_wk:qubiq:2026:28')).toBe(true);
 
-    const allText = replies.map((r) => r.payload.text as string).join('\n');
+    // Отчёт за выбранную неделю.
+    await bot.handleUpdate(callbackUpdate('weekly_wk:qubiq:2026:28'));
+    const allText = calls
+      .filter((c) => c.method === 'sendMessage')
+      .map((r) => r.payload.text as string)
+      .join('\n');
     expect(allText).toContain(report1.summaryLine);
     expect(allText).toContain(report2.summaryLine);
     expect(allText).toContain('Нед.');
   });
 
-  it('(4) weekly:qubiq — loadWeekReports throws → ctx.reply содержит «Не удалось загрузить»', async () => {
+  it('(4) weekly:qubiq — loadAllReports throws → ctx.reply содержит «Не удалось загрузить»', async () => {
     mockGetClientName.mockImplementation(async (id) =>
       id === 'qubiq' ? 'Qubiq' : undefined,
     );
     mockGetClientSheetId.mockResolvedValue(undefined);
     const accessErr = Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' });
-    mockLoadWeekReports.mockRejectedValue(accessErr);
+    mockLoadAllReports.mockRejectedValue(accessErr);
 
     const { bot, calls } = buildBot();
     await bot.handleUpdate(callbackUpdate('weekly:qubiq'));
@@ -228,12 +261,12 @@ describe('Story 9.7 — weekly:clientId callback', () => {
     expect(allText).toContain('Не удалось загрузить');
   });
 
-  it('(2) weekly:qubiq без встреч → ctx.reply содержит «не обработано»', async () => {
+  it('(2) weekly:qubiq без встреч → меню сообщает, что обработанных встреч нет', async () => {
     mockGetClientName.mockImplementation(async (id) =>
       id === 'qubiq' ? 'Qubiq' : undefined,
     );
     mockGetClientSheetId.mockResolvedValue(undefined);
-    mockLoadWeekReports.mockResolvedValue([]);
+    mockLoadAllReports.mockResolvedValue([]);
 
     const { bot, calls } = buildBot();
     await bot.handleUpdate(callbackUpdate('weekly:qubiq'));
@@ -242,7 +275,9 @@ describe('Story 9.7 — weekly:clientId callback', () => {
     expect(replies.length).toBeGreaterThan(0);
 
     const allText = replies.map((r) => r.payload.text as string).join('\n');
-    expect(allText).toContain('не обработано');
+    expect(allText).toContain('Обработанных встреч пока нет');
+    // D13: меню показывает текущую неделю и счётчик.
+    expect(allText).toContain('Сейчас неделя');
   });
 
   it('(3) start_client:qubiq → клавиатура содержит callback_data weekly:qubiq и hypo_tracker:qubiq', async () => {
@@ -271,8 +306,29 @@ describe('Story 9.7 — weekly:clientId callback', () => {
   });
 });
 
-describe('Story 10.5 — hypo_tracker:clientId callback', () => {
-  it('(1) hypo_tracker:qubiq → ctx.reply содержит tracker report', async () => {
+describe('Story 10.5 + D12 — трекер гипотез: меню истории + hypo_run', () => {
+  it('(0) hypo_tracker:qubiq → меню с историей и кнопкой «собрать новый»', async () => {
+    mockGetClientName.mockResolvedValue('Qubiq');
+    mockListHypoReports.mockResolvedValue([
+      { id: '1752000000', week: 28, year: 2026, generatedAt: '2026-07-08T10:00:00.000Z' },
+    ]);
+
+    const { bot, calls } = buildBot();
+    await bot.handleUpdate(callbackUpdate('hypo_tracker:qubiq'));
+
+    const menuReply = calls.find((c) => c.method === 'sendMessage');
+    expect(menuReply).toBeDefined();
+    expect(menuReply!.payload.text as string).toContain('Сохранённые отчёты');
+    const markup = menuReply!.payload.reply_markup as {
+      inline_keyboard: { text: string; callback_data?: string }[][];
+    };
+    const cbDatas = markup.inline_keyboard.flat().map((b) => b.callback_data);
+    expect(cbDatas).toContain('hypo_view:qubiq:1752000000');
+    expect(cbDatas).toContain('hypo_run:qubiq');
+    expect(mockRunHypoTracker).not.toHaveBeenCalled();
+  });
+
+  it('(1) hypo_run:qubiq → ctx.reply содержит tracker report + сохранение в историю', async () => {
     mockGetClientName.mockImplementation(async (id) =>
       id === 'qubiq' ? 'Qubiq' : undefined,
     );
@@ -285,7 +341,7 @@ describe('Story 10.5 — hypo_tracker:clientId callback', () => {
     });
 
     const { bot, calls } = buildBot();
-    await bot.handleUpdate(callbackUpdate('hypo_tracker:qubiq'));
+    await bot.handleUpdate(callbackUpdate('hypo_run:qubiq'));
 
     const replies = calls.filter((c) => c.method === 'sendMessage');
     expect(replies.length).toBeGreaterThan(0);
@@ -301,29 +357,35 @@ describe('Story 10.5 — hypo_tracker:clientId callback', () => {
     expect(mockRunHypoTracker).toHaveBeenCalledWith(
       expect.objectContaining({ clientId: 'qubiq', clientName: 'Qubiq' }),
     );
+    // D12: успешный прогон сохраняется в историю.
+    expect(mockSaveHypoReport).toHaveBeenCalledWith(
+      'qubiq',
+      expect.objectContaining({ compact: expect.stringContaining('Трекер гипотез') }),
+    );
   });
 
-  it('(2) hypo_tracker:qubiq — runHypoTracker throws → ctx.reply содержит «Не удалось загрузить»', async () => {
+  it('(2) hypo_run:qubiq — runHypoTracker throws → ctx.reply содержит «Не удалось загрузить»', async () => {
     mockGetClientName.mockResolvedValue(undefined);
     mockGetClientSheetId.mockResolvedValue(undefined);
     mockRunHypoTracker.mockRejectedValue(new Error('hypotheses sheet unreadable — manual fix needed (header_missing)'));
 
     const { bot, calls } = buildBot();
-    await bot.handleUpdate(callbackUpdate('hypo_tracker:qubiq'));
+    await bot.handleUpdate(callbackUpdate('hypo_run:qubiq'));
 
     const replies = calls.filter((c) => c.method === 'sendMessage');
     expect(replies.length).toBeGreaterThan(0);
     const allText = replies.map((r) => r.payload.text as string).join('\n');
     expect(allText).toContain('Не удалось загрузить трекер гипотез');
+    expect(mockSaveHypoReport).not.toHaveBeenCalled();
   });
 
-  it('(3) hypo_tracker:qubiq — full === "" → sendDocument не вызывается', async () => {
+  it('(3) hypo_run:qubiq — full === "" → sendDocument не вызывается', async () => {
     mockGetClientName.mockResolvedValue('Qubiq');
     mockGetClientSheetId.mockResolvedValue(undefined);
     mockRunHypoTracker.mockResolvedValue({ compact: 'Гипотезы не найдены в листе _hypotheses.', full: '' });
 
     const { bot, calls } = buildBot();
-    await bot.handleUpdate(callbackUpdate('hypo_tracker:qubiq'));
+    await bot.handleUpdate(callbackUpdate('hypo_run:qubiq'));
 
     // No document should be sent when full is empty
     const docCalls = calls.filter((c) => c.method === 'sendDocument');
