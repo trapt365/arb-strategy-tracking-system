@@ -1099,13 +1099,11 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
     const chatId = ctx.chat?.id;
     if (chatId === undefined || !trackerChatIds.has(chatId)) {
       const command = ctx.message?.text?.slice(0, 80);
+      // bot.unauthorized = чужой/неразрешённый чат пишет боту. Это про доступ, НЕ про
+      // здоровье пайплайна. Логируем тихо, БЕЗ alertOps → не роняем watchdog и не будим
+      // Айдара ложным «Pipeline down». Реальные сбои обработки звонков/отчётов остаются
+      // под watchdog. (WP-39, 2026-07-15)
       log.warn({ chatId, command }, 'bot.unauthorized');
-      alertOps({
-        pipeline: 'F1',
-        step: 'bot.unauthorized',
-        error: new Error('unauthorized chat'),
-        context: { chatId, command },
-      });
       try {
         await ctx.reply(formatErrorMessage('unauthorized'));
       } catch (err) {

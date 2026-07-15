@@ -480,7 +480,7 @@ describe('bot — queue position', () => {
 });
 
 describe('bot — authorization', () => {
-  it('AC#5: unauthorized chatId → unauthorized reply, alertOps вызван, queue не растёт', async () => {
+  it('AC#5: unauthorized chatId → unauthorized reply, alertOps НЕ вызван, queue не растёт', async () => {
     const { bot, queue, calls, alertOpsSpy } = buildBot();
     await bot.handleUpdate(
       reportUpdate(
@@ -492,8 +492,8 @@ describe('bot — authorization', () => {
     const reply = calls.find((c) => c.method === 'sendMessage');
     expect(reply!.payload.text).toMatch(/Доступ ограничен/);
     expect(queue.size()).toBe(0);
-    expect(alertOpsSpy).toHaveBeenCalledTimes(1);
-    expect(alertOpsSpy.mock.calls[0]![0].step).toBe('bot.unauthorized');
+    // bot.unauthorized = про доступ, НЕ про здоровье пайплайна → без alertOps (WP-39, 2026-07-15)
+    expect(alertOpsSpy).not.toHaveBeenCalled();
   });
 });
 
@@ -1319,7 +1319,7 @@ describe('bot — onboarding /start (Story 1.8)', () => {
     expect(hints).toHaveLength(1);
   });
 
-  it('AC#6: unauthorized /start → unauthorized reply, нет welcome', async () => {
+  it('AC#6: unauthorized /start → unauthorized reply, нет welcome, alertOps НЕ вызван', async () => {
     const { bot, queue, calls, alertOpsSpy } = buildBot();
     await bot.handleUpdate(startUpdate(TEST_UNAUTHORIZED_CHAT_ID, 'Stranger'));
 
@@ -1331,8 +1331,8 @@ describe('bot — onboarding /start (Story 1.8)', () => {
       ),
     ).toBe(false);
     expect(queue.size()).toBe(0);
-    expect(alertOpsSpy).toHaveBeenCalledTimes(1);
-    expect(alertOpsSpy.mock.calls[0]![0].step).toBe('bot.unauthorized');
+    // bot.unauthorized = про доступ, НЕ про здоровье пайплайна → без alertOps (WP-39, 2026-07-15)
+    expect(alertOpsSpy).not.toHaveBeenCalled();
   });
 
   it('AC#7: после welcome /report <url> обрабатывается обычно', async () => {
