@@ -371,8 +371,10 @@ describe('Story 9.3 — /start с клиентами в реестре', () => {
     const reply = calls.find((c) => c.method === 'sendMessage');
     expect(reply).toBeDefined();
     const text = reply!.payload.text as string;
-    // Должен быть generic invalid_url, а НЕ контекстная подсказка с именем клиента
-    expect(text).not.toContain('Qubiq');
+    // Должен быть generic invalid_url, а НЕ контекстная подсказка missing_arg.
+    // Групповой режим: бейдж «👤 Клиент: Qubiq» теперь есть в каждом ответе, поэтому признак
+    // подсказки — её call-to-action «Активный клиент: … /report <ссылка>», а не имя клиента.
+    expect(text).not.toMatch(/Активный клиент:/);
     expect(text).toMatch(/Ссылка не распознана/);
   });
 });

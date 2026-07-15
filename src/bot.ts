@@ -241,6 +241,16 @@ function isAbortError(err: unknown): boolean {
   return e.name === 'AbortError' || e.code === 'ABORT_ERR';
 }
 
+/**
+ * Групповой режим: тег клиента в шапке отчётов (MarkdownV2) — отчёты уходят через
+ * bot.api.sendMessage, мимо reply-middleware, поэтому badge добавляется здесь.
+ * Falls back на clientId, если имя не резолвится (не бросает).
+ */
+async function clientBadgeMd(clientId: string): Promise<string> {
+  const name = (await getClientName(clientId).catch(() => undefined)) ?? clientId;
+  return `👤 ${escapeMarkdownV2(`Клиент: ${name}`)}\n`;
+}
+
 export function createBot(deps: BotDeps = {}): CreatedBot {
   const baseLogger = deps.logger ?? rootLogger;
   const log = baseLogger.child({ pipeline: 'F1', step: 'bot.report' });
@@ -590,7 +600,11 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
     }
     const messageIds: number[] = [];
     const continuation = `📋 ${escapeMarkdownV2(job.topName)} \\(продолжение\\)`;
-    const parts = splitForTelegram(job.lastReportText ?? '', TELEGRAM_SAFE_MARGIN, continuation);
+    const parts = splitForTelegram(
+      (await clientBadgeMd(job.clientId)) + (job.lastReportText ?? ''),
+      TELEGRAM_SAFE_MARGIN,
+      continuation,
+    );
 
     for (let i = 0; i < parts.length; i++) {
       const sent = await bot.api.sendMessage(job.chatId, parts[i]!, {
@@ -786,7 +800,11 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
 
   async function renderFinalReport(job: ReportJob, reportText: string): Promise<number | undefined> {
     const continuation = `📋 ${escapeMarkdownV2(job.topName)} \\(продолжение\\)`;
-    const parts = splitForTelegram(reportText, TELEGRAM_SAFE_MARGIN, continuation);
+    const parts = splitForTelegram(
+      (await clientBadgeMd(job.clientId)) + reportText,
+      TELEGRAM_SAFE_MARGIN,
+      continuation,
+    );
 
     if (parts.length === 0) return undefined;
 
@@ -1094,6 +1112,44 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
       }
       return;
     }
+    await next();
+  });
+
+  // Групповой режим: тег клиента в каждом интерактивном ответе (Story 10.7 расширена на все
+  // сообщения). Бейдж считается один раз до next() → wrapper синхронный, не ломает fire-and-forget
+  // тайминг. Не дублируется, если сообщение уже начинается с «👤 Клиент:» (Story 10.7 и т.п.).
+  // Отчёты идут через bot.api.sendMessage — там бейдж добавляет clientBadgeMd.
+  bot.use(async (ctx, next) => {
+    const chatId = ctx.chat?.id;
+    let clientLabel: string | undefined;
+    try {
+      const activeId = chatId !== undefined ? await getActiveClient(chatId) : undefined;
+      clientLabel = activeId
+        ? (await getClientName(activeId).catch(() => undefined)) ?? activeId
+        : undefined;
+    } catch {
+      clientLabel = undefined;
+    }
+    const badge = `👤 Клиент: ${clientLabel ?? 'не выбран'}`;
+
+    const origReply = ctx.reply.bind(ctx);
+    ctx.reply = ((
+      text: string,
+      other?: Parameters<typeof origReply>[1],
+      signal?: Parameters<typeof origReply>[2],
+    ) => {
+      if (typeof text === 'string' && text.startsWith('👤 Клиент:')) {
+        return origReply(text, other, signal);
+      }
+      const mode = (other as { parse_mode?: string } | undefined)?.parse_mode;
+      const prefix =
+        mode === 'MarkdownV2'
+          ? `${escapeMarkdownV2(badge)}\n\n`
+          : mode === 'HTML'
+            ? `${badge.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}\n\n`
+            : `${badge}\n\n`;
+      return origReply(prefix + text, other, signal);
+    }) as typeof ctx.reply;
     await next();
   });
 
@@ -5105,7 +5161,11 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
       }
 
       const continuation = `📋 ${escapeMarkdownV2(job.topName)} \\(продолжение\\)`;
-      const parts = splitForTelegram(updatedText, TELEGRAM_SAFE_MARGIN, continuation);
+      const parts = splitForTelegram(
+        (await clientBadgeMd(job.clientId)) + updatedText,
+        TELEGRAM_SAFE_MARGIN,
+        continuation,
+      );
       for (let i = 0; i < parts.length; i++) {
         const isLast = i === parts.length - 1;
         try {
