@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join as pathJoin } from 'node:path';
 import type { UserFromGetMe } from 'grammy/types';
 import { config, parseTrackerChatIds } from './config.js';
+import { parseFeedbackTag, appendFeedbackRow, FEEDBACK_TAG_RE } from './feedback.js';
 import { logger as rootLogger, type Logger } from './logger.js';
 import {
   alertOps as defaultAlertOps,
@@ -1151,6 +1152,55 @@ export function createBot(deps: BotDeps = {}): CreatedBot {
       return origReply(prefix + text, other, signal);
     }) as typeof ctx.reply;
     await next();
+  });
+
+  // ───────── Захват обратной связи: #баг / #фича / #хочу ─────────
+  // Регистрируется ДО штатных хендлеров (message:text/photo). Совпадение по тегу →
+  // строка в таблицу обратной связи + подтверждение, без прохода в основную функцию.
+  // Всё без тега идёт дальше штатно (grammy: не вызываем next() только при совпадении).
+  async function captureFeedback(ctx: Context): Promise<void> {
+    const text = ctx.msg?.text ?? ctx.msg?.caption ?? '';
+    const parsed = parseFeedbackTag(text);
+    if (parsed === null) return;
+
+    const from = ctx.from;
+    const name = [from?.first_name, from?.last_name].filter(Boolean).join(' ').trim();
+    const author =
+      (name.length > 0 ? name : 'неизвестно') + (from?.username ? ` (@${from.username})` : '');
+    const date = new Date().toLocaleString('ru-RU', {
+      timeZone: config.TZ,
+      dateStyle: 'short',
+      timeStyle: 'short',
+    });
+    const feedbackUrl = config.FEEDBACK_SHEET_ID
+      ? `https://docs.google.com/spreadsheets/d/${config.FEEDBACK_SHEET_ID}/edit`
+      : '';
+
+    try {
+      await appendFeedbackRow({
+        date,
+        author,
+        type: parsed.type,
+        body: parsed.body.length > 0 ? parsed.body : '(без текста)',
+        link: '',
+      });
+      log.info({ type: parsed.type, author }, 'feedback.captured');
+      await ctx
+        .reply(
+          `✅ Записал #${parsed.type} в таблицу обратной связи.` +
+            (feedbackUrl ? `\nСтатус ведём тут: ${feedbackUrl}` : ''),
+        )
+        .catch(() => {});
+    } catch (err) {
+      log.warn({ err, type: parsed.type }, 'feedback.append_failed');
+      await ctx
+        .reply('⚠️ Не смог записать в таблицу обратной связи — зафиксировал в логах, гляну вручную.')
+        .catch(() => {});
+    }
+  }
+
+  bot.hears(FEEDBACK_TAG_RE, async (ctx) => {
+    await captureFeedback(ctx);
   });
 
   // ───────── /start and /help (Story 1.8; меню — Story 8.4) ─────────
